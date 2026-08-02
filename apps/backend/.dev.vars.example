@@ -1,0 +1,8 @@
+# Copy to .dev.vars for local wrangler dev.
+# Generate: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+AUTH_SECRET=replace-me-with-32-random-bytes-hex
+
+# Optional — Cloudflare Realtime TURN fallback. Without these, the worker
+# serves STUN-only config (stun.cloudflare.com), which is fine for local dev.
+# REALTIME_TURN_KEY_ID=your_turn_key_id
+# REALTIME_API_TOKEN=your_cloudflare_api_token

@@ -1,0 +1,19 @@
+{
+  "name": "lumen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lumen — ultralight Discord-like voice + screen share for up to 4 peers, P2P media over Cloudflare signaling.",
+  "scripts": {
+    "build": "pnpm -r --filter './apps/**' build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "workerd"]
+  }
+}

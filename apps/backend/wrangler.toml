@@ -1,0 +1,30 @@
+name = "lumen-backend"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# D1 persistent store. database_id is a placeholder for local dev;
+# `wrangler d1 create lumen-d1` prints the real id to put here before deploy.
+[[d1_databases]]
+binding = "LUMEN_D1"
+database_name = "lumen-d1"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[durable_objects]
+bindings = [{ name = "LUMEN_CHANNEL_DO", class_name = "LumenChannelDO" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LumenChannelDO"]
+
+[vars]
+APP_NAME = "lumen"
+
+# Secrets (wrangler secret put / .dev.vars):
+#   AUTH_SECRET            — HMAC key for JWTs (generate 32+ random bytes)
+#   REALTIME_TURN_KEY_ID   — Cloudflare Realtime TURN key id (optional)
+#   REALTIME_API_TOKEN     — Cloudflare API token with Realtime perms (optional)
