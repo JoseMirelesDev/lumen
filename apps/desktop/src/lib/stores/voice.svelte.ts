@@ -4,12 +4,16 @@ import { ChannelSignaling } from "$lib/media/signaling";
 import { VoiceMesh } from "$lib/media/mesh";
 import { createMicPipeline, type MicPipeline } from "$lib/media/audio";
 import { LevelMeter } from "$lib/media/levels";
+import { startScreenCapture, type ScreenCapture } from "$lib/media/screenShare";
+import { createMeshScreenTransport, type ScreenShareTransport } from "$lib/media/screenTransport";
 
 export interface VoicePeer {
   peerId: string;
   userId: string;
   username: string;
   stream: MediaStream | null;
+  /** Shared screen from this peer, if any. */
+  videoStream: MediaStream | null;
   level: number;
   speaking: boolean;
 }
@@ -36,9 +40,13 @@ class VoiceStore {
   localLevel = $state(0);
   localSpeaking = $state(false);
   error = $state<string | null>(null);
+  /** Screen share in progress: the captured stream, shown as a preview tile. */
+  sharing = $state<MediaStream | null>(null);
 
   private mesh: VoiceMesh | null = null;
   private signaling: ChannelSignaling | null = null;
+  private screenTransport: ScreenShareTransport | null = null;
+  private screenCapture: ScreenCapture | null = null;
   private pipeline: MicPipeline | null = null;
   private localMeter: LevelMeter | null = null;
   private meters = new Map<string, LevelMeter>();
@@ -76,6 +84,7 @@ class VoiceStore {
       this.mesh = new VoiceMesh(this.signaling, config.iceServers as RTCIceServer[], {
         onPeerJoined: (peer) => void this.addPeer(peer),
         onRemoteStream: (peerId, stream) => this.attachRemoteStream(peerId, stream),
+        onRemoteVideo: (peerId, stream) => this.attachRemoteVideo(peerId, stream),
         onPeerRemoved: (peerId) => this.removePeer(peerId),
         onError: (peerId, message) => {
           if (peerId === "") this.error = message;
@@ -98,6 +107,7 @@ class VoiceStore {
     await this.mesh?.leave();
     this.mesh = null;
     this.signaling = null;
+    await this.stopShare();
     this.pipeline?.dispose();
     this.pipeline = null;
     void this.remoteCtx?.close();
@@ -111,6 +121,33 @@ class VoiceStore {
     this.peers = [];
     this.localLevel = 0;
     this.localSpeaking = false;
+  }
+
+  async toggleShare(): Promise<void> {
+    if (this.sharing) {
+      await this.stopShare();
+      return;
+    }
+    if (!this.mesh) return;
+    try {
+      const capture = await startScreenCapture();
+      const transport = createMeshScreenTransport(this.mesh);
+      await transport.start(capture.stream);
+      this.screenTransport = transport;
+      this.sharing = capture.stream;
+      // Releasing the capture stops the local capture — keep a handle.
+      this.screenCapture = capture;
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async stopShare(): Promise<void> {
+    await this.screenTransport?.stop();
+    this.screenTransport = null;
+    this.screenCapture?.stop();
+    this.screenCapture = null;
+    this.sharing = null;
   }
 
   toggleMute(): void {
@@ -137,6 +174,7 @@ class VoiceStore {
       userId: peer.userId,
       username,
       stream: null,
+      videoStream: null,
       level: 0,
       speaking: false,
     });
@@ -174,6 +212,11 @@ class VoiceStore {
     analyser.fftSize = 1024;
     source.connect(analyser);
     this.meters.set(peerId, new LevelMeter(analyser));
+  }
+
+  private attachRemoteVideo(peerId: string, stream: MediaStream): void {
+    const peer = this.peers.find((p) => p.peerId === peerId);
+    if (peer) peer.videoStream = stream;
   }
 
   private removePeer(peerId: string): void {

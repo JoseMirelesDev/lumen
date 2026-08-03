@@ -1,4 +1,5 @@
 import type { PeerInfo, ServerMessage } from "@lumen/protocol";
+import { preferH264 } from "./screenShare";
 import type { ChannelSignaling } from "./signaling";
 
 /**
@@ -14,6 +15,7 @@ import type { ChannelSignaling } from "./signaling";
 export interface MeshEvents {
   onPeerJoined(peer: PeerInfo): void;
   onRemoteStream(peerId: string, stream: MediaStream): void;
+  onRemoteVideo(peerId: string, stream: MediaStream): void;
   onPeerRemoved(peerId: string): void;
   onError(peerId: string, message: string): void;
 }
@@ -48,6 +50,33 @@ export class VoiceMesh {
     this.peers.clear();
     this.localStream = null;
     this.signaling.close();
+  }
+
+  /**
+   * Add a video track (screen share) to every peer connection and renegotiate.
+   * Only the sharer initiates, so there is no glare; viewers answer through
+   * the normal `offer` path. Idempotent per track.
+   */
+  async addVideoTrack(track: MediaStreamTrack, stream: MediaStream): Promise<void> {
+    const added: Promise<void>[] = [];
+    for (const entry of this.peers.values()) {
+      if (entry.pc.getSenders().some((s) => s.track === track)) continue;
+      entry.pc.addTrack(track, stream);
+      added.push(this.sendOffer(entry).catch(() => this.events.onError(entry.peerId, "renegotiation failed")));
+    }
+    await Promise.all(added);
+  }
+
+  /** Remove a shared video track from every peer connection and renegotiate. */
+  async removeVideoTrack(track: MediaStreamTrack): Promise<void> {
+    const done: Promise<void>[] = [];
+    for (const entry of this.peers.values()) {
+      const sender = entry.pc.getSenders().find((s) => s.track === track);
+      if (!sender) continue;
+      entry.pc.removeTrack(sender);
+      done.push(this.sendOffer(entry).catch(() => this.events.onError(entry.peerId, "renegotiation failed")));
+    }
+    await Promise.all(done);
   }
 
   private handleMessage(msg: ServerMessage): void {
@@ -101,6 +130,8 @@ export class VoiceMesh {
 
   private createPeer(peer: PeerInfo): PeerConnectionEntry {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    // H.264 first in the codec list from the start, so offers/answers prefer it.
+    preferH264(pc);
     const entry: PeerConnectionEntry = { peerId: peer.peerId, userId: peer.userId, pc };
     this.peers.set(peer.peerId, entry);
     this.events.onPeerJoined(peer);
@@ -119,7 +150,12 @@ export class VoiceMesh {
     };
     pc.ontrack = (event) => {
       const stream = event.streams[0];
-      if (stream) this.events.onRemoteStream(peer.peerId, stream);
+      if (!stream) return;
+      if (event.track.kind === "video") {
+        this.events.onRemoteVideo(peer.peerId, stream);
+      } else {
+        this.events.onRemoteStream(peer.peerId, stream);
+      }
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {

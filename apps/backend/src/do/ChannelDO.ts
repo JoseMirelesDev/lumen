@@ -104,7 +104,15 @@ export class LumenChannelDO {
         att.joined = true;
         ws.serializeAttachment(att);
 
-        const peers = (await this.state.storage.get<PeerInfo[]>(PEERS_KEY)) ?? [];
+        let peers = (await this.state.storage.get<PeerInfo[]>(PEERS_KEY)) ?? [];
+        // Prune ghosts: entries whose socket is gone (DO restarted under a
+        // live peer map, or a socket died without a close event). Otherwise
+        // late joiners are handed dead peer ids and relays fail forever.
+        const live = peers.filter((p) => this.findLiveSocket(p.peerId, p.userId) !== null);
+        if (live.length !== peers.length) {
+          peers = live;
+          await this.state.storage.put(PEERS_KEY, peers);
+        }
         const others = peers.filter((p) => p.peerId !== att.peerId);
         ws.send(
           JSON.stringify({ type: "joined", peerId: att.peerId, peers: others } satisfies ServerMessage),
@@ -174,10 +182,20 @@ export class LumenChannelDO {
     const peers = (await this.state.storage.get<PeerInfo[]>(PEERS_KEY)) ?? [];
     const target = peers.find((p) => p.peerId === toPeerId);
     if (!target) return null;
-    for (const socket of this.state.getWebSockets(target.userId)) {
+    const socket = this.findLiveSocket(target.peerId, target.userId);
+    if (!socket) {
+      // Ghost target — drop it from the map so relays don't keep failing.
+      await this.state.storage.put(PEERS_KEY, peers.filter((p) => p.peerId !== toPeerId));
+      return null;
+    }
+    return socket;
+  }
+
+  private findLiveSocket(peerId: string, userId: string): WebSocket | null {
+    for (const socket of this.state.getWebSockets(userId)) {
       if (socket.readyState !== OPEN) continue;
       const att = socket.deserializeAttachment() as SocketAttachment | null;
-      if (att?.peerId === toPeerId) return socket;
+      if (att?.peerId === peerId) return socket;
     }
     return null;
   }

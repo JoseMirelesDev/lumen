@@ -22,6 +22,16 @@
       },
     };
   }
+
+  /** Keep a <video> element's srcObject in sync with a shared stream. */
+  function attachVideo(node: HTMLVideoElement, stream: MediaStream | null) {
+    node.srcObject = stream;
+    return {
+      update(next: MediaStream | null) {
+        node.srcObject = next;
+      },
+    };
+  }
 </script>
 
 <section class="voice">
@@ -41,6 +51,13 @@
 
   {#if voice.error}
     <p class="error">{voice.error}</p>
+  {/if}
+
+  {#if voice.sharing}
+    <div class="share-preview">
+      <video autoplay muted use:attachVideo={voice.sharing}></video>
+      <span class="share-badge">You are sharing</span>
+    </div>
   {/if}
 
   <div class="grid">
@@ -65,6 +82,9 @@
         </div>
         <span class="label">{peer.username}</span>
         <div class="levelbar"><div style="width: {peer.level * 100}%"></div></div>
+        {#if peer.videoStream}
+          <video autoplay controls={false} use:attachVideo={peer.videoStream}></video>
+        {/if}
         {#if peer.stream}
           <audio autoplay use:attachStream={peer.stream} volume={voice.deafened ? 0 : 1}></audio>
         {/if}
@@ -88,6 +108,14 @@
       onclick={() => voice.toggleDeafen()}
     >
       {voice.deafened ? "🔇 deafened" : "🔇"}
+    </button>
+    <button
+      class="ctrl"
+      class:active={voice.sharing !== null}
+      title={voice.sharing ? "Stop sharing" : "Share screen"}
+      onclick={() => voice.toggleShare()}
+    >
+      {voice.sharing ? "🖥️ sharing" : "🖥️"}
     </button>
     <button class="ctrl leave" title="Leave voice" onclick={() => voice.leave()}>
       Leave
@@ -210,6 +238,37 @@
     height: 100%;
     background: var(--accent);
     transition: width 60ms linear;
+  }
+  .share-preview {
+    position: relative;
+    margin: 14px 20px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #000;
+    max-height: 200px;
+  }
+  .share-preview video {
+    width: 100%;
+    max-height: 200px;
+    display: block;
+    object-fit: contain;
+  }
+  .share-badge {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .tile video {
+    width: 100%;
+    border-radius: 6px;
+    background: #000;
+    max-height: 110px;
   }
   .callbar {
     display: flex;

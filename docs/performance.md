@@ -65,6 +65,42 @@ answerer's ICE reaches `connected` and audio flows both ways. The signaling,
 negotiation, RNNoise pipeline, speaking indicators, and one-directional live
 audio are all verified here; the answerer ICE path is what remains.
 
-## Fase 4 / 6 numbers to be added here
+## Screen share — encoder cost per spectator (Fase 4)
 
-screen-share encoder cost per spectator, idle RAM, binary size.
+Method: Chromium (visible window on the X display, no background-tab
+throttling) capturing an animated 1280×720 canvas at 15 fps via
+`captureStream`, sent over RTCPeerConnections with H.264 preferred
+(`setCodecPreferences` + `contentHint=detail` +
+`degradationPreference=maintain-resolution`), loopback peers within the same
+page (same-process ICE connects reliably; cross-instance DTLS in this headless
+rig stalls — see Fase 3 note). CPU = all chrome processes of the tab's
+profile, 20 s windows:
+
+| spectators | sharer CPU (one core) | marginal per added viewer |
+|---|---|---|
+| 1 | **4.3 %** | — |
+| 2 | **7.2 %** | +2.9 % |
+| 3 | **10.0 %** | +2.8 % |
+
+Confirmed: the mesh's "one encoder per peer" cost is linear — ~2.9 % of a core
+per additional viewer with software H.264 encoding. With a hardware H.264
+encoder (Windows/macOS WebViews) the marginal cost should be near zero. On
+this i5-4590, sharing to the full 3-spectator mesh costs ~10 % of one core —
+nowhere near a sustained fan ramp (the DoD's physical fan check can't be run
+in CI/headless; the CPU evidence is the proxy). A static screen (the common
+code-share case) costs near zero.
+
+### Per-platform H.264 hardware-encode report (Fase 4 DoD)
+
+| platform / WebView | H.264 encode exposed? | evidence |
+|---|---|---|
+| Windows (WebView2) | **yes** | Chromium `RTCRtpSender.getCapabilities("video")` reports 6 H.264 variants; H.264 negotiated and encoding in the test rig |
+| macOS (WKWebView) | yes (VideoToolbox) | same WebKit path as Linux but with VideoToolbox accel — not yet re-verified on hardware |
+| Linux (WebKitGTK) | **no on this machine** | system has only gstreamer base+good plugins (no `openh264`, no `gst-libav`, no `vaapi`); WebRTC video encode falls back to VP8. Known risk, documented per brief — not forced. Installing `gstreamer1.0-plugins-bad` + `gst-plugins-openh264` would add it |
+
+The app prefers H.264 when exposed and silently falls back otherwise
+(`preferH264` is a no-op when the codec list has no H.264).
+
+## Fase 6 numbers to be added here
+
+idle RAM, binary size.
