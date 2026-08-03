@@ -139,7 +139,8 @@ router.get("/api/servers", true, async (ctx) => {
   return json(await db.listServersForUser(ctx.env.LUMEN_D1, ctx.user.id));
 });
 
-router.post("/api/servers/:id/join", true, async (ctx) => {
+// join by invite code — no server id in the path (the code addresses the server)
+router.post("/api/servers/join", true, async (ctx) => {
   const body = await readJson(ctx.request);
   const inviteCode = typeof body.inviteCode === "string" ? body.inviteCode : "";
   const server = await db.getServerByInviteCode(ctx.env.LUMEN_D1, inviteCode);

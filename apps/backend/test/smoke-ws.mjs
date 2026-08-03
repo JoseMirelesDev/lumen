@@ -165,7 +165,7 @@ async function main() {
     );
     if (!voiceChannel || !textChannel) throw new Error("server is missing default channels");
 
-    res = await api("POST", `/api/servers/${serverId}/join`, { token: tokenB, body: { inviteCode } });
+    res = await api("POST", `/api/servers/join`, { token: tokenB, body: { inviteCode } });
     step("bob joins via invite -> 200", res.status === 200 && res.data?.server?.id === serverId, `status=${res.status}`);
 
     res = await api("GET", "/api/servers", { token: tokenA });
@@ -364,7 +364,7 @@ async function main() {
       if (res.status !== 201) throw new Error(`register ${u.username} failed: ${res.status}`);
       extraTokens.push(res.data.token);
       extraIds.push(res.data.user.id);
-      res = await api("POST", `/api/servers/${serverId}/join`, { token: res.data.token, body: { inviteCode } });
+      res = await api("POST", `/api/servers/join`, { token: res.data.token, body: { inviteCode } });
       if (res.status !== 200) throw new Error(`join ${u.username} failed: ${res.status}`);
     }
 

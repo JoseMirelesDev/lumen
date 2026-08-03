@@ -43,6 +43,15 @@ Backend secrets for local dev: copy `apps/backend/.dev.vars.example` to
 `apps/backend/.dev.vars` and set `AUTH_SECRET` (32+ random bytes). Deployment
 instructions: see `docs/deploy.md` (written in Fase 6).
 
+The desktop app talks to the backend URL shown on the login screen
+(`http://localhost:8787` by default; editable there and persisted, or set
+`VITE_BACKEND_URL` at build time).
+
+**Linux WebKit note**: on older Intel iGPUs (e.g. HD 4600) the WebKitGTK window
+may never map without `WEBKIT_DISABLE_COMPOSITING_MODE=1` in the environment.
+Set it when running `tauri dev` if the window does not appear. This is a dev
+environment quirk, not a code change — reported as a known risk in Fase 4.
+
 ## Phases
 
 Tracked as a persistent project todo (Fase 0–6), each gated on its Definition of

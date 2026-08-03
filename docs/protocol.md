@@ -68,7 +68,7 @@ All JSON; auth via `Authorization: Bearer <token>` (HMAC-signed JWT, see ADR 000
 | GET | `/api/me` | — | `{user}` |
 | POST | `/api/servers` | `{name}` | `201 {server, channels}` (creates `general` text + `General` voice) |
 | GET | `/api/servers` | — | `[ServerWithChannels]` (member of) |
-| POST | `/api/servers/:id/join` | `{inviteCode}` | `200 {server, channels}` |
+| POST | `/api/servers/join` | `{inviteCode}` | `200 {server, channels}` |
 | GET | `/api/servers/:id` | — | `{server, channels}` |
 | POST | `/api/servers/:id/channels` | `{name, kind}` | `201 {channel}` (owner only) |
 | POST | `/api/channels/:id/messages` | `{content}` | `201 {message}` |
