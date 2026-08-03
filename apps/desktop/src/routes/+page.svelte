@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from "$lib/stores/auth.svelte";
   import { shell } from "$lib/stores/shell.svelte";
+  import { voice } from "$lib/stores/voice.svelte";
   import Login from "$lib/components/Login.svelte";
   import ServerRail from "$lib/components/ServerRail.svelte";
   import ChannelList from "$lib/components/ChannelList.svelte";
@@ -13,8 +14,12 @@
       void shell.loadServers();
     } else {
       shell.reset();
+      void voice.leave();
     }
   });
+
+  // Voice lifecycle lives in VoiceView: it joins on mount (keyed by channel)
+  // and leaves on unmount. No effect here — explicit and predictable.
 </script>
 
 {#if !auth.user}
@@ -24,7 +29,9 @@
     <ServerRail />
     <ChannelList />
     {#if shell.selectedChannel?.kind === "voice"}
-      <VoiceView />
+      {#key shell.selectedChannelId}
+        <VoiceView />
+      {/key}
     {:else}
       <ChatView />
     {/if}

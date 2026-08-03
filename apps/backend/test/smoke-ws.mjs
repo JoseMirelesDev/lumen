@@ -177,6 +177,14 @@ async function main() {
 
     res = await api("GET", `/api/servers/${serverId}`, { token: tokenB });
     step("member GET server -> {server,channels}", res.status === 200 && res.data?.channels?.length === 2, `status=${res.status}`);
+    step(
+      "server detail includes members (alice+bob)",
+      Array.isArray(res.data?.members) &&
+        res.data.members.length === 2 &&
+        res.data.members.some((m) => m.username === alice.username) &&
+        res.data.members.some((m) => m.username === bob.username),
+      `members=${res.data?.members?.map((m) => m.username)}`,
+    );
 
     // messages
     const msgContent = `hello from smoke ${suffix}`;

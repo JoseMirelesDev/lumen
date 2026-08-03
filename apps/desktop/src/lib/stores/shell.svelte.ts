@@ -6,6 +6,9 @@ import { auth } from "./auth.svelte";
  * server/channel, and the message history of the selected text channel.
  */
 class ShellStore {
+  /** Monotonic guard: only the newest in-flight loadServers may commit. */
+  private loadSeq = 0;
+
   servers = $state<ServerWithChannels[]>([]);
   selectedServerId = $state<string | null>(null);
   selectedChannelId = $state<string | null>(null);
@@ -21,10 +24,13 @@ class ShellStore {
   );
 
   async loadServers(): Promise<void> {
+    const seq = ++this.loadSeq;
     this.loading = true;
     this.error = null;
     try {
-      this.servers = await auth.api.listServers();
+      const servers = await auth.api.listServers();
+      if (seq !== this.loadSeq) return; // superseded by a newer load — drop stale data
+      this.servers = servers;
       // Restore selection if the server/channel still exists, else pick defaults.
       if (!this.selectedServer) {
         this.selectedServerId = this.servers[0]?.server.id ?? null;

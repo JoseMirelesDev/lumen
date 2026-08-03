@@ -5,7 +5,7 @@ Status: **contract** (cross-slice interface between `@lumen/backend` and `@lumen
 ## 1. Transport
 
 - All real-time signaling runs over a single WebSocket per (client, channel) pair.
-- URL: `wss://<worker>/api/ws/:channelId`, opened with `Authorization: Bearer <token>`.
+- URL: `wss://<worker>/api/ws/:channelId`, opened with `Authorization: Bearer <token>` (non-browser clients) or `?token=<jwt>` (browser/WebView WebSocket cannot set headers). Token is HMAC-signed with a 7-day expiry; the query form is accepted only on the WS upgrade path.
 - Messages are JSON text frames. One message per frame; no batching in v1.
 - The worker upgrades and forwards the socket to `LumenChannelDO` (instance name `lumen-<channelId>`).
 - Max 4 peers per voice channel (enforced by the DO: `error "channel_full"` on the 5th join).
@@ -69,7 +69,7 @@ All JSON; auth via `Authorization: Bearer <token>` (HMAC-signed JWT, see ADR 000
 | POST | `/api/servers` | `{name}` | `201 {server, channels}` (creates `general` text + `General` voice) |
 | GET | `/api/servers` | — | `[ServerWithChannels]` (member of) |
 | POST | `/api/servers/join` | `{inviteCode}` | `200 {server, channels}` |
-| GET | `/api/servers/:id` | — | `{server, channels}` |
+| GET | `/api/servers/:id` | — | `{server, channels, members}` (`members: [{id, username}]`) |
 | POST | `/api/servers/:id/channels` | `{name, kind}` | `201 {channel}` (owner only) |
 | POST | `/api/channels/:id/messages` | `{content}` | `201 {message}` |
 | GET | `/api/channels/:id/messages?limit=50` | — | `[message]` |

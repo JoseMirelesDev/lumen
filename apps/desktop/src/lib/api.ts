@@ -77,6 +77,14 @@ export class Api {
     return this.request("POST", "/api/servers/join", { inviteCode });
   }
 
+  getServer(serverId: string): Promise<{
+    server: ServerWithChannels["server"];
+    channels: Channel[];
+    members: { id: string; username: string }[];
+  }> {
+    return this.request("GET", `/api/servers/${encodeURIComponent(serverId)}`);
+  }
+
   createChannel(serverId: string, name: string, kind: "text" | "voice"): Promise<{ channel: Channel }> {
     return this.request("POST", `/api/servers/${encodeURIComponent(serverId)}/channels`, { name, kind });
   }

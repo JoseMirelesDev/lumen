@@ -169,11 +169,22 @@ export async function isMember(db: D1Database, serverId: string, userId: string)
 }
 
 export async function getChannelsForServer(db: D1Database, serverId: string): Promise<Channel[]> {
-  const { results } = await db
+  const rows = await db
     .prepare("SELECT * FROM channels WHERE server_id = ? ORDER BY created_at ASC")
     .bind(serverId)
-    .all();
-  return (results as unknown as ChannelRow[]).map(rowToChannel);
+    .all<ChannelRow>();
+  return rows.results.map(rowToChannel);
+}
+
+/** Member id + username, for presence/voice display. */
+export async function getMembers(db: D1Database, serverId: string): Promise<{ id: string; username: string }[]> {
+  const rows = await db
+    .prepare(
+      "SELECT u.id, u.username FROM server_members m JOIN users u ON u.id = m.user_id WHERE m.server_id = ?",
+    )
+    .bind(serverId)
+    .all<{ id: string; username: string }>();
+  return rows.results;
 }
 
 export async function listServersForUser(db: D1Database, userId: string): Promise<ServerWithChannels[]> {

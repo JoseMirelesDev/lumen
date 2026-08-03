@@ -44,8 +44,13 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
 
 async function requireUser(request: Request, env: Env): Promise<User> {
   const header = request.headers.get("authorization");
-  if (!header || !header.startsWith("Bearer ")) throw new ApiError(401, "unauthorized");
-  const token = header.slice("Bearer ".length).trim();
+  // Browser WebSocket cannot set the Authorization header, so the WS upgrade
+  // also accepts the token as ?token= (HMAC-signed, short-lived — documented
+  // trade-off in docs/protocol.md §1).
+  const token = header?.startsWith("Bearer ")
+    ? header.slice("Bearer ".length).trim()
+    : new URL(request.url).searchParams.get("token") ?? "";
+  if (!token) throw new ApiError(401, "unauthorized");
   let payload: auth.JwtPayload;
   try {
     payload = await auth.verifyToken(token, auth.getSecret(env));
@@ -157,7 +162,8 @@ router.get("/api/servers/:id", true, async (ctx, params) => {
     throw new ApiError(403, "forbidden");
   }
   const channels = await db.getChannelsForServer(ctx.env.LUMEN_D1, server.id);
-  return json({ server: db.rowToServer(server), channels });
+  const members = await db.getMembers(ctx.env.LUMEN_D1, server.id);
+  return json({ server: db.rowToServer(server), channels, members });
 });
 
 router.post("/api/servers/:id/channels", true, async (ctx, params) => {
