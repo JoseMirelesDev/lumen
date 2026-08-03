@@ -55,11 +55,11 @@ DO      ──peer-left──▶ everyone   (peer's WS closed)
 | added `from` on relays | peers need to attribute offers/candidates to a peerId, and peerIds are DO-assigned |
 | added `peer-joined` payload as object | carries both peerId and userId so the client can render presence without an extra lookup |
 | added `error` + `ping`/`pong` | protocol failures need an explicit channel; app-level ping is optional but cheap (20:1 against DO budget) |
-| presence scoped to channel | global (cross-server) presence would need a per-user DO; v1 derives "online" from `last_seen` (updated on login) + live channel membership. Documented in ADR 0003. |
+| presence scoped to channel | global (cross-server) presence would need a per-user DO; v1 derives "online" from `last_seen` (updated on login) + live channel membership. Documented in ADR 0001 "Presence scoping". |
 
 ## 4. REST API (same origin as WS)
 
-All JSON; auth via `Authorization: Bearer <token>` (HMAC-signed JWT, see ADR 0002).
+All JSON; auth via `Authorization: Bearer <token>` (HMAC-signed JWT, see ADR 0001 "Auth").
 
 | method | path | body | returns |
 |---|---|---|---|
