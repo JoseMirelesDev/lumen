@@ -17,6 +17,8 @@ export interface VoicePeer {
   videoStream: MediaStream | null;
   level: number;
   speaking: boolean;
+  /** RTCPeerConnection state: new|connecting|connected|disconnected|failed|closed. */
+  state: string;
 }
 
 /** Speak threshold + hysteresis (levels are RMS 0..1). */
@@ -93,6 +95,10 @@ class VoiceStore {
         onRemoteStream: (peerId, stream) => this.attachRemoteStream(peerId, stream),
         onRemoteVideo: (peerId, stream) => this.attachRemoteVideo(peerId, stream),
         onPeerRemoved: (peerId) => this.removePeer(peerId),
+        onState: (peerId, state) => {
+          const peer = this.peers.find((p) => p.peerId === peerId);
+          if (peer) peer.state = state;
+        },
         onError: (peerId, message) => {
           if (peerId === "") this.error = message;
         },
@@ -184,6 +190,7 @@ class VoiceStore {
       videoStream: null,
       level: 0,
       speaking: false,
+      state: "new",
     });
   }
 

@@ -79,7 +79,12 @@
       <div class="tile" class:speaking={peer.speaking}>
         <div class="avatar">
           {peer.username.slice(0, 1).toUpperCase()}
-          <span class="state" title="voice state">●</span>
+          <span
+            class="state"
+            class:ok={peer.state === "connected"}
+            class:bad={peer.state === "failed" || peer.state === "closed" || peer.state === "disconnected"}
+            title={`voice: ${peer.state}`}
+          >●</span>
         </div>
         <span class="label">{peer.username}</span>
         <div class="levelbar"><div style="width: {peer.level * 100}%"></div></div>
@@ -216,9 +221,15 @@
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #3ba55d;
+    background: #b9bbbe; /* connecting/new */
     color: transparent;
     font-size: 0;
+  }
+  .state.ok {
+    background: #3ba55d; /* connected */
+  }
+  .state.bad {
+    background: var(--danger); /* failed/closed/disconnected */
   }
   .label {
     font-size: 12px;

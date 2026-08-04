@@ -18,6 +18,8 @@ export interface MeshEvents {
   onRemoteVideo(peerId: string, stream: MediaStream): void;
   onPeerRemoved(peerId: string): void;
   onError(peerId: string, message: string): void;
+  /** ICE/connection state of a peer's RTCPeerConnection. */
+  onState(peerId: string, state: string): void;
 }
 
 interface PeerConnectionEntry {
@@ -177,6 +179,7 @@ export class VoiceMesh {
       }
     };
     pc.onconnectionstatechange = () => {
+      this.events.onState(peer.peerId, pc.connectionState);
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         this.events.onError(peer.peerId, `connection ${pc.connectionState}`);
       }
