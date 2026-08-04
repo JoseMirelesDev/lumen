@@ -16,7 +16,6 @@
   "license": "MIT",
   "dependencies": {
     "@lumen/protocol": "workspace:*",
-    "@sapphi-red/web-noise-suppressor": "^0.3.5",
     "@tauri-apps/api": "^2"
   },
   "devDependencies": {

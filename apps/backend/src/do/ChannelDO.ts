@@ -47,27 +47,9 @@ export class LumenChannelDO {
     const client = pair[0];
     const server = pair[1];
 
-    const peers = (await this.state.storage.get<PeerInfo[]>(PEERS_KEY)) ?? [];
-
-    if (peers.length >= MAX_PEERS) {
-      // Full: accept only so the client can receive the error frame, then close.
-      this.state.acceptWebSocket(server, [channelId, userId]);
-      server.send(
-        JSON.stringify({
-          type: "error",
-          code: "channel_full",
-          message: "channel is full (max 4 peers)",
-        } satisfies ServerMessage),
-      );
-      server.close(1013, "channel_full");
-      return new Response(null, { status: 101, webSocket: client });
-    }
-
     const peerId = crypto.randomUUID();
     this.state.acceptWebSocket(server, [channelId, userId]);
     server.serializeAttachment({ peerId, userId, joined: false } satisfies SocketAttachment);
-    peers.push({ peerId, userId });
-    await this.state.storage.put(PEERS_KEY, peers);
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -113,6 +95,13 @@ export class LumenChannelDO {
           peers = live;
           await this.state.storage.put(PEERS_KEY, peers);
         }
+        if (peers.length >= MAX_PEERS) {
+          this.sendError(ws, "channel_full", "channel is full (max 4 peers)");
+          ws.close(1013, "channel_full");
+          return;
+        }
+        peers.push({ peerId: att.peerId, userId: att.userId });
+        await this.state.storage.put(PEERS_KEY, peers);
         const others = peers.filter((p) => p.peerId !== att.peerId);
         ws.send(
           JSON.stringify({ type: "joined", peerId: att.peerId, peers: others } satisfies ServerMessage),

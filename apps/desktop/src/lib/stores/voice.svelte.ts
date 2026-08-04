@@ -1,20 +1,13 @@
 import type { Channel, PeerInfo } from "@lumen/protocol";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { auth } from "./auth.svelte";
 import { shell } from "./shell.svelte";
-import { ChannelSignaling } from "$lib/media/signaling";
-import { VoiceMesh } from "$lib/media/mesh";
-import { createMicPipeline, type MicPipeline } from "$lib/media/audio";
-import { LevelMeter } from "$lib/media/levels";
-import { startScreenCapture, type ScreenCapture } from "$lib/media/screenShare";
-import { createMeshScreenTransport, type ScreenShareTransport } from "$lib/media/screenTransport";
 
 export interface VoicePeer {
   peerId: string;
   userId: string;
   username: string;
-  stream: MediaStream | null;
-  /** Shared screen from this peer, if any. */
-  videoStream: MediaStream | null;
   level: number;
   speaking: boolean;
   /** RTCPeerConnection state: new|connecting|connected|disconnected|failed|closed. */
@@ -29,10 +22,28 @@ function withHysteresis(level: number, wasSpeaking: boolean): boolean {
   return level > SPEAK_ON || (wasSpeaking && level > SPEAK_OFF);
 }
 
+/** Read a string field from a Tauri IPC payload, validating it at the boundary. */
+function readStr(payload: unknown, key: string): string | null {
+  if (payload && typeof payload === "object" && key in payload) {
+    const v = (payload as Record<string, unknown>)[key];
+    return typeof v === "string" ? v : null;
+  }
+  return null;
+}
+
+/** Read a number field from a Tauri IPC payload, validating it at the boundary. */
+function readNum(payload: unknown, key: string): number | null {
+  if (payload && typeof payload === "object" && key in payload) {
+    const v = (payload as Record<string, unknown>)[key];
+    return typeof v === "number" ? v : null;
+  }
+  return null;
+}
+
 /**
- * The active voice call: mic pipeline (RNNoise), full-mesh transport, remote
- * peer audio, speaking indicators, mute/deafen. One call at a time, per
- * channel. All WebRTC state lives here — the UI is a pure view over it.
+ * The active voice call. All media lives in the native Rust client (cpal mic,
+ * opus, webrtc-rs); this store is a thin control/view layer over the Tauri
+ * commands and `voice://` events. One call at a time, per channel.
  */
 class VoiceStore {
   channelId = $state<string | null>(null);
@@ -43,24 +54,14 @@ class VoiceStore {
   localLevel = $state(0);
   localSpeaking = $state(false);
   error = $state<string | null>(null);
-  /** Screen share in progress: the captured stream, shown as a preview tile. */
-  sharing = $state<MediaStream | null>(null);
-
-  private mesh: VoiceMesh | null = null;
-  private signaling: ChannelSignaling | null = null;
-  private screenTransport: ScreenShareTransport | null = null;
-  private screenCapture: ScreenCapture | null = null;
-  private pipeline: MicPipeline | null = null;
-  private localMeter: LevelMeter | null = null;
-  private meters = new Map<string, LevelMeter>();
-  private remoteCtx: AudioContext | null = null;
-  private rafId = 0;
-  private currentServerId: string | null = null;
-  private usernameById = new Map<string, string>();
-  private memberRefresh: Promise<void> | null = null;
 
   /** Ring buffer of signaling/negotiation events, shown in the UI debug panel. */
   log = $state<{ t: string; msg: string }[]>([]);
+
+  private unlisteners: UnlistenFn[] = [];
+  private usernameById = new Map<string, string>();
+  private currentServerId: string | null = null;
+  private memberRefresh: Promise<void> | null = null;
 
   private pushLog(msg: string): void {
     this.log = [...this.log.slice(-29), { t: new Date().toLocaleTimeString("es-ES"), msg }];
@@ -86,56 +87,21 @@ class VoiceStore {
 
       const config = await auth.api.getRealtimeConfig();
       this.pushLog(`config: ${config.iceServers.map((s) => s.urls).join(",").slice(0, 120)}`);
-      this.pipeline = await createMicPipeline();
-      await this.pipeline.resume();
-      this.localMeter = new LevelMeter(this.pipeline.analyser);
-      this.pushLog("mic ok");
+      await this.subscribe();
 
-      this.signaling = new ChannelSignaling();
-      // If the signaling socket drops, the call is over — clean up state.
-      this.signaling.onClose = () => {
-        if (this.channelId === channel.id) {
-          this.error = "signaling disconnected";
-          this.pushLog("WS closed -> disconnected");
-          void this.leave();
-        }
-      };
-      this.mesh = new VoiceMesh(this.signaling, config.iceServers as RTCIceServer[], {
-        onPeerJoined: (peer) => {
-          this.pushLog(`peer-joined ${peer.userId.slice(0, 8)}`);
-          void this.addPeer(peer);
+      this.pushLog("invoke voice_join");
+      await invoke("voice_join", {
+        args: {
+          backendUrl: auth.backendUrl,
+          token: auth.token!,
+          channelId: channel.id,
+          userId: user.id,
+          iceServers: config.iceServers,
         },
-        onRemoteStream: (peerId, stream) => {
-          this.pushLog(`remote stream ${peerId.slice(0, 8)}`);
-          this.attachRemoteStream(peerId, stream);
-        },
-        onRemoteVideo: (peerId, stream) => {
-          this.pushLog(`remote video ${peerId.slice(0, 8)}`);
-          this.attachRemoteVideo(peerId, stream);
-        },
-        onPeerRemoved: (peerId) => {
-          this.pushLog(`peer-left ${peerId.slice(0, 8)}`);
-          this.removePeer(peerId);
-        },
-        onState: (peerId, state) => {
-          this.pushLog(`state ${peerId.slice(0, 8)} -> ${state}`);
-          const peer = this.peers.find((p) => p.peerId === peerId);
-          if (peer) peer.state = state;
-        },
-        onError: (peerId, message) => {
-          this.pushLog(`ERROR: ${message}`);
-          if (peerId === "") this.error = message;
-        },
-        onDebug: (msg) => this.pushLog(msg),
       });
-
-      await this.signaling.connect(auth.backendUrl, auth.token!, channel.id);
-      this.pushLog("ws connected");
-      await this.mesh.join(channel.id, user.id, this.pipeline.stream);
       this.pushLog("joined channel");
       this.channelId = channel.id;
       this.connected = true;
-      this.startLevelLoop();
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
       this.pushLog(`JOIN FAILED: ${err instanceof Error ? err.message : String(err)}`);
@@ -145,17 +111,13 @@ class VoiceStore {
 
   async leave(): Promise<void> {
     this.pushLog("leave");
-    this.stopLevelLoop();
-    await this.mesh?.leave();
-    this.mesh = null;
-    this.signaling = null;
-    await this.stopShare();
-    this.pipeline?.dispose();
-    this.pipeline = null;
-    void this.remoteCtx?.close();
-    this.remoteCtx = null;
-    this.localMeter = null;
-    this.meters.clear();
+    try {
+      await invoke("voice_leave");
+    } catch {
+      // nothing to leave — fine
+    }
+    for (const unlisten of this.unlisteners) unlisten();
+    this.unlisteners = [];
     this.currentServerId = null;
     this.memberRefresh = null;
     this.channelId = null;
@@ -165,45 +127,75 @@ class VoiceStore {
     this.localSpeaking = false;
   }
 
-  async toggleShare(): Promise<void> {
-    if (this.sharing) {
-      await this.stopShare();
-      return;
-    }
-    if (!this.mesh) return;
-    try {
-      const capture = await startScreenCapture();
-      const transport = createMeshScreenTransport(this.mesh);
-      await transport.start(capture.stream);
-      this.screenTransport = transport;
-      this.sharing = capture.stream;
-      // Releasing the capture stops the local capture — keep a handle.
-      this.screenCapture = capture;
-    } catch (err) {
-      this.error = err instanceof Error ? err.message : String(err);
-    }
-  }
-
-  async stopShare(): Promise<void> {
-    await this.screenTransport?.stop();
-    this.screenTransport = null;
-    this.screenCapture?.stop();
-    this.screenCapture = null;
-    this.sharing = null;
-  }
-
   toggleMute(): void {
     this.muted = !this.muted;
-    this.applyEnabled();
+    void invoke("voice_set_muted", { muted: this.muted });
   }
 
   toggleDeafen(): void {
     this.deafened = !this.deafened;
-    this.applyEnabled();
+    void invoke("voice_set_deafened", { deafened: this.deafened });
   }
 
-  private applyEnabled(): void {
-    this.pipeline?.setEnabled(!this.muted && !this.deafened);
+  /** Wire the `voice://` event stream to store state (idempotent). */
+  private async subscribe(): Promise<void> {
+    if (this.unlisteners.length > 0) return;
+    this.unlisteners = [
+      await listen("voice://peer-joined", (e) => {
+        const peerId = readStr(e.payload, "peerId");
+        const userId = readStr(e.payload, "userId");
+        if (!peerId || !userId) return;
+        this.pushLog(`peer-joined ${userId.slice(0, 8)}`);
+        void this.addPeer({ peerId, userId } as PeerInfo);
+      }),
+      await listen("voice://peer-left", (e) => {
+        const peerId = readStr(e.payload, "peerId");
+        if (!peerId) return;
+        this.pushLog(`peer-left ${peerId.slice(0, 8)}`);
+        this.removePeer(peerId);
+      }),
+      await listen("voice://state", (e) => {
+        const peerId = readStr(e.payload, "peerId");
+        const state = readStr(e.payload, "state");
+        if (!peerId || !state) return;
+        this.pushLog(`state ${peerId.slice(0, 8)} -> ${state}`);
+        const peer = this.peers.find((p) => p.peerId === peerId);
+        if (peer) peer.state = state;
+      }),
+      await listen("voice://levels", (e) => {
+        const local = readNum(e.payload, "local");
+        if (local === null) return;
+        const rawPeers = e.payload && typeof e.payload === "object" && "peers" in e.payload
+          ? (e.payload as Record<string, unknown>).peers
+          : null;
+        const peers = Array.isArray(rawPeers) ? rawPeers : [];
+        this.localLevel = local;
+        this.localSpeaking = withHysteresis(local, this.localSpeaking);
+        for (const p of peers) {
+          const peerId = readStr(p, "peerId");
+          const level = readNum(p, "level");
+          if (!peerId || level === null) continue;
+          const peer = this.peers.find((x) => x.peerId === peerId);
+          if (!peer) continue;
+          peer.level = level;
+          peer.speaking = withHysteresis(level, peer.speaking);
+        }
+      }),
+      await listen("voice://error", (e) => {
+        const code = readStr(e.payload, "code");
+        const message = readStr(e.payload, "message") ?? String(e.payload);
+        this.pushLog(`ERROR: ${code ? `${code} ` : ""}${message}`);
+        this.error = message;
+      }),
+      await listen("voice://debug", (e) => {
+        const msg = readStr(e.payload, "message") ?? String(e.payload);
+        this.pushLog(msg);
+      }),
+      await listen("voice://signaling", (e) => {
+        const state = readStr(e.payload, "state") ?? "";
+        this.pushLog(`signaling ${state}`);
+      }),
+    ];
   }
 
   private async addPeer(peer: PeerInfo): Promise<void> {
@@ -215,12 +207,15 @@ class VoiceStore {
       peerId: peer.peerId,
       userId: peer.userId,
       username,
-      stream: null,
-      videoStream: null,
       level: 0,
       speaking: false,
       state: "new",
     });
+  }
+
+  private removePeer(peerId: string): void {
+    const idx = this.peers.findIndex((p) => p.peerId === peerId);
+    if (idx !== -1) this.peers.splice(idx, 1);
   }
 
   /** Members snapshot may predate a peer joining the guild — refetch once. */
@@ -240,60 +235,6 @@ class VoiceStore {
     } catch {
       // keep whatever we had
     }
-  }
-
-  private attachRemoteStream(peerId: string, stream: MediaStream): void {
-    const peer = this.peers.find((p) => p.peerId === peerId);
-    if (!peer) return;
-    peer.stream = stream;
-    // Created in ontrack — outside any user gesture, so it starts suspended;
-    // resume it or the analyser never receives audio.
-    this.remoteCtx ??= new AudioContext();
-    if (this.remoteCtx.state !== "running") void this.remoteCtx.resume();
-    const source = this.remoteCtx.createMediaStreamSource(stream);
-    const analyser = this.remoteCtx.createAnalyser();
-    analyser.fftSize = 1024;
-    source.connect(analyser);
-    this.meters.set(peerId, new LevelMeter(analyser));
-  }
-
-  private attachRemoteVideo(peerId: string, stream: MediaStream): void {
-    const peer = this.peers.find((p) => p.peerId === peerId);
-    if (peer) peer.videoStream = stream;
-  }
-
-  private removePeer(peerId: string): void {
-    this.meters.delete(peerId);
-    const idx = this.peers.findIndex((p) => p.peerId === peerId);
-    if (idx !== -1) this.peers.splice(idx, 1);
-  }
-
-  private startLevelLoop(): void {
-    // rAF for scheduling (pauses when the tab is hidden) but only computes at
-    // ~10 Hz — the level bars don't need 60 fps and each pass reads N analysers.
-    let last = 0;
-    const tick = (now: number) => {
-      if (!this.connected) return;
-      if (now - last >= 100) {
-        last = now;
-        const local = this.localMeter?.level() ?? 0;
-        this.localLevel = local;
-        this.localSpeaking = withHysteresis(local, this.localSpeaking);
-        for (const peer of this.peers) {
-          const meter = this.meters.get(peer.peerId);
-          if (!meter) continue;
-          const level = meter.level();
-          peer.level = level;
-          peer.speaking = withHysteresis(level, peer.speaking);
-        }
-      }
-      this.rafId = requestAnimationFrame(tick);
-    };
-    this.rafId = requestAnimationFrame(tick);
-  }
-
-  private stopLevelLoop(): void {
-    cancelAnimationFrame(this.rafId);
   }
 }
 

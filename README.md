@@ -1,12 +1,12 @@
 # Lumen
 
 Ultralight Discord-like desktop app for groups of up to 4 people per voice channel.
-Voice + screen share run P2P (WebRTC mesh) over Cloudflare's free tier; the
+Voice runs P2P (WebRTC mesh) over Cloudflare's free tier; the
 Cloudflare Worker + Durable Objects handle signaling only.
 
 - **Desktop**: Tauri 2 (Rust) + Svelte 5 (TypeScript) on the OS-native WebView
 - **Signaling**: Cloudflare Workers REST + Durable Objects (WebSocket Hibernation) + D1
-- **Media**: browser WebRTC inside the WebView — mesh up to 3 peers, RNNoise noise suppression
+- **Media**: native voice in Rust (cpal ↔ OPUS ↔ webrtc-rs 0.20), full-mesh P2P audio to up to 3 peers over the WebSocket relay; screen share deferred (video track seam left open in the client)
 - **NAT**: `stun.cloudflare.com` primary; Cloudflare Realtime TURN fallback
 
 ## Repo layout
