@@ -21,7 +21,9 @@ export class ChannelSignaling {
     this.ws = ws;
 
     return new Promise((resolve, reject) => {
+      let opened = false;
       ws.onopen = () => {
+        opened = true;
         // Flush anything queued before the socket opened.
         while (this.queue.length > 0) ws.send(JSON.stringify(this.queue.shift()));
         resolve();
@@ -39,6 +41,11 @@ export class ChannelSignaling {
         this.onMessage?.(msg);
       };
       ws.onclose = (event) => {
+        if (!opened) {
+          // The server refused/closed the upgrade — surface it instead of
+          // leaving join() hanging on a promise that never settles.
+          reject(new Error(`signaling closed before open (${event.code}${event.reason ? `: ${event.reason}` : ""})`));
+        }
         this.onClose?.(event.code, event.reason);
       };
     });

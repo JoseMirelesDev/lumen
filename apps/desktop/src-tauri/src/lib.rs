@@ -29,6 +29,10 @@ fn enable_media_permissions(app: &tauri::App) {
                 // this, `RTCPeerConnection` is undefined and mesh voice dies
                 // with a ReferenceError the moment a second peer joins.
                 settings.set_enable_webrtc(true);
+                // Remote peers join after the user's click, so their <audio
+                // autoplay> happens outside a user gesture — WebKitGTK would
+                // mute it. Voice chat needs playback without a gesture.
+                settings.set_media_playback_requires_user_gesture(false);
             }
             inner.connect_permission_request(|_webview, request| {
                 request.allow();
