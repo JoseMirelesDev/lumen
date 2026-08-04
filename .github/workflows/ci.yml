@@ -79,6 +79,12 @@ jobs:
         run: pnpm --filter @lumen/desktop tauri build
         env:
           CI: "false"
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumen-windows
+          path: apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
 
   desktop-macos:
     runs-on: macos-latest
