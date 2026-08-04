@@ -28,6 +28,9 @@ interface PeerConnectionEntry {
   peerId: string;
   userId: string;
   pc: RTCPeerConnection;
+  /** Candidates can arrive while setRemoteDescription() is still pending. */
+  pendingRemoteCandidates: RTCIceCandidateInit[];
+  applyingRemoteCandidates: boolean;
 }
 
 export class VoiceMesh {
@@ -114,23 +117,32 @@ export class VoiceMesh {
       case "answer": {
         const entry = this.peers.get(msg.from);
         this.events.onDebug(`answer from ${msg.from.slice(0, 8)} (pc: ${entry ? "yes" : "NO"})`);
-        if (!entry || !entry.pc.remoteDescription) return;
-        void entry.pc
-          .setRemoteDescription({ type: "answer", sdp: msg.sdp })
-          .catch(() => this.events.onError(entry.peerId, "setRemoteDescription failed"));
+        // Guard against applying an answer with no pending offer (glare/duplicate),
+        // not against `remoteDescription`: the offerer's remoteDescription is null
+        // until this very answer arrives. Dropping it leaves the connection in
+        // "have-local-offer" forever — silent, no ICE, no errors.
+        if (!entry || entry.pc.signalingState !== "have-local-offer") return;
+        void this.acceptAnswer(entry, msg.sdp).catch(() =>
+          this.events.onError(entry.peerId, "setRemoteDescription failed"),
+        );
         break;
       }
       case "ice-candidate": {
         const entry = this.peers.get(msg.from);
-        if (!entry) return;
-        this.events.onDebug(`ice-candidate from ${msg.from.slice(0, 8)}`);
-        void entry.pc
-          .addIceCandidate(msg.candidate as RTCIceCandidateInit)
-          .catch(() => this.events.onError(entry.peerId, "bad ice candidate"));
+        if (!entry) {
+          this.events.onError(msg.from, "ice candidate from unknown peer");
+          return;
+        }
+        this.enqueueRemoteCandidate(entry, msg.candidate as RTCIceCandidateInit);
         break;
       }
       case "peer-left": {
         this.removePeer(msg.peerId);
+        break;
+      }
+      case "error": {
+        this.events.onDebug(`signaling error ${msg.code}: ${msg.message}`);
+        this.events.onError("", `signaling ${msg.code}: ${msg.message}`);
         break;
       }
       default:
@@ -160,7 +172,13 @@ export class VoiceMesh {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     // H.264 first in the codec list from the start, so offers/answers prefer it.
     preferH264(pc);
-    const entry: PeerConnectionEntry = { peerId: peer.peerId, userId: peer.userId, pc };
+    const entry: PeerConnectionEntry = {
+      peerId: peer.peerId,
+      userId: peer.userId,
+      pc,
+      pendingRemoteCandidates: [],
+      applyingRemoteCandidates: false,
+    };
     this.peers.set(peer.peerId, entry);
     this.events.onPeerJoined(peer);
 
@@ -175,6 +193,9 @@ export class VoiceMesh {
           candidate: event.candidate.toJSON(),
         });
       }
+    };
+    pc.onicecandidateerror = (event) => {
+      this.events.onDebug(`ice error ${peer.peerId.slice(0, 8)}: ${event.errorText}`);
     };
     pc.ontrack = (event) => {
       const stream = event.streams[0];
@@ -191,6 +212,9 @@ export class VoiceMesh {
         this.events.onError(peer.peerId, `connection ${pc.connectionState}`);
       }
     };
+    pc.oniceconnectionstatechange = () => {
+      this.events.onDebug(`ice ${peer.peerId.slice(0, 8)} -> ${pc.iceConnectionState}`);
+    };
     return entry;
   }
 
@@ -202,9 +226,44 @@ export class VoiceMesh {
 
   private async acceptOffer(entry: PeerConnectionEntry, sdp: string): Promise<void> {
     await entry.pc.setRemoteDescription({ type: "offer", sdp });
+    await this.flushRemoteCandidates(entry);
     const answer = await entry.pc.createAnswer();
     await entry.pc.setLocalDescription(answer);
     this.signaling.send({ type: "answer", to: entry.peerId, sdp: answer.sdp! });
+  }
+
+  private async acceptAnswer(entry: PeerConnectionEntry, sdp: string): Promise<void> {
+    await entry.pc.setRemoteDescription({ type: "answer", sdp });
+    await this.flushRemoteCandidates(entry);
+  }
+
+  /**
+   * SDP and ICE candidates use independent asynchronous browser operations.
+   * Queue every received candidate until its remote description is installed;
+   * calling addIceCandidate earlier rejects with InvalidStateError and leaves
+   * ICE permanently unable to select a pair.
+   */
+  private enqueueRemoteCandidate(entry: PeerConnectionEntry, candidate: RTCIceCandidateInit): void {
+    entry.pendingRemoteCandidates.push(candidate);
+    this.events.onDebug(`ice-candidate from ${entry.peerId.slice(0, 8)} queued`);
+    void this.flushRemoteCandidates(entry);
+  }
+
+  private async flushRemoteCandidates(entry: PeerConnectionEntry): Promise<void> {
+    if (!entry.pc.remoteDescription || entry.applyingRemoteCandidates) return;
+    entry.applyingRemoteCandidates = true;
+    try {
+      while (entry.pendingRemoteCandidates.length > 0) {
+        const candidate = entry.pendingRemoteCandidates.shift()!;
+        try {
+          await entry.pc.addIceCandidate(candidate);
+        } catch {
+          this.events.onError(entry.peerId, "bad ice candidate");
+        }
+      }
+    } finally {
+      entry.applyingRemoteCandidates = false;
+    }
   }
 
   private removePeer(peerId: string): void {
