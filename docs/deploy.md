@@ -56,13 +56,25 @@ After a few hours of idle + light use, the Cloudflare dashboard should show:
 
 - **DO duration ≈ 0 GB-s** outside active calls. The DO calls `ctx.acceptWebSocket()`
   and hibernate-based handlers only (`webSocketMessage`, `webSocketClose`) — no
-  timers, no storage polling — so an empty channel costs ~nothing. Verified via
-  GraphQL: `durableObjectsInvocationsAdaptiveGroups` shows entries only in
-  minutes with actual traffic; a live-but-idle socket (hibernated) adds zero
-  `wallTime`.
+  timers, no storage polling — so an empty channel costs ~nothing.
 - **Worker requests** well under 100k/day; **DO requests** under 100k/day
   (each WebSocket message counts 1/20 of a request on Hibernation APIs).
 - **D1 reads** under 5M/day, writes under 100k/day.
+
+Measured on 2026-08-04 against the deployed worker (account
+`ed9536d9e1d27a1a66e72661621c2e90`, worker `lumen-backend`):
+
+- A live WebSocket connected to a fresh channel's DO for **14+ minutes with no
+  traffic**: `durableObjectsInvocationsAdaptiveGroups` shows the initial join
+  only (3 requests, ~1 ms) and **zero entries for every idle minute** — a
+  hibernated, connected DO accrues nothing. Cloudflare's pricing docs confirm:
+  "Durable Objects that are idle and eligible for hibernation are not billed
+  for duration" (hibernation kicks in after 10 s of inactivity when there are
+  no timers, no in-flight fetch, no standard-API WebSocket, no outbound
+  connections — all true for LumenChannelDO).
+- The GraphQL `wallTime` field on the invocations dataset includes a
+  connection's full lifetime, not just active execution, so it overstates
+  what is billed; the billed duration is active-only.
 
 ## 1.5 Known production-only constraints
 
