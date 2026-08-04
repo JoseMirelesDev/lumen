@@ -50,6 +50,43 @@ BACKEND_URL=https://lumen-backend.<your-subdomain>.workers.dev pnpm smoke
 The smoke suite covers auth, servers/channels/messages, friends, DMs, and a
 two-WebSocket offer/answer exchange through the DO — 49 steps.
 
+### 1.4 TURN relay (cross-NAT voice)
+
+STUN alone cannot connect peers behind a **symmetric NAT** (common on mobile
+and some home ISPs). Check before assuming: `node scripts/stun-probe.mjs` on
+each side (or `scripts/stun-test.html` opened in a browser — no install). If
+either side shows *SYMMETRIC*, the P2P path can never be established and TURN
+is required.
+
+One-time setup (Cloudflare Realtime, free tier):
+
+1. Dashboard → **Realtime** → **Create key** → name it (e.g. `lumen`).
+2. Upload the two secrets and redeploy:
+
+```bash
+cd apps/backend
+echo "<key-id>"   | wrangler secret put REALTIME_TURN_KEY_ID
+echo "<api-token>"| wrangler secret put REALTIME_API_TOKEN
+wrangler deploy
+```
+
+3. Verify:
+
+```bash
+curl -s <workers-url>/api/realtime/config -H "Authorization: Bearer <jwt>"
+# → iceServers should list turn:turn.cloudflare.com:3478 (udp+tcp) and
+#   turns:…:5349 (tls) with a username/credential pair
+```
+
+Notes:
+
+- The credentials API returns `iceServers` as a **single object**, not an
+  array — `realtime.ts` normalizes it into the protocol's array shape. If you
+  see STUN-only config after deploying, either this normalization broke or the
+  workers.dev edge cache is still serving the pre-TURN response (see §1.5).
+- Credentials are cached in the isolate for 15 min (module-level, fine for a
+  single isolate); the client refreshes on each call join.
+
 ### 1. Free-tier budget checks (Fase 1 / Fase 5 DoDs)
 
 After a few hours of idle + light use, the Cloudflare dashboard should show:

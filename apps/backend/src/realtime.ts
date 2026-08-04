@@ -33,8 +33,19 @@ export async function getRealtimeConfig(env: Env): Promise<RealtimeConfig> {
       },
     );
     if (res.ok) {
-      const config = (await res.json()) as RealtimeConfig;
-      if (Array.isArray(config.iceServers) && config.iceServers.length > 0) {
+      // Cloudflare's credentials API returns `iceServers` as a single object
+      // ({urls, username, credential}) — our protocol wants an array of
+      // RTCIceServer-shaped entries. Normalize, or we'd fall back to STUN.
+      const raw = (await res.json()) as {
+        iceServers?: { urls?: string[]; username?: string; credential?: string };
+      };
+      const ice = raw.iceServers;
+      if (ice && Array.isArray(ice.urls) && ice.urls.length > 0) {
+        const config: RealtimeConfig = {
+          iceServers: [
+            { urls: ice.urls, username: ice.username, credential: ice.credential },
+          ],
+        };
         cache = { config, expiresAt: Date.now() + CACHE_TTL_MS };
         return config;
       }
