@@ -32,9 +32,9 @@ export interface ServerRow {
 
 export interface ChannelRow {
   id: string;
-  server_id: string;
+  server_id: string | null;
   name: string;
-  kind: "text" | "voice";
+  kind: "text" | "voice" | "dm";
   created_at: string;
 }
 
@@ -70,7 +70,7 @@ export function rowToServer(r: ServerRow): Server {
 }
 
 export function rowToChannel(r: ChannelRow): Channel {
-  return { id: r.id, serverId: r.server_id, name: r.name, kind: r.kind, createdAt: r.created_at };
+  return { id: r.id, serverId: r.server_id ?? "", name: r.name, kind: r.kind, createdAt: r.created_at };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,9 +206,10 @@ export async function listServersForUser(db: D1Database, userId: string): Promis
     .all();
   const channelsByServer = new Map<string, Channel[]>();
   for (const row of channelResults as unknown as ChannelRow[]) {
-    const list = channelsByServer.get(row.server_id) ?? [];
+    const serverId = row.server_id ?? "";
+    const list = channelsByServer.get(serverId) ?? [];
     list.push(rowToChannel(row));
-    channelsByServer.set(row.server_id, list);
+    channelsByServer.set(serverId, list);
   }
   return servers.map((s) => ({ server: rowToServer(s), channels: channelsByServer.get(s.id) ?? [] }));
 }
@@ -232,6 +233,66 @@ export async function createChannel(
 
 export async function getChannel(db: D1Database, id: string): Promise<ChannelRow | null> {
   return (await db.prepare("SELECT * FROM channels WHERE id = ?").bind(id).first()) as ChannelRow | null;
+}
+
+// ---------------------------------------------------------------------------
+// DMs (1:1 channels of kind 'dm')
+// ---------------------------------------------------------------------------
+
+/** Find the existing 1:1 DM channel between two users, if any. */
+export async function getDmChannelBetween(
+  db: D1Database,
+  userA: string,
+  userB: string,
+): Promise<ChannelRow | null> {
+  const rows = await db
+    .prepare(
+      `SELECT c.* FROM channels c
+       JOIN dm_members a ON a.channel_id = c.id AND a.user_id = ?
+       JOIN dm_members b ON b.channel_id = c.id AND b.user_id = ?
+       WHERE c.kind = 'dm' LIMIT 1`,
+    )
+    .bind(userA, userB)
+    .all<ChannelRow>();
+  return rows.results[0] ?? null;
+}
+
+export async function createDmChannel(db: D1Database, id: string, userA: string, userB: string): Promise<ChannelRow> {
+  await db
+    .prepare("INSERT INTO channels (id, server_id, name, kind) VALUES (?, NULL, ?, 'dm')")
+    .bind(id, "dm")
+    .run();
+  await db
+    .prepare("INSERT INTO dm_members (channel_id, user_id) VALUES (?, ?), (?, ?)")
+    .bind(id, userA, id, userB)
+    .run();
+  return { id, server_id: null, name: "dm", kind: "dm", created_at: new Date().toISOString() };
+}
+
+/** DM channels of a user, newest first, with the other participant's name. */
+export async function listDmChannelsForUser(
+  db: D1Database,
+  userId: string,
+): Promise<{ channel: ChannelRow; otherUsername: string }[]> {
+  const rows = await db
+    .prepare(
+      `SELECT c.*, u.username AS other_username FROM channels c
+       JOIN dm_members m ON m.channel_id = c.id AND m.user_id = ?
+       JOIN dm_members o ON o.channel_id = c.id AND o.user_id != ?
+       JOIN users u ON u.id = o.user_id
+       WHERE c.kind = 'dm' ORDER BY c.created_at DESC`,
+    )
+    .bind(userId, userId)
+    .all<ChannelRow & { other_username: string }>();
+  return rows.results.map((r) => ({ channel: r, otherUsername: r.other_username }));
+}
+
+export async function isDmMember(db: D1Database, channelId: string, userId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 FROM dm_members WHERE channel_id = ? AND user_id = ?")
+    .bind(channelId, userId)
+    .first();
+  return row !== null;
 }
 
 // ---------------------------------------------------------------------------

@@ -237,6 +237,39 @@ async function main() {
     step("non-member WS upgrade -> 403", res.status === 403, `status=${res.status}`);
 
     // ------------------------------------------------------------------
+    // Part 1b — DMs (friendship → create-or-get → message)
+    // ------------------------------------------------------------------
+    const dmUser = mk("dm_user");
+    res = await api("POST", "/api/auth/register", { body: dmUser });
+    step("register dm_user", res.status === 201, `status=${res.status}`);
+    const tokenD = res.data.token;
+    const dmUserId = res.data.user.id;
+
+    res = await api("POST", "/api/friends/requests", { token: tokenA, body: { username: dmUser.username } });
+    step("alice sends friend request to dm_user", res.status === 201, `status=${res.status}`);
+    res = await api("GET", "/api/friends", { token: tokenD });
+    const pendingReq = res.data.pending?.find((p) => p.id);
+    step("dm_user sees pending request", res.status === 200 && (res.data.pending?.length ?? 0) === 1, `status=${res.status}`);
+    res = await api("POST", `/api/friends/requests/${pendingReq.id}/accept`, { token: tokenD });
+    step("dm_user accepts request", res.status === 200, `status=${res.status}`);
+    res = await api("GET", "/api/friends", { token: tokenA });
+    step("alice sees dm_user as friend", res.status === 200 && res.data.friends?.some((f) => f.user?.id === dmUserId), `status=${res.status}`);
+
+    res = await api("POST", "/api/dms", { token: tokenD, body: { username: alice.username } });
+    step("create DM channel -> 201", res.status === 201 && res.data.channel?.kind === "dm", `status=${res.status}`);
+    const dmChannelId = res.data.channel.id;
+    res = await api("POST", "/api/dms", { token: tokenD, body: { username: alice.username } });
+    step("DM channel idempotent (create-or-get)", res.status === 200 && res.data.channel.id === dmChannelId, `status=${res.status}`);
+    res = await api("POST", `/api/channels/${dmChannelId}/messages`, { token: tokenD, body: { content: "dm hi" } });
+    step("post message in DM -> 201", res.status === 201, `status=${res.status}`);
+    res = await api("GET", `/api/channels/${dmChannelId}/messages`, { token: tokenD });
+    step("dm_user reads DM messages", res.status === 200 && Array.isArray(res.data) && res.data.length === 1, `status=${res.status}`);
+    res = await api("GET", `/api/channels/${dmChannelId}/messages`, { token: tokenG });
+    step("non-friend cannot read DM -> 403", res.status === 403, `status=${res.status}`);
+    res = await api("POST", "/api/dms", { token: tokenD, body: { username: "nobody_xyz" } });
+    step("DM to unknown user -> 404", res.status === 404, `status=${res.status}`);
+
+    // ------------------------------------------------------------------
     // Part 2 — WebSocket signaling (mesh bootstrap + relays)
     // ------------------------------------------------------------------
     const wsA = await openWs(`/api/ws/${voiceChannel.id}`, tokenA);

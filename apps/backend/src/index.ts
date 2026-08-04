@@ -42,6 +42,19 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
+/** Channel access: server channels require membership, DM channels require
+ *  being one of the two participants. */
+async function canAccessChannel(
+  dbc: D1Database,
+  channel: { id: string; kind: string; server_id: string | null },
+  userId: string,
+): Promise<boolean> {
+  if (channel.kind === "dm") {
+    return await db.isDmMember(dbc, channel.id, userId);
+  }
+  return await db.isMember(dbc, channel.server_id!, userId);
+}
+
 async function requireUser(request: Request, env: Env): Promise<User> {
   const header = request.headers.get("authorization");
   // Browser WebSocket cannot set the Authorization header, so the WS upgrade
@@ -190,12 +203,37 @@ router.post("/api/servers/:id/channels", true, async (ctx, params) => {
   return json({ channel }, 201);
 });
 
+// DMs (1:1 channels of kind 'dm' — text + voice in one channel)
+router.post("/api/dms", true, async (ctx) => {
+  const dbc = ctx.env.LUMEN_D1;
+  const body = await readJson(ctx.request);
+  const username = typeof body.username === "string" ? body.username.trim() : "";
+  if (!validateUsername(username)) {
+    throw new ApiError(422, "invalid_username", "username must be 3-32 chars [A-Za-z0-9_]");
+  }
+  const target = await db.getUserByUsername(dbc, username);
+  if (!target) throw new ApiError(404, "user_not_found");
+  if (target.id === ctx.user.id) throw new ApiError(422, "cannot_dm_self");
+  if (!(await db.friendshipExists(dbc, ctx.user.id, target.id))) {
+    throw new ApiError(403, "not_friends", "you can only DM friends");
+  }
+  const existing = await db.getDmChannelBetween(dbc, ctx.user.id, target.id);
+  const channel =
+    existing ?? (await db.createDmChannel(dbc, crypto.randomUUID(), ctx.user.id, target.id));
+  return json({ channel: db.rowToChannel(channel), otherUsername: target.username }, existing ? 200 : 201);
+});
+
+router.get("/api/dms", true, async (ctx) => {
+  const rows = await db.listDmChannelsForUser(ctx.env.LUMEN_D1, ctx.user.id);
+  return json(rows.map((r) => ({ channel: db.rowToChannel(r.channel), otherUsername: r.otherUsername })));
+});
+
 // messages
 router.post("/api/channels/:id/messages", true, async (ctx, params) => {
   const dbc = ctx.env.LUMEN_D1;
   const channel = await db.getChannel(dbc, params.id!);
   if (!channel) throw new ApiError(404, "not_found");
-  if (!(await db.isMember(dbc, channel.server_id, ctx.user.id))) {
+  if (!(await canAccessChannel(dbc, channel, ctx.user.id))) {
     throw new ApiError(403, "forbidden");
   }
   const body = await readJson(ctx.request);
@@ -228,7 +266,7 @@ router.get("/api/channels/:id/messages", true, async (ctx, params) => {
   const dbc = ctx.env.LUMEN_D1;
   const channel = await db.getChannel(dbc, params.id!);
   if (!channel) throw new ApiError(404, "not_found");
-  if (!(await db.isMember(dbc, channel.server_id, ctx.user.id))) {
+  if (!(await canAccessChannel(dbc, channel, ctx.user.id))) {
     throw new ApiError(403, "forbidden");
   }
   const raw = ctx.url.searchParams.get("limit");
@@ -301,7 +339,7 @@ router.get("/api/ws/:channelId", true, async (ctx, params) => {
   const dbc = ctx.env.LUMEN_D1;
   const channel = await db.getChannel(dbc, params.channelId!);
   if (!channel) throw new ApiError(404, "not_found");
-  if (!(await db.isMember(dbc, channel.server_id, ctx.user.id))) {
+  if (!(await canAccessChannel(dbc, channel, ctx.user.id))) {
     throw new ApiError(403, "forbidden");
   }
   const url = new URL(ctx.request.url);

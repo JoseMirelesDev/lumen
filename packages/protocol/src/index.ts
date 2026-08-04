@@ -58,9 +58,10 @@ export interface Server {
 
 export interface Channel {
   id: string;
+  /** Empty for DM channels. */
   serverId: string;
   name: string;
-  kind: "text" | "voice";
+  kind: "text" | "voice" | "dm";
   createdAt: string;
 }
 
