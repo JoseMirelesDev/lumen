@@ -11,7 +11,7 @@ enabled = true
 [[d1_databases]]
 binding = "LUMEN_D1"
 database_name = "lumen-d1"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "15f21dc8-eada-45d9-b9df-2284c26554cf"
 migrations_dir = "migrations"
 
 [durable_objects]
