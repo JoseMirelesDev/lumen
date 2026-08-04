@@ -20,6 +20,8 @@ export interface MeshEvents {
   onError(peerId: string, message: string): void;
   /** ICE/connection state of a peer's RTCPeerConnection. */
   onState(peerId: string, state: string): void;
+  /** Signaling/negotiation trace for the in-app debug log. */
+  onDebug(msg: string): void;
 }
 
 interface PeerConnectionEntry {
@@ -85,11 +87,13 @@ export class VoiceMesh {
     switch (msg.type) {
       case "joined": {
         // We joined after these peers → they will offer us; just create the PCs.
+        this.events.onDebug(`joined: ${msg.peers.length} existing peer(s)`);
         for (const peer of msg.peers) this.setupPeer(peer);
         break;
       }
       case "peer-joined": {
         // They joined after us → we initiate.
+        this.events.onDebug(`peer-joined ${msg.peer.userId.slice(0, 8)}`);
         const entry = this.setupPeer(msg.peer);
         if (!entry) break;
         void this.sendOffer(entry).catch(() => this.events.onError(entry.peerId, "offer failed"));
@@ -97,6 +101,7 @@ export class VoiceMesh {
       }
       case "offer": {
         const entry = this.peers.get(msg.from);
+        this.events.onDebug(`offer from ${msg.from.slice(0, 8)} (pc: ${entry ? "yes" : "NO"})`);
         if (!entry) {
           this.events.onError(msg.from, "offer from unknown peer");
           return;
@@ -108,6 +113,7 @@ export class VoiceMesh {
       }
       case "answer": {
         const entry = this.peers.get(msg.from);
+        this.events.onDebug(`answer from ${msg.from.slice(0, 8)} (pc: ${entry ? "yes" : "NO"})`);
         if (!entry || !entry.pc.remoteDescription) return;
         void entry.pc
           .setRemoteDescription({ type: "answer", sdp: msg.sdp })
@@ -117,6 +123,7 @@ export class VoiceMesh {
       case "ice-candidate": {
         const entry = this.peers.get(msg.from);
         if (!entry) return;
+        this.events.onDebug(`ice-candidate from ${msg.from.slice(0, 8)}`);
         void entry.pc
           .addIceCandidate(msg.candidate as RTCIceCandidateInit)
           .catch(() => this.events.onError(entry.peerId, "bad ice candidate"));

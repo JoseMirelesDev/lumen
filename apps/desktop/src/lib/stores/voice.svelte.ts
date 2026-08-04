@@ -59,6 +59,13 @@ class VoiceStore {
   private usernameById = new Map<string, string>();
   private memberRefresh: Promise<void> | null = null;
 
+  /** Ring buffer of signaling/negotiation events, shown in the UI debug panel. */
+  log = $state<{ t: string; msg: string }[]>([]);
+
+  private pushLog(msg: string): void {
+    this.log = [...this.log.slice(-29), { t: new Date().toLocaleTimeString("es-ES"), msg }];
+  }
+
   async join(channel: Channel): Promise<void> {
     if (this.channelId === channel.id && this.connected) return;
     await this.leave();
@@ -78,44 +85,66 @@ class VoiceStore {
       }
 
       const config = await auth.api.getRealtimeConfig();
+      this.pushLog(`config: ${config.iceServers.map((s) => s.urls).join(",").slice(0, 120)}`);
       this.pipeline = await createMicPipeline();
       await this.pipeline.resume();
       this.localMeter = new LevelMeter(this.pipeline.analyser);
+      this.pushLog("mic ok");
 
       this.signaling = new ChannelSignaling();
       // If the signaling socket drops, the call is over — clean up state.
       this.signaling.onClose = () => {
         if (this.channelId === channel.id) {
           this.error = "signaling disconnected";
+          this.pushLog("WS closed -> disconnected");
           void this.leave();
         }
       };
       this.mesh = new VoiceMesh(this.signaling, config.iceServers as RTCIceServer[], {
-        onPeerJoined: (peer) => void this.addPeer(peer),
-        onRemoteStream: (peerId, stream) => this.attachRemoteStream(peerId, stream),
-        onRemoteVideo: (peerId, stream) => this.attachRemoteVideo(peerId, stream),
-        onPeerRemoved: (peerId) => this.removePeer(peerId),
+        onPeerJoined: (peer) => {
+          this.pushLog(`peer-joined ${peer.userId.slice(0, 8)}`);
+          void this.addPeer(peer);
+        },
+        onRemoteStream: (peerId, stream) => {
+          this.pushLog(`remote stream ${peerId.slice(0, 8)}`);
+          this.attachRemoteStream(peerId, stream);
+        },
+        onRemoteVideo: (peerId, stream) => {
+          this.pushLog(`remote video ${peerId.slice(0, 8)}`);
+          this.attachRemoteVideo(peerId, stream);
+        },
+        onPeerRemoved: (peerId) => {
+          this.pushLog(`peer-left ${peerId.slice(0, 8)}`);
+          this.removePeer(peerId);
+        },
         onState: (peerId, state) => {
+          this.pushLog(`state ${peerId.slice(0, 8)} -> ${state}`);
           const peer = this.peers.find((p) => p.peerId === peerId);
           if (peer) peer.state = state;
         },
         onError: (peerId, message) => {
+          this.pushLog(`ERROR: ${message}`);
           if (peerId === "") this.error = message;
         },
+        onDebug: (msg) => this.pushLog(msg),
       });
 
       await this.signaling.connect(auth.backendUrl, auth.token!, channel.id);
+      this.pushLog("ws connected");
       await this.mesh.join(channel.id, user.id, this.pipeline.stream);
+      this.pushLog("joined channel");
       this.channelId = channel.id;
       this.connected = true;
       this.startLevelLoop();
     } catch (err) {
       this.error = err instanceof Error ? err.message : String(err);
+      this.pushLog(`JOIN FAILED: ${err instanceof Error ? err.message : String(err)}`);
       await this.leave();
     }
   }
 
   async leave(): Promise<void> {
+    this.pushLog("leave");
     this.stopLevelLoop();
     await this.mesh?.leave();
     this.mesh = null;

@@ -127,6 +127,11 @@
       Leave
     </button>
   </div>
+
+  <details class="debug">
+    <summary>Debug log ({voice.log.length})</summary>
+    <pre>{#each voice.log as e (e.t + e.msg)}<div>{e.t} {e.msg}</div>{/each}</pre>
+  </details>
 </section>
 
 <style>
@@ -306,5 +311,24 @@
   .ctrl.leave {
     background: var(--danger);
     color: #fff;
+  }
+  .debug {
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .debug summary {
+    cursor: pointer;
+    user-select: none;
+  }
+  .debug pre {
+    margin: 8px 0 0;
+    max-height: 160px;
+    overflow-y: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
   }
 </style>
