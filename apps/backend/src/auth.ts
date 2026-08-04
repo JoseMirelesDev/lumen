@@ -1,11 +1,16 @@
 import { ApiError } from "./router";
 
 /**
- * Password hashing: PBKDF2-SHA256, 210k iterations, 16-byte random salt.
+ * Password hashing: PBKDF2-SHA256, 16-byte random salt.
  * Stored as `saltHex:hashHex` (both hex). Runs on crypto.subtle so it is
  * available in both the Worker runtime and Node (vitest).
+ *
+ * Iterations = 100_000: the Workers runtime (workerd) rejects PBKDF2 with
+ * more than 100k iterations ("iteration counts above 100000 are not
+ * supported") — 210k (the OWASP-ish default) throws in production while
+ * passing under miniflare. 100k is the platform maximum; measured ~0ms.
  */
-const PBKDF2_ITERATIONS = 210_000;
+const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const KEY_BYTES = 32; // SHA-256 output size
 const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;

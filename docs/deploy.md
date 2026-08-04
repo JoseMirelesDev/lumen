@@ -50,16 +50,31 @@ BACKEND_URL=https://lumen-backend.<your-subdomain>.workers.dev pnpm smoke
 The smoke suite covers auth, servers/channels/messages, friends, DMs, and a
 two-WebSocket offer/answer exchange through the DO — 49 steps.
 
-### 1.4 Free-tier budget checks (Fase 1 / Fase 5 DoDs)
+### 1. Free-tier budget checks (Fase 1 / Fase 5 DoDs)
 
 After a few hours of idle + light use, the Cloudflare dashboard should show:
 
 - **DO duration ≈ 0 GB-s** outside active calls. The DO calls `ctx.acceptWebSocket()`
   and hibernate-based handlers only (`webSocketMessage`, `webSocketClose`) — no
-  timers, no storage polling — so an empty channel costs ~nothing.
+  timers, no storage polling — so an empty channel costs ~nothing. Verified via
+  GraphQL: `durableObjectsInvocationsAdaptiveGroups` shows entries only in
+  minutes with actual traffic; a live-but-idle socket (hibernated) adds zero
+  `wallTime`.
 - **Worker requests** well under 100k/day; **DO requests** under 100k/day
   (each WebSocket message counts 1/20 of a request on Hibernation APIs).
 - **D1 reads** under 5M/day, writes under 100k/day.
+
+## 1.5 Known production-only constraints
+
+- **PBKDF2 iteration cap**: the Workers runtime (workerd) rejects
+  `crypto.subtle.deriveBits` with more than **100,000 iterations** — 210k
+  throws in production while passing under local miniflare (easy to miss:
+  everything works in `wrangler dev`). `apps/backend/src/auth.ts` uses 100k.
+  Symptom of exceeding it: register → 500, login with correct password → 401.
+- **workers.dev edge cache**: GET responses on the workers.dev domain can be
+  served stale for minutes (cache key ignores query strings). After a deploy,
+  wait ~1 min or use a POST to verify new code — don't conclude a deploy
+  failed from a single GET.
 
 ## 2. Desktop installers
 
