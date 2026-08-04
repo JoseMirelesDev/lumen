@@ -6,6 +6,27 @@
   let channelName = $state("");
   let channelKind = $state<"text" | "voice">("text");
   let actionError = $state<string | null>(null);
+  let copied = $state(false);
+
+  /** Copy the selected server's invite code (created with the server). */
+  async function copyInvite() {
+    const code = shell.selectedServer?.server.inviteCode;
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch {
+      // WebKitGTK's async clipboard can reject without a granted permission;
+      // fall back to a synchronous select+execCommand copy.
+      const ta = document.createElement("textarea");
+      ta.value = code;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    copied = true;
+    setTimeout(() => (copied = false), 1500);
+  }
 
   async function create() {
     actionError = null;
@@ -26,6 +47,16 @@
 <aside class="list">
   <header>
     <span class="name" title={shell.selectedServer?.server.name}>{shell.selectedServer?.server.name}</span>
+    <button
+      class="invite"
+      title={
+        shell.selectedServer
+          ? `Invite code: ${shell.selectedServer.server.inviteCode} — click to copy`
+          : "Invite"
+      }
+      disabled={!shell.selectedServer}
+      onclick={copyInvite}
+    >{copied ? "✓" : "🔗"}</button>
     <button class="add" title="Create channel" onclick={() => (showCreate = true)}>+</button>
   </header>
 
@@ -107,6 +138,22 @@
   }
   .add:hover {
     color: var(--text);
+  }
+  .invite {
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    font-size: 14px;
+    cursor: pointer;
+    margin-left: auto;
+    margin-right: 6px;
+  }
+  .invite:hover:not(:disabled) {
+    color: var(--text);
+  }
+  .invite:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .group {
     padding: 8px 6px;
