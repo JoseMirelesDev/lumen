@@ -84,6 +84,12 @@ export interface FriendInfo {
   sharedServers: number;
 }
 
+export interface DmSummary {
+  channel: Channel;
+  /** the other participant's username */
+  otherUsername: string;
+}
+
 export interface TextMessage {
   id: string;
   channelId: string;

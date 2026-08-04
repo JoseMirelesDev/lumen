@@ -10,6 +10,7 @@
     if (channel && voice.channelId !== channel.id) void voice.join(channel);
   });
   onDestroy(() => {
+    shell.dmCall = false;
     void voice.leave();
   });
 

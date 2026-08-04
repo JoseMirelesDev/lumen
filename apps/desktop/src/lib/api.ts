@@ -1,6 +1,7 @@
 import type {
   AuthResponse,
   Channel,
+  DmSummary,
   FriendInfo,
   FriendshipRequest,
   RealtimeConfig,
@@ -99,6 +100,26 @@ export class Api {
 
   getFriends(): Promise<{ friends: FriendInfo[]; pending: FriendshipRequest[] }> {
     return this.request("GET", "/api/friends");
+  }
+
+  sendFriendRequest(username: string): Promise<{ request: FriendshipRequest }> {
+    return this.request("POST", "/api/friends/requests", { username });
+  }
+
+  acceptFriendRequest(requestId: string): Promise<{ friend: FriendInfo["user"] }> {
+    return this.request("POST", `/api/friends/requests/${encodeURIComponent(requestId)}/accept`);
+  }
+
+  declineFriendRequest(requestId: string): Promise<{ ok: true }> {
+    return this.request("DELETE", `/api/friends/requests/${encodeURIComponent(requestId)}`);
+  }
+
+  listDms(): Promise<DmSummary[]> {
+    return this.request("GET", "/api/dms");
+  }
+
+  createDm(username: string): Promise<DmSummary> {
+    return this.request("POST", "/api/dms", { username });
   }
 
   getRealtimeConfig(): Promise<RealtimeConfig> {

@@ -1,13 +1,16 @@
-import type { Channel, ServerWithChannels, TextMessage } from "@lumen/protocol";
+import type { Channel, DmSummary, FriendInfo, FriendshipRequest, ServerWithChannels, TextMessage } from "@lumen/protocol";
 import { auth } from "./auth.svelte";
 
 /**
  * Navigation + data store for the main shell: the server list, the selected
- * server/channel, and the message history of the selected text channel.
+ * server/channel, message history, and the Friends pane (list, requests, DMs).
  */
 class ShellStore {
   /** Monotonic guard: only the newest in-flight loadServers may commit. */
   private loadSeq = 0;
+
+  /** Which primary pane is active: the server rail, or the Friends pane. */
+  view = $state<"servers" | "friends">("servers");
 
   servers = $state<ServerWithChannels[]>([]);
   selectedServerId = $state<string | null>(null);
@@ -16,11 +19,20 @@ class ShellStore {
   loading = $state(false);
   error = $state<string | null>(null);
 
+  // Friends pane
+  friends = $state<FriendInfo[]>([]);
+  pending = $state<FriendshipRequest[]>([]);
+  dmList = $state<DmSummary[]>([]);
+  /** Voice call active in the open DM channel. */
+  dmCall = $state(false);
+
   selectedServer = $derived(
     this.servers.find((s) => s.server.id === this.selectedServerId) ?? null,
   );
   selectedChannel = $derived(
-    this.selectedServer?.channels.find((c) => c.id === this.selectedChannelId) ?? null,
+    this.selectedServer?.channels.find((c) => c.id === this.selectedChannelId) ??
+      this.dmList.find((d) => d.channel.id === this.selectedChannelId)?.channel ??
+      null,
   );
 
   async loadServers(): Promise<void> {
@@ -48,6 +60,7 @@ class ShellStore {
   }
 
   async selectServer(serverId: string): Promise<void> {
+    this.view = "servers";
     this.selectedServerId = serverId;
     const server = this.servers.find((s) => s.server.id === serverId);
     const firstText = server?.channels.find((c) => c.kind === "text");
@@ -57,7 +70,7 @@ class ShellStore {
 
   async selectChannel(channelId: string): Promise<void> {
     this.selectedChannelId = channelId;
-    if (this.selectedChannel?.kind === "text") await this.loadMessages();
+    if (this.selectedChannel?.kind !== "voice") await this.loadMessages();
   }
 
   async loadMessages(): Promise<void> {
@@ -99,12 +112,57 @@ class ShellStore {
     if (channel.kind === "text") await this.loadMessages();
   }
 
+  async loadFriends(): Promise<void> {
+    try {
+      const { friends, pending } = await auth.api.getFriends();
+      this.friends = friends;
+      this.pending = pending;
+      this.dmList = await auth.api.listDms();
+    } catch (err) {
+      this.error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async sendFriendRequest(username: string): Promise<void> {
+    await auth.api.sendFriendRequest(username.trim());
+    await this.loadFriends();
+  }
+
+  async acceptFriend(requestId: string): Promise<void> {
+    await auth.api.acceptFriendRequest(requestId);
+    await this.loadFriends();
+  }
+
+  async declineFriend(requestId: string): Promise<void> {
+    await auth.api.declineFriendRequest(requestId);
+    await this.loadFriends();
+  }
+
+  /** Open (creating if needed) a 1:1 DM with a friend and show it. */
+  async openDm(username: string): Promise<void> {
+    const dm = await auth.api.createDm(username);
+    await this.loadFriends();
+    this.selectedChannelId = dm.channel.id;
+    this.view = "friends";
+    await this.loadMessages();
+  }
+
   reset(): void {
     this.servers = [];
     this.selectedServerId = null;
     this.selectedChannelId = null;
     this.messages = [];
+    this.friends = [];
+    this.pending = [];
+    this.dmList = [];
+    this.dmCall = false;
+    this.view = "servers";
   }
 }
 
 export const shell = new ShellStore();
+
+/** Presence: a friend counts as online if lastSeen is fresh (< 5 min). */
+export function isOnline(u: { lastSeen: string }): boolean {
+  return Date.now() - new Date(u.lastSeen).getTime() < 5 * 60_000;
+}

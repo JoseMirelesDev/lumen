@@ -62,6 +62,10 @@ export class Router {
     this.add("POST", path, authed, handler);
   }
 
+  delete(path: string, authed: boolean, handler: RouteHandler): void {
+    this.add("DELETE", path, authed, handler);
+  }
+
   match(
     method: string,
     pathname: string,

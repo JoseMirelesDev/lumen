@@ -329,6 +329,17 @@ router.post("/api/friends/requests/:id/accept", true, async (ctx, params) => {
   return json({ friend: db.rowToUser(friend) });
 });
 
+router.delete("/api/friends/requests/:id", true, async (ctx, params) => {
+  const dbc = ctx.env.LUMEN_D1;
+  const request = await db.getFriendRequest(dbc, params.id!);
+  if (!request) throw new ApiError(404, "not_found");
+  if (request.friend_id !== ctx.user.id) {
+    throw new ApiError(403, "forbidden", "only the recipient can decline");
+  }
+  await db.deleteFriendRequest(dbc, request.id);
+  return json({ ok: true });
+});
+
 // realtime
 router.get("/api/realtime/config", true, async (ctx) => {
   return json(await getRealtimeConfig(ctx.env));

@@ -1,5 +1,6 @@
 import type { Channel, PeerInfo } from "@lumen/protocol";
 import { auth } from "./auth.svelte";
+import { shell } from "./shell.svelte";
 import { ChannelSignaling } from "$lib/media/signaling";
 import { VoiceMesh } from "$lib/media/mesh";
 import { createMicPipeline, type MicPipeline } from "$lib/media/audio";
@@ -65,8 +66,14 @@ class VoiceStore {
     this.error = null;
     try {
       this.currentServerId = channel.serverId;
-      const { members } = await auth.api.getServer(channel.serverId);
-      this.usernameById = new Map(members.map((m) => [m.id, m.username]));
+      if (channel.kind === "dm") {
+        const dm = shell.dmList.find((d) => d.channel.id === channel.id);
+        const other = shell.friends.find((f) => f.user.username === dm?.otherUsername);
+        this.usernameById = new Map(other ? [[other.user.id, other.user.username]] : []);
+      } else {
+        const { members } = await auth.api.getServer(channel.serverId);
+        this.usernameById = new Map(members.map((m) => [m.id, m.username]));
+      }
 
       const config = await auth.api.getRealtimeConfig();
       this.pipeline = await createMicPipeline();

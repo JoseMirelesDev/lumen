@@ -407,6 +407,14 @@ export async function acceptFriendRequest(db: D1Database, id: string): Promise<v
     .run();
 }
 
+/** Remove a pending/declined request row (and never resurrect an accepted one). */
+export async function deleteFriendRequest(db: D1Database, id: string): Promise<void> {
+  await db
+    .prepare("DELETE FROM friendships WHERE id = ? AND status != 'accepted'")
+    .bind(id)
+    .run();
+}
+
 export async function listPendingRequests(
   db: D1Database,
   userId: string,

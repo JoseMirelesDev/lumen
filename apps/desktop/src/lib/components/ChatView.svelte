@@ -25,8 +25,21 @@
 
 <section class="chat">
   <header>
-    <span class="hash">#</span>
-    <span class="name">{shell.selectedChannel?.name}</span>
+    {#if shell.selectedChannel?.kind === "dm"}
+      <span class="hash">💬</span>
+      <span class="name">Direct message</span>
+      <button
+        class="call"
+        class:active={shell.dmCall}
+        onclick={() => (shell.dmCall = !shell.dmCall)}
+        title={shell.dmCall ? "Leave call" : "Start voice call"}
+      >
+        {shell.dmCall ? "Leave" : "🔊 Call"}
+      </button>
+    {:else}
+      <span class="hash">#</span>
+      <span class="name">{shell.selectedChannel?.name}</span>
+    {/if}
   </header>
 
   <div class="messages">
@@ -77,6 +90,22 @@
   .name {
     font-weight: 700;
     font-size: 14px;
+  }
+  .call {
+    margin-left: auto;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 4px;
+    background: var(--bg-hover);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .call:hover,
+  .call.active {
+    background: var(--accent);
+    color: #fff;
   }
   .messages {
     flex: 1;

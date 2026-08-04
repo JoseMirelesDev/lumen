@@ -35,7 +35,7 @@
   {#each shell.servers as entry (entry.server.id)}
     <button
       class="server"
-      class:active={shell.selectedServerId === entry.server.id}
+      class:active={shell.view === "servers" && shell.selectedServerId === entry.server.id}
       title={entry.server.name}
       onclick={() => shell.selectServer(entry.server.id)}
     >
@@ -47,6 +47,15 @@
   <button class="server add" title="Join by invite" onclick={() => (showJoin = true)}>@</button>
 
   <div class="spacer"></div>
+
+  <button
+    class="server friends"
+    class:active={shell.view === "friends"}
+    title="Friends — DMs & presence"
+    onclick={() => (shell.view = "friends")}
+  >
+    👥
+  </button>
 
   <button class="server user" title={`${auth.user?.username} — sign out`} onclick={() => auth.logout()}>
     {auth.user?.username.slice(0, 1).toUpperCase()}

@@ -6,12 +6,14 @@
   import ServerRail from "$lib/components/ServerRail.svelte";
   import ChannelList from "$lib/components/ChannelList.svelte";
   import ChatView from "$lib/components/ChatView.svelte";
+  import FriendsView from "$lib/components/FriendsView.svelte";
   import VoiceView from "$lib/components/VoiceView.svelte";
 
   // Boot: restore servers once we know who we are; reset on logout.
   $effect(() => {
     if (auth.user) {
       void shell.loadServers();
+      void shell.loadFriends();
     } else {
       shell.reset();
       void voice.leave();
@@ -27,8 +29,12 @@
 {:else}
   <div class="shell">
     <ServerRail />
-    <ChannelList />
-    {#if shell.selectedChannel?.kind === "voice"}
+    {#if shell.view === "friends"}
+      <FriendsView />
+    {:else}
+      <ChannelList />
+    {/if}
+    {#if shell.selectedChannel?.kind === "voice" || (shell.selectedChannel?.kind === "dm" && shell.dmCall)}
       {#key shell.selectedChannelId}
         <VoiceView />
       {/key}
