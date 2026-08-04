@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Lumen — Test STUN / tipo de NAT</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #1e1f22; color: #e6e6ea; padding: 24px; max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 20px; }
+  .card { background: #2b2d31; border-radius: 8px; padding: 16px; margin-top: 12px; }
+  .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #26272b; }
+  .row:last-child { border-bottom: none; }
+  .label { color: #9ba0a8; }
+  .val { font-weight: 600; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 13px; margin-top: 8px; }
+  .ok { background: #3ba55d; }
+  .warn { background: #f0b232; }
+  .bad { background: #f23f43; }
+  .muted { color: #9ba0a8; font-size: 13px; }
+  .err { color: #f23f43; }
+  button { margin-top: 12px; padding: 8px 16px; border: none; border-radius: 4px; background: #5865f2; color: #fff; font-weight: 600; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>🔧 Lumen — test STUN / NAT</h1>
+<p class="muted">Abre esto en Edge o Chrome (funciona con doble click, sin instalar nada).<br>Detecta tu IP pública y el tipo de NAT — tarda ~10 segundos.</p>
+<button id="run">▶ Ejecutar test</button>
+<div id="out"></div>
+<script>
+const out = document.getElementById("out");
+function card(title, rows, badge) {
+  return `<div class="card"><div style="font-weight:700;margin-bottom:8px">${title}</div>` +
+    rows.map(([l, v]) => `<div class="row"><span class="label">${l}</span><span class="val">${v}</span></div>`).join("") +
+    (badge ? `<span class="badge ${badge[0]}">${badge[1]}</span>` : "") + `</div>`;
+}
+function extractSrflx(pc) {
+  return new Promise((resolve) => {
+    const cands = [];
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const c = e.candidate.candidate;
+      if (c.includes("srflx")) {
+        const parts = c.split(" ");
+        // candidate:foundation component transport priority IP port typ ...
+        cands.push(`${parts[4]}:${parts[5]}`);
+      }
+    };
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === "complete") resolve(cands);
+    };
+    setTimeout(() => resolve(cands), 8000);
+  });
+}
+async function run() {
+  document.getElementById("run").disabled = true;
+  out.innerHTML = `<div class="card muted">Ejecutando (2 conexiones STUN a stun.cloudflare.com)…</div>`;
+  try {
+    const results = [];
+    for (let i = 0; i < 2; i++) {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.cloudflare.com" }] });
+      const cands = await extractSrflx(pc);
+      pc.close();
+      results.push(cands[0] ?? "sin respuesta STUN");
+    }
+    const [ip1, p1] = (results[0] || "?:?").split(":");
+    const [ip2, p2] = (results[1] || "?:?").split(":");
+    const noResp = results[0].includes("sin") || results[1].includes("sin");
+    let badge;
+    if (noResp) badge = ["bad", "STUN no respondió — UDP 3478 bloqueado"];
+    else if (ip1 !== ip2) badge = ["bad", "NAT extremo (IP distinta por socket)"];
+    else if (p1 !== p2) badge = ["bad", "NAT SIMÉTRICO — TURN OBLIGATORIO"];
+    else badge = ["ok", "NAT tipo CONO — STUN puede bastar"];
+    out.innerHTML = card("Resultado", [
+      ["Conexión 1 (mapped)", results[0]],
+      ["Conexión 2 (mapped)", results[1]],
+      ["IP pública", ip1],
+    ], badge) + `<p class="muted">Copia este resultado y pégaselo a la otra persona.</p>`;
+  } catch (e) {
+    out.innerHTML = `<div class="card"><span class="err">Error: ${e.message}</span><br>¿Estás en un navegador con WebRTC (Edge/Chrome)?</div>`;
+  }
+  document.getElementById("run").disabled = false;
+}
+document.getElementById("run").onclick = run;
+</script>
+</body>
+</html>
