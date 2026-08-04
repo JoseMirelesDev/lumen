@@ -101,6 +101,33 @@ code-share case) costs near zero.
 The app prefers H.264 when exposed and silently falls back otherwise
 (`preferH264` is a no-op when the codec list has no H.264).
 
-## Fase 6 numbers to be added here
+## Binary size + idle RAM (Fase 6)
 
-idle RAM, binary size.
+Measured on this machine (i5-4590, Linux, WebKitGTK) from a fresh
+`pnpm tauri build` release build:
+
+| artifact | size |
+|---|---|
+| `target/release/lumen` binary | 9.3 MB |
+| `Lumen_0.1.0_amd64.deb` | 3.0 MB |
+| `Lumen-0.1.0-1.x86_64.rpm` | 3.0 MB |
+| `Lumen_0.1.0_amd64.AppImage` (bundles WebKitGTK/GStreamer runtime) | 75 MB |
+
+Idle RSS, full process tree (main + `WebKitWebProcess` + `WebKitNetworkProcess`),
+login screen shown, measured ~2 min after launch:
+
+| process | RSS |
+|---|---|
+| lumen (main) | 127 MB |
+| WebKitWebProcess | 144 MB |
+| WebKitNetworkProcess | 47 MB |
+| **tree total** | **~313 MB** |
+
+Context vs target: the Rust binary is 9.3 MB and the app adds ~1 MB of Svelte
+runtime over the ~10 KB framework payload; the RSS is dominated by the OS
+WebView (WebKitGTK), which is the tradeoff Tauri makes vs bundling Chromium.
+Discord desktop typically sits at 400–600 MB with a comparable UI, so Lumen's
+idle footprint is roughly half of that while keeping the install small.
+
+`WEBKIT_DISABLE_COMPOSITING_MODE=1` is required for the window to map on this
+machine's Intel HD 4600 (see README); it does not affect RSS materially.

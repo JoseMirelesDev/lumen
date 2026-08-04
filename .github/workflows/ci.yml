@@ -55,7 +55,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @lumen/desktop check
       - run: pnpm --filter @lumen/desktop build
-      - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Bundle installers (.deb/.rpm/.AppImage)
+        run: pnpm --filter @lumen/desktop tauri build
+        env:
+          CI: "false"
 
   desktop-windows:
     runs-on: windows-latest
@@ -72,7 +75,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @lumen/desktop check
       - run: pnpm --filter @lumen/desktop build
-      - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Bundle installer (.msi)
+        run: pnpm --filter @lumen/desktop tauri build
+        env:
+          CI: "false"
 
   desktop-macos:
     runs-on: macos-latest
@@ -89,4 +95,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @lumen/desktop check
       - run: pnpm --filter @lumen/desktop build
-      - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Bundle installer (.dmg)
+        run: pnpm --filter @lumen/desktop tauri build
+        env:
+          CI: "false"
