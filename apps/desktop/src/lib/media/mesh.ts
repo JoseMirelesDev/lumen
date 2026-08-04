@@ -83,12 +83,13 @@ export class VoiceMesh {
     switch (msg.type) {
       case "joined": {
         // We joined after these peers → they will offer us; just create the PCs.
-        for (const peer of msg.peers) this.createPeer(peer);
+        for (const peer of msg.peers) this.setupPeer(peer);
         break;
       }
       case "peer-joined": {
         // They joined after us → we initiate.
-        const entry = this.createPeer(msg.peer);
+        const entry = this.setupPeer(msg.peer);
+        if (!entry) break;
         void this.sendOffer(entry).catch(() => this.events.onError(entry.peerId, "offer failed"));
         break;
       }
@@ -125,6 +126,24 @@ export class VoiceMesh {
       }
       default:
         break;
+    }
+  }
+
+  /**
+   * Create the peer connection, surfacing the peer in the UI even if the
+   * RTCPeerConnection can't be built (e.g. WebRTC unavailable in the WebView).
+   * Returns null when the connection could not be created.
+   */
+  private setupPeer(peer: PeerInfo): PeerConnectionEntry | null {
+    try {
+      return this.createPeer(peer);
+    } catch (err) {
+      this.events.onPeerJoined(peer);
+      this.events.onError(
+        peer.peerId,
+        `peer setup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
     }
   }
 

@@ -25,6 +25,10 @@ fn enable_media_permissions(app: &tauri::App) {
             let inner = platform.inner(); // webkit2gtk::WebView
             if let Some(settings) = inner.settings() {
                 settings.set_enable_media_stream(true);
+                // WebRTC is off by default in some WebKitGTK builds — without
+                // this, `RTCPeerConnection` is undefined and mesh voice dies
+                // with a ReferenceError the moment a second peer joins.
+                settings.set_enable_webrtc(true);
             }
             inner.connect_permission_request(|_webview, request| {
                 request.allow();
