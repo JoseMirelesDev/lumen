@@ -123,24 +123,21 @@ jobs:
             echo "tag=v${V}" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Lumen ${{ steps.version.outputs.tag }}
-          body: |
-            Desktop bundles for Lumen (native voice client).
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only the installers (the bundle dirs also contain the AppImage's
+          # extracted runtime and deb control files).
+          files=$(find dist -type f \( -name '*.deb' -o -name '*.rpm' -o \
+            -name '*.AppImage' -o -name '*.msi' -o -name '*.dmg' \))
+          gh release create "$TAG" $files \
+            --draft \
+            --title "Lumen $TAG" \
+            --notes "Desktop bundles for Lumen (native voice client).
 
-            Linux: `.deb` / `.rpm` / `.AppImage`
-            Windows: `.msi`
-            macOS: `.dmg` (unsigned)
+            Linux: .deb / .rpm / .AppImage
+            Windows: .msi
+            macOS: .dmg (unsigned)
 
-            > This is a draft — review and publish manually from the Releases page.
-          draft: true
-          # Only the installers — `dist/**` would also pick up the AppImage's
-          # extracted runtime and the deb control files.
-          files: |
-            dist/**/*.deb
-            dist/**/*.rpm
-            dist/**/*.AppImage
-            dist/**/*.msi
-            dist/**/*.dmg
+            > Draft — review and publish manually from the Releases page."
