@@ -7,6 +7,9 @@
 //! both ends negotiated over the WS relay (docs/protocol.md §1)
 //! ```
 //!
+//! Framework-agnostic: the only output is [`VoiceEvent`] on a channel the host
+//! owns (see [`VoiceClient::new`]). No Tauri, no UI.
+//!
 //! Screen/video is deliberately absent. Every peer here is a single audio
 //! track; the negotiation path (`add_track`, `remove_track`, re-offer) is the
 //! seam where a video `TrackLocalStaticRTP` slots in later, unchanged.
@@ -32,7 +35,6 @@ use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
@@ -43,9 +45,12 @@ use webrtc::peer_connection::{
 };
 use webrtc::rtp_transceiver::RtpSender;
 
-use crate::voice::audio::{rms_level, AudioOutput, JitterBuffer, OpusDecoder, OpusEncoder, FRAME_SAMPLES};
-use crate::voice::rtp::AudioPacketizer;
-use crate::voice::signaling::{SignalEvent, SignalOut, SignalingClient};
+use crate::audio::{
+    rms_level, AudioOutput, JitterBuffer, OpusDecoder, OpusEncoder, FRAME_SAMPLES,
+};
+use crate::event::{PeerLevel, PeerState, SignalingState, VoiceEvent};
+use crate::rtp::AudioPacketizer;
+use crate::signaling::{SignalEvent, SignalOut, SignalingClient};
 
 /// STUN/TURN server as the frontend supplies it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +62,7 @@ pub struct IceServer {
     pub credential: Option<String>,
 }
 
-/// Arguments for `voice_join`, as the frontend sends them (camelCase JSON).
+/// Arguments for `join`, as the host sends them (camelCase JSON).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceJoinArgs {
@@ -71,17 +76,21 @@ pub struct VoiceJoinArgs {
 }
 
 // ---------------------------------------------------------------------------
-// VoiceClient: Tauri-managed handle
+// VoiceClient: framework-agnostic handle. The host owns the event receiver.
 // ---------------------------------------------------------------------------
 
 pub struct VoiceClient {
-    app: AppHandle,
+    events: mpsc::UnboundedSender<VoiceEvent>,
     session: tokio::sync::Mutex<Option<Arc<VoiceSession>>>,
 }
 
 impl VoiceClient {
-    pub fn new(app: AppHandle) -> Self {
-        Self { app, session: tokio::sync::Mutex::new(None) }
+    /// Create a client and hand back the event stream the host must drain
+    /// (adapters bridge it to the UI: Tauri re-emits `voice://*`, Slint
+    /// updates properties).
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<VoiceEvent>) {
+        let (events, rx) = mpsc::unbounded_channel();
+        (Self { events, session: tokio::sync::Mutex::new(None) }, rx)
     }
 
     pub async fn join(&self, args: VoiceJoinArgs) -> std::result::Result<(), String> {
@@ -89,7 +98,9 @@ impl VoiceClient {
         if guard.is_some() {
             return Err("already in a voice channel".into());
         }
-        let session = VoiceSession::start(self.app.clone(), args).await.map_err(|e| e.to_string())?;
+        let session = VoiceSession::start(self.events.clone(), args)
+            .await
+            .map_err(|e| e.to_string())?;
         *guard = Some(session);
         Ok(())
     }
@@ -119,6 +130,7 @@ impl VoiceClient {
 // ---------------------------------------------------------------------------
 
 struct VoiceSession {
+    events: mpsc::UnboundedSender<VoiceEvent>,
     peers: Arc<Mutex<HashMap<String, Peer>>>,
     output: AudioOutput,
     _mic_stream: cpal::Stream,
@@ -133,7 +145,7 @@ struct VoiceSession {
 }
 
 impl VoiceSession {
-    async fn start(app: AppHandle, args: VoiceJoinArgs) -> Result<Arc<Self>> {
+    async fn start(events: mpsc::UnboundedSender<VoiceEvent>, args: VoiceJoinArgs) -> Result<Arc<Self>> {
         let ws_base = args.backend_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
         let ws_url = format!("{ws_base}/api/ws/{}", args.channel_id);
         let (signal, signal_rx) =
@@ -143,7 +155,7 @@ impl VoiceSession {
         let signal_tx = signal.tx.clone();
 
         let (mic_tx, mut mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
-        let mic_stream = crate::voice::audio::start_capture(mic_tx).context("mic capture")?;
+        let mic_stream = crate::audio::start_capture(mic_tx).context("mic capture")?;
         let output = AudioOutput::new();
         let out_stream = output.start().context("audio output")?;
 
@@ -173,7 +185,7 @@ impl VoiceSession {
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_millis(20));
                 // WebRTC APM on the mic: noise suppression + AGC before OPUS.
-                let mut ns = crate::voice::audio::NoiseSuppressor::new();
+                let mut ns = crate::audio::NoiseSuppressor::new();
                 loop {
                     if stopping.load(Ordering::SeqCst) {
                         break;
@@ -203,7 +215,7 @@ impl VoiceSession {
         {
             let peers = peers.clone();
             let local_level = local_level.clone();
-            let app = app.clone();
+            let events = events.clone();
             let stopping = stopping.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_millis(100));
@@ -213,25 +225,21 @@ impl VoiceSession {
                     }
                     ticker.tick().await;
                     let local = f32::from_bits(local_level.load(Ordering::SeqCst));
-                    let list: Vec<serde_json::Value> = peers
+                    let list: Vec<PeerLevel> = peers
                         .lock()
                         .iter()
-                        .map(|(id, p)| {
-                            serde_json::json!({
-                                "peerId": id,
-                                "level": f32::from_bits(p.level.load(Ordering::SeqCst)),
-                            })
+                        .map(|(id, p)| PeerLevel {
+                            peer_id: id.clone(),
+                            level: f32::from_bits(p.level.load(Ordering::SeqCst)),
                         })
                         .collect();
-                    let _ = app.emit(
-                        "voice://levels",
-                        serde_json::json!({ "local": local, "peers": list }),
-                    );
+                    let _ = events.send(VoiceEvent::Levels { local, peers: list });
                 }
             });
         }
 
         let session = Arc::new(Self {
+            events,
             peers,
             output,
             _mic_stream: mic_stream,
@@ -245,18 +253,17 @@ impl VoiceSession {
         });
 
         let loop_session = Arc::clone(&session);
-        let app2 = app.clone();
-        tokio::spawn(async move { loop_session.run_loop(app2, signal_rx).await; });
+        tokio::spawn(async move { loop_session.run_loop(signal_rx).await; });
         Ok(session)
     }
 
     /// Drive the signaling loop until the session closes (stop() or socket end).
-    async fn run_loop(self: Arc<Self>, app: AppHandle, mut signal_rx: mpsc::UnboundedReceiver<SignalEvent>) {
+    async fn run_loop(self: Arc<Self>, mut signal_rx: mpsc::UnboundedReceiver<SignalEvent>) {
         loop {
             tokio::select! {
                 event = signal_rx.recv() => {
                     let Some(event) = event else { break };
-                    self.handle_event(&app, event).await;
+                    self.handle_event(event).await;
                 }
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
                     if self.stopping.load(Ordering::SeqCst) {
@@ -265,41 +272,40 @@ impl VoiceSession {
                 }
             }
         }
-        self.teardown(&app).await;
+        self.teardown().await;
     }
 
-    async fn handle_event(&self, app: &AppHandle, event: SignalEvent) {
+    async fn handle_event(&self, event: SignalEvent) {
         // Re-fetch the current outbound handle each event (it may be dropped).
         let signal_tx = self.signal_tx.lock().clone();
         let Some(signal_tx) = signal_tx else { return };
         match event {
             SignalEvent::Joined { peer_id, peers } => {
-                let _ = app.emit(
-                    "voice://debug",
-                    serde_json::json!({ "message": format!("joined channel as peer {peer_id}") }),
-                );
+                let _ = self.events.send(VoiceEvent::Debug {
+                    peer_id: None,
+                    message: format!("joined channel as peer {peer_id}"),
+                });
                 // Existing peers will offer to us; announce them for the UI.
                 for p in peers {
-                    let _ = app.emit(
-                        "voice://peer-joined",
-                        serde_json::json!({ "peerId": p.peer_id, "userId": p.user_id }),
-                    );
+                    let _ = self.events.send(VoiceEvent::PeerJoined {
+                        peer_id: p.peer_id,
+                        user_id: p.user_id,
+                    });
                 }
             }
             SignalEvent::PeerJoined(p) => {
-                let _ = app.emit(
-                    "voice://peer-joined",
-                    serde_json::json!({ "peerId": p.peer_id, "userId": p.user_id }),
-                );
+                let _ = self.events.send(VoiceEvent::PeerJoined {
+                    peer_id: p.peer_id.clone(),
+                    user_id: p.user_id.clone(),
+                });
                 if !self.peers.lock().contains_key(&p.peer_id) {
-                    let peer = match self.create_peer(&p.peer_id, &p.user_id, app, &signal_tx).await
-                    {
+                    let peer = match self.create_peer(&p.peer_id, &p.user_id, &signal_tx).await {
                         Ok(peer) => peer,
                         Err(err) => {
-                            let _ = app.emit(
-                                "voice://error",
-                                serde_json::json!({ "message": err.to_string() }),
-                            );
+                            let _ = self.events.send(VoiceEvent::Error {
+                                code: None,
+                                message: err.to_string(),
+                            });
                             return;
                         }
                     };
@@ -307,10 +313,10 @@ impl VoiceSession {
                     let offer = match peer.pc.create_offer(None).await {
                         Ok(o) => o,
                         Err(err) => {
-                            let _ = app.emit(
-                                "voice://error",
-                                serde_json::json!({ "message": err.to_string() }),
-                            );
+                            let _ = self.events.send(VoiceEvent::Error {
+                                code: None,
+                                message: err.to_string(),
+                            });
                             return;
                         }
                     };
@@ -323,12 +329,12 @@ impl VoiceSession {
                     self.peers.lock().insert(p.peer_id.clone(), peer);
                 }
             }
-            SignalEvent::Offer { from, sdp } => self.handle_offer(app, &signal_tx, &from, sdp).await,
-            SignalEvent::Answer { from, sdp } => self.handle_answer(app, &from, sdp).await,
-            SignalEvent::IceCandidate { from, candidate } => self.handle_ice(app, &from, candidate).await,
-            SignalEvent::PeerLeft(peer_id) => self.remove_peer(app, &peer_id).await,
+            SignalEvent::Offer { from, sdp } => self.handle_offer(&signal_tx, &from, sdp).await,
+            SignalEvent::Answer { from, sdp } => self.handle_answer(&from, sdp).await,
+            SignalEvent::IceCandidate { from, candidate } => self.handle_ice(&from, candidate).await,
+            SignalEvent::PeerLeft(peer_id) => self.remove_peer(&peer_id).await,
             SignalEvent::Error { code, message } => {
-                let _ = app.emit("voice://error", serde_json::json!({ "code": code, "message": message }));
+                let _ = self.events.send(VoiceEvent::Error { code: Some(code), message });
             }
             SignalEvent::Closed => {}
         }
@@ -339,7 +345,6 @@ impl VoiceSession {
         &self,
         peer_id: &str,
         user_id: &str,
-        app: &AppHandle,
         signal_tx: &mpsc::UnboundedSender<SignalOut>,
     ) -> Result<Peer> {
         let mut media_engine = MediaEngine::default();
@@ -376,7 +381,7 @@ impl VoiceSession {
         let handler = Arc::new(PeerHandler {
             peer_id: peer_id.to_string(),
             signal: signal_tx.clone(),
-            app: app.clone(),
+            events: self.events.clone(),
             jb: jb.clone(),
             output: self.output.clone(),
             level: level.clone(),
@@ -414,19 +419,21 @@ impl VoiceSession {
 
     async fn handle_offer(
         &self,
-        app: &AppHandle,
         signal_tx: &mpsc::UnboundedSender<SignalOut>,
         from: &str,
         sdp: String,
     ) {
         // Create the peer if the offer precedes any peer-joined message.
         if !self.peers.lock().contains_key(from) {
-            match self.create_peer(from, "", app, signal_tx).await {
+            match self.create_peer(from, "", signal_tx).await {
                 Ok(peer) => {
                     self.peers.lock().insert(from.to_string(), peer);
                 }
                 Err(err) => {
-                    let _ = app.emit("voice://error", serde_json::json!({ "message": err.to_string() }));
+                    let _ = self.events.send(VoiceEvent::Error {
+                        code: None,
+                        message: err.to_string(),
+                    });
                     return;
                 }
             }
@@ -443,24 +450,27 @@ impl VoiceSession {
                 }
             }
             Err(err) => {
-                let _ = app.emit("voice://error", serde_json::json!({ "message": err.to_string() }));
+                let _ = self.events.send(VoiceEvent::Error {
+                    code: None,
+                    message: err.to_string(),
+                });
             }
         }
     }
 
-    async fn handle_answer(&self, app: &AppHandle, from: &str, sdp: String) {
+    async fn handle_answer(&self, from: &str, sdp: String) {
         let Some(peer) = self.peers.lock().get(from).cloned() else {
-            let _ = app.emit(
-                "voice://error",
-                serde_json::json!({ "message": format!("answer from unknown peer {from}") }),
-            );
+            let _ = self.events.send(VoiceEvent::Error {
+                code: None,
+                message: format!("answer from unknown peer {from}"),
+            });
             return;
         };
         let Ok(desc) = RTCSessionDescription::answer(sdp) else { return };
         let _ = peer.pc.set_remote_description(desc).await;
     }
 
-    async fn handle_ice(&self, app: &AppHandle, from: &str, candidate: serde_json::Value) {
+    async fn handle_ice(&self, from: &str, candidate: serde_json::Value) {
         let Some(peer) = self.peers.lock().get(from).cloned() else {
             return; // ICE may precede SDP in trickle mode; peer is created on offer.
         };
@@ -469,31 +479,34 @@ impl VoiceSession {
         match serde_json::from_value::<webrtc::peer_connection::RTCIceCandidateInit>(candidate) {
             Ok(init) => {
                 if let Err(err) = peer.pc.add_ice_candidate(init).await {
-                    let _ = app.emit("voice://error", serde_json::json!({ "message": err.to_string() }));
+                    let _ = self.events.send(VoiceEvent::Error {
+                        code: None,
+                        message: err.to_string(),
+                    });
                 }
             }
             Err(_) => {}
         }
     }
 
-    async fn remove_peer(&self, app: &AppHandle, peer_id: &str) {
+    async fn remove_peer(&self, peer_id: &str) {
         // Bind the guard to its own statement so it is dropped before we await.
         let removed = self.peers.lock().remove(peer_id);
         if let Some(peer) = removed {
             peer.stop.store(true, Ordering::SeqCst);
             let _ = peer.pc.close().await;
-            let _ = app.emit("voice://peer-left", serde_json::json!({ "peerId": peer_id }));
+            let _ = self.events.send(VoiceEvent::PeerLeft { peer_id: peer_id.to_string() });
         }
     }
 
-    async fn teardown(&self, app: &AppHandle) {
+    async fn teardown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         let peers: Vec<Peer> = self.peers.lock().drain().map(|(_, p)| p).collect();
         for peer in peers {
             peer.stop.store(true, Ordering::SeqCst);
             let _ = peer.pc.close().await;
         }
-        let _ = app.emit("voice://signaling", serde_json::json!({ "state": "closed" }));
+        let _ = self.events.send(VoiceEvent::Signaling { state: SignalingState::Closed });
     }
 
     /// End the session. Closes peers and the WS; the loop breaks and tears down.
@@ -583,22 +596,24 @@ fn spawn_send_worker(
 struct PeerHandler {
     peer_id: String,
     signal: mpsc::UnboundedSender<SignalOut>,
-    app: AppHandle,
+    events: mpsc::UnboundedSender<VoiceEvent>,
     jb: Arc<Mutex<JitterBuffer>>,
     output: AudioOutput,
     level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
 }
 
-fn state_str(s: RTCPeerConnectionState) -> &'static str {
-    match s {
-        RTCPeerConnectionState::New => "new",
-        RTCPeerConnectionState::Connecting => "connecting",
-        RTCPeerConnectionState::Connected => "connected",
-        RTCPeerConnectionState::Disconnected => "disconnected",
-        RTCPeerConnectionState::Failed => "failed",
-        RTCPeerConnectionState::Closed => "closed",
-        _ => "unknown",
+impl From<RTCPeerConnectionState> for PeerState {
+    fn from(s: RTCPeerConnectionState) -> Self {
+        match s {
+            RTCPeerConnectionState::New => PeerState::New,
+            RTCPeerConnectionState::Connecting => PeerState::Connecting,
+            RTCPeerConnectionState::Connected => PeerState::Connected,
+            RTCPeerConnectionState::Disconnected => PeerState::Disconnected,
+            RTCPeerConnectionState::Failed => PeerState::Failed,
+            RTCPeerConnectionState::Closed => PeerState::Closed,
+            _ => PeerState::Unknown,
+        }
     }
 }
 
@@ -621,18 +636,18 @@ impl PeerConnectionEventHandler for PeerHandler {
 
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
         if state == RTCIceGatheringState::Complete {
-            let _ = self.app.emit(
-                "voice://debug",
-                serde_json::json!({ "peerId": self.peer_id, "message": "ice gathering complete" }),
-            );
+            let _ = self.events.send(VoiceEvent::Debug {
+                peer_id: Some(self.peer_id.clone()),
+                message: "ice gathering complete".to_string(),
+            });
         }
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
-        let _ = self.app.emit(
-            "voice://state",
-            serde_json::json!({ "peerId": self.peer_id, "state": state_str(state) }),
-        );
+        let _ = self.events.send(VoiceEvent::State {
+            peer_id: self.peer_id.clone(),
+            state: PeerState::from(state),
+        });
     }
 
     async fn on_signaling_state_change(&self, _state: RTCSignalingState) {}

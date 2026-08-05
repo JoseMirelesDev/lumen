@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use lumen_lib::voice::audio::{FRAME_SAMPLES, OpusEncoder};
-use lumen_lib::voice::rtp::AudioPacketizer;
+use lumen_voice::audio::{FRAME_SAMPLES, OpusEncoder};
+use lumen_voice::rtp::AudioPacketizer;
 use rtc::interceptor::Registry;
 use rtc::media_stream::MediaStreamTrack;
 use rtc::peer_connection::configuration::interceptor_registry::register_default_interceptors;

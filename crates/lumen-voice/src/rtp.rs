@@ -1,7 +1,7 @@
 //! RTP packetization for OPUS audio (RFC 7587): one frame per packet, no
 //! payload header. Sequence numbers and 48 kHz timestamps advance per frame.
 
-use crate::voice::audio::FRAME_SAMPLES;
+use crate::audio::FRAME_SAMPLES;
 use rtc::rtp::{Header, Packet};
 
 pub struct AudioPacketizer {

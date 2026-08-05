@@ -1,0 +1,30 @@
+# Lumen Cargo workspace (desktop client). The TS side still uses pnpm
+# workspaces (apps/*, packages/*); the Rust crates live here.
+[workspace]
+resolver = "2"
+members = [
+    "apps/desktop/src-tauri",
+    "crates/lumen-voice",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+futures-util = "0.3"
+rand = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+url = "2"
+webrtc = "0.20"
+rtc = { version = "0.20", default-features = false, features = ["ring"] }
+cpal = "0.18"
+opus = "0.3"
+parking_lot = "0.12"
+webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }

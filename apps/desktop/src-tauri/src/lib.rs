@@ -1,6 +1,11 @@
-pub mod voice;
+//! Tauri shell for Lumen. The voice core now lives in the framework-agnostic
+//! `lumen-voice` crate; this file bridges it onto the legacy `voice://` IPC
+//! channels so the Svelte frontend keeps working unchanged during the Slint
+//! migration (contract frozen — see docs/decisions/0002-slint-client.md).
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+use lumen_voice::{VoiceClient, VoiceJoinArgs, VoiceEvent};
+use tauri::Emitter;
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -9,7 +14,61 @@ pub fn run() {
             let window = tauri::WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
             #[cfg(target_os = "linux")]
             enable_media_permissions(&window);
-            app.manage(voice::VoiceClient::new(app.handle().clone()));
+
+            // Voice core + adapter: drain VoiceEvent and re-emit the exact
+            // legacy `voice://` payloads. The Svelte store's `listen()` contract
+            // is unchanged, so no frontend code moves in this phase.
+            let (voice, mut events) = VoiceClient::new();
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(ev) = events.recv().await {
+                    let (name, payload) = match ev {
+                        VoiceEvent::Levels { local, peers } => (
+                            "voice://levels",
+                            serde_json::json!({
+                                "local": local,
+                                "peers": peers
+                                    .iter()
+                                    .map(|p| serde_json::json!({ "peerId": p.peer_id, "level": p.level }))
+                                    .collect::<Vec<_>>(),
+                            }),
+                        ),
+                        VoiceEvent::Debug { peer_id, message } => {
+                            let payload = match peer_id {
+                                Some(pid) => serde_json::json!({ "peerId": pid, "message": message }),
+                                None => serde_json::json!({ "message": message }),
+                            };
+                            ("voice://debug", payload)
+                        }
+                        VoiceEvent::PeerJoined { peer_id, user_id } => (
+                            "voice://peer-joined",
+                            serde_json::json!({ "peerId": peer_id, "userId": user_id }),
+                        ),
+                        VoiceEvent::PeerLeft { peer_id } => (
+                            "voice://peer-left",
+                            serde_json::json!({ "peerId": peer_id }),
+                        ),
+                        VoiceEvent::State { peer_id, state } => (
+                            "voice://state",
+                            serde_json::json!({ "peerId": peer_id, "state": state.as_str() }),
+                        ),
+                        VoiceEvent::Signaling { state } => (
+                            "voice://signaling",
+                            serde_json::json!({ "state": state.as_str() }),
+                        ),
+                        VoiceEvent::Error { code, message } => {
+                            let payload = match code {
+                                Some(code) => serde_json::json!({ "code": code, "message": message }),
+                                None => serde_json::json!({ "message": message }),
+                            };
+                            ("voice://error", payload)
+                        }
+                    };
+                    let _ = handle.emit(name, payload);
+                }
+            });
+
+            app.manage(voice);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -24,21 +83,21 @@ pub fn run() {
 
 #[tauri::command]
 async fn voice_join(
-    client: tauri::State<'_, voice::VoiceClient>,
-    args: voice::VoiceJoinArgs,
+    client: tauri::State<'_, VoiceClient>,
+    args: VoiceJoinArgs,
 ) -> Result<(), String> {
     client.join(args).await
 }
 
 #[tauri::command]
-async fn voice_leave(client: tauri::State<'_, voice::VoiceClient>) -> Result<(), String> {
+async fn voice_leave(client: tauri::State<'_, VoiceClient>) -> Result<(), String> {
     client.leave().await;
     Ok(())
 }
 
 #[tauri::command]
 async fn voice_set_muted(
-    client: tauri::State<'_, voice::VoiceClient>,
+    client: tauri::State<'_, VoiceClient>,
     muted: bool,
 ) -> Result<(), String> {
     client.set_muted(muted).await;
@@ -47,7 +106,7 @@ async fn voice_set_muted(
 
 #[tauri::command]
 async fn voice_set_deafened(
-    client: tauri::State<'_, voice::VoiceClient>,
+    client: tauri::State<'_, VoiceClient>,
     deafened: bool,
 ) -> Result<(), String> {
     client.set_deafened(deafened).await;
@@ -60,6 +119,9 @@ async fn voice_set_deafened(
 /// Without this, joining a voice channel fails with "The request is not
 /// allowed by the user agent or the platform". Turn the setting on and
 /// auto-grant permission requests so the voice call can access the mic.
+///
+/// Note: mic capture is native cpal in lumen-voice, so this is only needed to
+/// keep the legacy WebView path quiet; it disappears with Tauri at cutover.
 #[cfg(target_os = "linux")]
 fn enable_media_permissions(window: &tauri::WebviewWindow) {
     use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};

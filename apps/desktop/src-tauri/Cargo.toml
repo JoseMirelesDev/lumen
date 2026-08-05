@@ -19,32 +19,12 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-anyhow = "1"
-async-trait = "0.1"
-bytes = "1"
-futures-util = "0.3"
-rand = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
-tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-url = "2"
-webrtc = "0.20"
-rtc = { version = "0.20", default-features = false, features = ["ring"] }
-cpal = "0.18"
-opus = "0.3"
-parking_lot = "0.12"
-webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+# Voice core: framework-agnostic cpal/opus/webrtc-rs, bridged by lib.rs.
+lumen-voice = { path = "../../../crates/lumen-voice" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
-
-# cpal 0.18.1's WASAPI code requires `windows` + `windows-core` to resolve as a
-# *matched* pair (its range `>=0.61,<=0.62` lets cargo pair `windows 0.61` with
-# `windows-core 0.62`, which breaks compilation). Pin both to 0.62.2, the
-# version iana-time-zone already forces into the graph, so everything shares
-# one matched pair.
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = "=0.62.2"
-windows-core = "=0.62.2"
 
 [patch.crates-io]
 wry = { path = "../../../vendor/wry" }

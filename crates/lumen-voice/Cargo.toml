@@ -1,0 +1,32 @@
+[package]
+name = "lumen-voice"
+version.workspace = true
+edition.workspace = true
+description = "Lumen native voice core — cpal/opus/webrtc-rs, framework-agnostic (no Tauri, no UI)"
+license = "MIT"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+cpal.workspace = true
+futures-util.workspace = true
+opus.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+rtc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+url.workspace = true
+webrtc.workspace = true
+webrtc-audio-processing.workspace = true
+
+# cpal 0.18.1's WASAPI code requires `windows` + `windows-core` to resolve as a
+# *matched* pair (its range `>=0.61,<=0.62` lets cargo pair `windows 0.61` with
+# `windows-core 0.62`, which breaks compilation). Pin both to 0.62.2 so the
+# whole graph shares one matched pair.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = "=0.62.2"
+windows-core = "=0.62.2"
