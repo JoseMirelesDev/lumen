@@ -133,6 +133,11 @@ jobs:
 
             > This is a draft — review and publish manually from the Releases page.
           draft: true
-          # `**` (recursive): the Linux bundle lives in dist/deb/ and
-          # dist/rpm/ subdirectories — a flat `dist/*` would silently skip them.
-          files: dist/**
+          # Only the installers — `dist/**` would also pick up the AppImage's
+          # extracted runtime and the deb control files.
+          files: |
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.AppImage
+            dist/**/*.msi
+            dist/**/*.dmg

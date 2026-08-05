@@ -43,7 +43,7 @@ use webrtc::peer_connection::{
 };
 use webrtc::rtp_transceiver::RtpSender;
 
-use crate::voice::audio::{rms_level, AudioOutput, JitterBuffer, OpusDecoder, OpusEncoder};
+use crate::voice::audio::{rms_level, AudioOutput, JitterBuffer, OpusDecoder, OpusEncoder, FRAME_SAMPLES};
 use crate::voice::rtp::AudioPacketizer;
 use crate::voice::signaling::{SignalEvent, SignalOut, SignalingClient};
 
@@ -668,6 +668,11 @@ impl PeerConnectionEventHandler for PeerHandler {
                 Err(_) => return,
             };
             let mut ticker = tokio::time::interval(Duration::from_millis(20));
+            // Keep the device fed even when the jitter buffer has nothing
+            // (remote silent / still filling): an empty tick would let the
+            // output ring underrun ("A buffer underrun or overrun occurred")
+            // and click on resume.
+            let silence = vec![0i16; FRAME_SAMPLES];
             loop {
                 if stop_play.load(Ordering::SeqCst) {
                     break;
@@ -687,7 +692,8 @@ impl PeerConnectionEventHandler for PeerHandler {
                             output.push(&pcm);
                         }
                     }
-                    None => {}
+                    // Nothing to play: push silence to keep the clock running.
+                    None => output.push(&silence),
                 }
             }
         });
