@@ -113,6 +113,8 @@ struct OutputState {
     buf: Vec<i16>,
     /// 48 kHz -> device rate, applied to each decoded frame on push.
     resampler: LinearResampler,
+    /// Output device channel count (typically 2 — stereo).
+    channels: usize,
 }
 
 impl AudioOutput {
@@ -144,21 +146,31 @@ impl AudioOutput {
         }
     }
 
-    /// Copy the available device-rate samples into `out` (FIFO), zero-filling
-    /// the tail. Returns how many samples were copied.
-    fn drain_into(&self, out: &mut [i16]) -> usize {
+    /// Copy the available device-rate mono samples into `out` (FIFO),
+    /// expanding to the device's channel count (a stereo `out` gets the same
+    /// sample in L and R), then zero-fill the tail.
+    ///
+    /// Without the expansion, mono samples written sequentially into an
+    /// interleaved stereo buffer play at 2× speed per channel (chipmunk).
+    fn drain_into(&self, out: &mut [i16]) {
         let mut guard = self.state.lock();
         let Some(st) = guard.as_mut() else {
             out.fill(0);
-            return 0;
+            return;
         };
-        let n = out.len().min(st.buf.len());
-        out[..n].copy_from_slice(&st.buf[..n]);
+        let ch = st.channels.max(1);
+        let frames = out.len() / ch;
+        let n = st.buf.len().min(frames);
+        for f in 0..n {
+            let s = st.buf[f];
+            for v in &mut out[f * ch..(f + 1) * ch] {
+                *v = s;
+            }
+        }
         st.buf.drain(..n);
-        for v in &mut out[n..] {
+        for v in &mut out[n * ch..] {
             *v = 0;
         }
-        n
     }
 
     /// Start the cpal output stream on the default device.
@@ -170,6 +182,7 @@ impl AudioOutput {
         *self.state.lock() = Some(OutputState {
             buf: Vec::with_capacity((dev_rate / 2) as usize),
             resampler: LinearResampler::new(CLOCK_RATE, dev_rate),
+            channels: config.channels() as usize,
         });
         let out = self.clone();
         let err_fn = |err| eprintln!("lumen voice: output stream error: {err}");
@@ -255,10 +268,13 @@ impl OpusDecoder {
         Ok(Self { decoder })
     }
 
-    /// Decode one packet into 20 ms of mono PCM. `None` packet = PLC.
+    /// Decode one packet into mono PCM. `None` packet = PLC.
     pub fn decode(&mut self, packet: Option<&[u8]>) -> anyhow::Result<Vec<i16>> {
         let mut out = vec![0i16; FRAME_SAMPLES];
-        self.decoder.decode(packet.unwrap_or(&[]), &mut out, false)?;
+        let n = self.decoder.decode(packet.unwrap_or(&[]), &mut out, false)?;
+        // The peer may send shorter frames (e.g. 10 ms); keep only the samples
+        // actually decoded instead of pushing half a frame of stale data.
+        out.truncate(n);
         Ok(out)
     }
 }
@@ -346,39 +362,44 @@ impl JitterBuffer {
 
 /// Linear-interpolation resampler for i16. Good enough for voice.
 ///
-/// Resamples one contiguous input chunk as an independent segment. Audio is
-/// pushed to playback in aligned 20 ms frames, so per-chunk resampling covers
-/// exactly one frame worth of device samples and preserves pitch at any device
-/// rate (no time-compression / chipmunk).
+/// Stateful: it carries the fractional source position between calls, so a
+/// stream split into arbitrary-sized chunks (cpal callback sizes vary)
+/// resamples without per-chunk phase glitches. An aligned 20 ms frame still
+/// yields exactly one frame's worth of device samples, so pitch is preserved.
 pub struct LinearResampler {
     src_rate: u32,
     dst_rate: u32,
+    /// Fractional position (in source samples) where the next output lands.
+    pos: f64,
 }
 
 impl LinearResampler {
     pub fn new(src_rate: u32, dst_rate: u32) -> Self {
-        Self { src_rate, dst_rate }
+        Self { src_rate, dst_rate, pos: 0.0 }
     }
 
-    pub fn resample(&self, input: &[i16]) -> Vec<i16> {
+    pub fn resample(&mut self, input: &[i16]) -> Vec<i16> {
         if input.is_empty() {
             return Vec::new();
         }
         if self.src_rate == self.dst_rate {
             return input.to_vec();
         }
+        let len = input.len() as f64;
         let ratio = self.dst_rate as f64 / self.src_rate as f64;
-        let out_len = ((input.len() as f64) * ratio).ceil() as usize;
-        let mut out = Vec::with_capacity(out_len);
-        let mut pos = 0.0f64;
-        for _ in 0..out_len {
-            let idx = (pos.floor() as usize).min(input.len() - 1);
-            let frac = pos - idx as f64;
+        let step = 1.0 / ratio;
+        let mut out = Vec::with_capacity((len * ratio).ceil() as usize);
+        while self.pos < len {
+            let idx = self.pos.floor() as usize;
+            let frac = self.pos - idx as f64;
             let a = input[idx] as f64;
+            // Last sample has no successor in this chunk; extend it flat.
             let b = if idx + 1 < input.len() { input[idx + 1] as f64 } else { a };
             out.push((a + (b - a) * frac).round().clamp(i16::MIN as f64, i16::MAX as f64) as i16);
-            pos += 1.0 / ratio;
+            self.pos += step;
         }
+        // Carry the phase overshoot into the next chunk (stays in [0, step)).
+        self.pos -= len;
         out
     }
 }
@@ -402,17 +423,19 @@ mod tests {
 
     #[test]
     fn resampler_passthrough() {
-        let r = LinearResampler::new(48000, 48000);
+        let mut r = LinearResampler::new(48000, 48000);
         let input: Vec<i16> = (0..960).collect();
         assert_eq!(r.resample(&input), input);
     }
 
     #[test]
     fn resampler_length_and_shape() {
-        let r = LinearResampler::new(44100, 48000);
+        let mut r = LinearResampler::new(44100, 48000);
         let input: Vec<i16> = (0..4410).map(|i| ((i as f64 * 0.1).sin() * 1000.0) as i16).collect();
         let out = r.resample(&input);
-        assert_eq!(out.len(), 4800);
+        // ±1: a chunk boundary may land exactly on a sample; the carried phase
+        // compensates on the next chunk (no accumulated drift).
+        assert!(out.len().abs_diff(4800) <= 1, "got {}", out.len());
         // Smooth sine stays in range and roughly keeps its amplitude.
         assert!(out.iter().map(|v| v.abs()).max().unwrap() < 1200);
     }
@@ -420,12 +443,53 @@ mod tests {
     #[test]
     fn resampler_preserves_duration_any_rate() {
         // A 20 ms frame at 48 kHz must stay 20 ms at any device rate, otherwise
-        // audio plays fast (chipmunk) or slow.
+        // audio plays fast (chipmunk) or slow. ±1 per chunk: the carried phase
+        // keeps the long-run rate exact.
         let input: Vec<i16> = (0..FRAME_SAMPLES).map(|i| ((i as f64 * 0.05).sin() * 2000.0) as i16).collect();
-        assert_eq!(LinearResampler::new(48000, 48000).resample(&input).len(), 960); // 20 ms
-        assert_eq!(LinearResampler::new(48000, 96000).resample(&input).len(), 1920); // 20 ms @ 96k
-        assert_eq!(LinearResampler::new(48000, 44100).resample(&input).len(), 882); // 20 ms @ 44.1k
-        assert_eq!(LinearResampler::new(48000, 16000).resample(&input).len(), 320); // 20 ms @ 16k
+        let len_at = |dst: u32| LinearResampler::new(48000, dst).resample(&input).len();
+        assert_eq!(len_at(48000), 960); // 20 ms, passthrough exact
+        assert!(len_at(96000).abs_diff(1920) <= 1); // 20 ms @ 96k
+        assert!(len_at(44100).abs_diff(882) <= 1); // 20 ms @ 44.1k
+        assert!(len_at(16000).abs_diff(320) <= 1); // 20 ms @ 16k
+    }
+
+    #[test]
+    fn output_expands_mono_to_stereo_without_chipmunk() {
+        // Regression: mono PCM written sequentially into an interleaved stereo
+        // buffer plays each channel at 2× speed (chipmunk). drain_into must
+        // duplicate every mono sample into both channels.
+        let output = AudioOutput::new();
+        *output.state.lock() = Some(OutputState {
+            buf: Vec::new(),
+            resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
+            channels: 2,
+        });
+        let frame: Vec<i16> = (0..FRAME_SAMPLES as i16).collect();
+        output.push(&frame);
+        let mut out = vec![0i16; 480 * 2]; // 10 ms of stereo
+        output.drain_into(&mut out);
+        for f in 0..480 {
+            assert_eq!(out[2 * f], f as i16, "left sample of frame {f}");
+            assert_eq!(out[2 * f + 1], f as i16, "right sample of frame {f}");
+        }
+        // The untouched tail stays silent (only 480 frames were drained).
+        let mut tail = vec![1i16; 480 * 2];
+        output.drain_into(&mut tail);
+        assert!(tail[480 * 2..].iter().all(|&v| v == 0) || tail[..480 * 2].iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn resampler_stateful_continuity() {
+        // Two consecutive chunks must resample as one continuous stream: the
+        // output count over both chunks must equal the single-chunk count.
+        let whole: Vec<i16> = (0..882).map(|i| ((i as f64 * 0.2).sin() * 3000.0) as i16).collect();
+        let mut single = LinearResampler::new(44100, 48000);
+        let expected = single.resample(&whole).len();
+        let mut split = LinearResampler::new(44100, 48000);
+        let a = split.resample(&whole[..441]);
+        let b = split.resample(&whole[441..]);
+        // Splitting may differ by at most one sample per boundary.
+        assert!((a.len() + b.len()).abs_diff(expected) <= 1, "{} vs {}", a.len() + b.len(), expected);
     }
 
     #[test]

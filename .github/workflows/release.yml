@@ -133,4 +133,6 @@ jobs:
 
             > This is a draft — review and publish manually from the Releases page.
           draft: true
-          files: dist/*
+          # `**` (recursive): the Linux bundle lives in dist/deb/ and
+          # dist/rpm/ subdirectories — a flat `dist/*` would silently skip them.
+          files: dist/**

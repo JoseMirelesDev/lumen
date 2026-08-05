@@ -359,7 +359,7 @@ impl VoiceSession {
                     mime_type: MIME_TYPE_OPUS.to_owned(),
                     clock_rate: 48000,
                     channels: 2,
-                    sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                    sdp_fmtp_line: "useinbandfec=1".to_owned(),
                     rtcp_feedback: vec![],
                 },
                 ..Default::default()
