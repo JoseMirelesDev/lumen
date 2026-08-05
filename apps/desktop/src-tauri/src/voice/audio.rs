@@ -280,6 +280,82 @@ impl OpusDecoder {
 }
 
 // ---------------------------------------------------------------------------
+// Noise suppression (WebRTC AudioProcessing — the module Chrome/Discord use)
+// ---------------------------------------------------------------------------
+
+use webrtc_audio_processing::config::{
+    Config, GainController, GainController1, GainControllerMode, HighPassFilter,
+    NoiseSuppression, NoiseSuppressionLevel,
+};
+use webrtc_audio_processing::Processor;
+
+/// WebRTC AudioProcessing (AEC/NS/AGC — the professional module Chrome and
+/// Discord use) applied to the mic path: high-pass filter + high noise
+/// suppression + fixed-digital AGC. Builds from bundled C++ sources, so no
+/// system libraries are needed; `Processor` is `Send + Sync`, so it lives in
+/// the send task. It processes 10 ms frames (480 samples at 48 kHz); a 20 ms
+/// capture frame is handled as two halves. Always runs before OPUS encoding.
+pub struct NoiseSuppressor {
+    processor: Option<Processor>,
+}
+
+impl NoiseSuppressor {
+    pub fn new() -> Self {
+        let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
+            processor.set_config(Config {
+                high_pass_filter: Some(HighPassFilter { apply_in_full_band: true }),
+                noise_suppression: Some(NoiseSuppression {
+                    level: NoiseSuppressionLevel::High,
+                    analyze_linear_aec_output: false,
+                }),
+                gain_controller: Some(GainController::GainController1(GainController1 {
+                    mode: GainControllerMode::FixedDigital,
+                    target_level_dbfs: 3,
+                    compression_gain_db: 9,
+                    enable_limiter: true,
+                    analog_gain_controller: None,
+                })),
+                ..Config::default()
+            });
+            processor
+        });
+        Self { processor }
+    }
+
+    /// Suppress noise in a 48 kHz mono frame (length must be a multiple of
+    /// 480, e.g. 960). Falls back to the raw frame if the processor failed to
+    /// initialize.
+    pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
+        let Some(processor) = self.processor.as_mut() else {
+            return frame.to_vec();
+        };
+        let mut out = vec![0i16; frame.len()];
+        let mut buf = [0f32; 480];
+        for (in_chunk, out_chunk) in frame.chunks_exact(480).zip(out.chunks_exact_mut(480)) {
+            for (i, s) in in_chunk.iter().enumerate() {
+                buf[i] = *s as f32 / 32768.0;
+            }
+            // Panics if the block isn't exactly 10 ms; chunks_exact(480) guarantees it.
+            if processor.process_capture_frame([&mut buf]).is_ok() {
+                for (i, v) in buf.iter().enumerate() {
+                    out_chunk[i] =
+                        (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                }
+            } else {
+                out_chunk.copy_from_slice(in_chunk);
+            }
+        }
+        out
+    }
+}
+
+impl Default for NoiseSuppressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Jitter buffer
 // ---------------------------------------------------------------------------
 
@@ -554,5 +630,50 @@ mod tests {
         // PLC on loss: silence-ish output, no panic.
         let plc = dec.decode(None).unwrap();
         assert_eq!(plc.len(), FRAME_SAMPLES);
+    }
+
+    #[test]
+    fn noise_suppressor_pipeline() {
+        // Smoke: a tone frame survives the NS+AGC pipeline, length preserved.
+        let mut ns = NoiseSuppressor::new();
+        let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| ((i as f64 * 0.05).sin() * 2000.0) as i16).collect();
+        let out = ns.process(&frame);
+        assert_eq!(out.len(), FRAME_SAMPLES);
+        assert!(rms_level(&out) > 0.01, "tone must not be silenced");
+    }
+
+    #[test]
+    fn webrtc_ns_attenuates_white_noise() {
+        // NS-only processor (no AGC, which would re-amplify quiet noise).
+        let processor = Processor::new(CLOCK_RATE).expect("APM init");
+        processor.set_config(Config {
+            noise_suppression: Some(NoiseSuppression {
+                level: NoiseSuppressionLevel::VeryHigh,
+                analyze_linear_aec_output: false,
+            }),
+            ..Config::default()
+        });
+        // Deterministic pseudo-random white noise.
+        let mut state = 0x1234_5678u32;
+        let mut noise = Vec::with_capacity(480 * 24);
+        for _ in 0..(480 * 24) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            noise.push(((state >> 8) as i16) / 4);
+        }
+        let mut ns = NoiseSuppressor { processor: Some(processor) };
+        // Warm up the model, then measure attenuation.
+        for chunk in noise.chunks(480).take(12) {
+            ns.process(chunk);
+        }
+        let probe = &noise[480 * 12..480 * 13];
+        let input_rms = rms_level(probe);
+        let out = ns.process(probe);
+        let output_rms = rms_level(&out);
+        assert!(
+            output_rms < input_rms * 0.5,
+            "NS should strongly attenuate white noise: {input_rms} -> {output_rms}"
+        );
     }
 }

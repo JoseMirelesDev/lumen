@@ -32,6 +32,7 @@ rtc = { version = "0.20", default-features = false, features = ["ring"] }
 cpal = "0.18"
 opus = "0.3"
 parking_lot = "0.12"
+webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"

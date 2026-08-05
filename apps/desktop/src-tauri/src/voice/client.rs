@@ -172,6 +172,8 @@ impl VoiceSession {
             let stopping = stopping.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_millis(20));
+                // WebRTC APM on the mic: noise suppression + AGC before OPUS.
+                let mut ns = crate::voice::audio::NoiseSuppressor::new();
                 loop {
                     if stopping.load(Ordering::SeqCst) {
                         break;
@@ -185,7 +187,8 @@ impl VoiceSession {
                         Err(_) => continue,
                     };
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
-                    let encoded = match encoder.lock().await.encode(&frame) {
+                    let cleaned = ns.process(&frame);
+                    let encoded = match encoder.lock().await.encode(&cleaned) {
                         Ok(e) => e,
                         Err(_) => continue,
                     };
