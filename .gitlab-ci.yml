@@ -24,6 +24,7 @@ windows-msi:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v/
     - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
   variables:
     # tauri build reads CI into its --ci flag and errors on `CI=1`.
     CI: "false"
