@@ -4,6 +4,8 @@
 //! browser/WebView WebSocket cannot set headers). Messages mirror
 //! `@lumen/protocol` `ClientMessage` / `ServerMessage`.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -28,8 +30,10 @@ pub enum SignalEvent {
     Answer { from: String, sdp: String },
     IceCandidate { from: String, candidate: Value },
     Error { code: String, message: String },
-    /// The socket closed; the session is over.
-    Closed,
+    /// The socket closed; the session is over. `replaced` = the server
+    /// evicted this connection because the same user re-joined elsewhere —
+    /// the host must NOT auto-reconnect, it would fight the new connection.
+    Closed { replaced: bool },
 }
 
 /// Outbound messages this client may send.
@@ -39,6 +43,14 @@ pub enum SignalOut {
     Offer { to: String, sdp: String },
     Answer { to: String, sdp: String },
     IceCandidate { to: String, candidate: Value },
+    /// Heartbeat: the DO answers `pong`; also keeps the DO awake so it
+    /// processes peer disconnects promptly.
+    Ping,
+    /// Close the socket now: the writer stops forwarding and closes the WS.
+    /// The session sends this on leave — dropping the sender alone is not
+    /// enough, because the heartbeat task holds a clone of the outbound
+    /// channel and keeps the writer (and thus the socket) alive forever.
+    Close,
 }
 
 // -- Wire format -------------------------------------------------------------
@@ -51,6 +63,7 @@ enum ClientMessage {
     Offer { to: String, sdp: String },
     Answer { to: String, sdp: String },
     IceCandidate { to: String, candidate: Value },
+    Ping,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,7 +73,10 @@ enum ServerMessage {
     Joined { peer_id: String, peers: Vec<PeerInfo> },
     #[serde(rename = "peer-joined")]
     PeerJoined { peer: PeerInfo },
-    #[serde(rename = "peer-left")]
+    /// Field is `peerId` on the wire, like `joined` — without the rename the
+    /// DO's `{"type":"peer-left","peerId":...}` fails to parse and the event
+    /// is silently dropped, leaving a ghost peer tile in the UI forever.
+    #[serde(rename = "peer-left", rename_all = "camelCase")]
     PeerLeft { peer_id: String },
     Offer { from: String, sdp: String },
     Answer { from: String, sdp: String },
@@ -100,36 +116,15 @@ impl SignalingClient {
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<SignalOut>();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel::<SignalEvent>();
+        let (alive_tx, mut alive_rx) = mpsc::unbounded_channel::<()>();
 
-        // Writer task: serialize + send, flush on drop.
-        tokio::spawn(async move {
-                while let Some(msg) = out_rx.recv().await {
-                    let m = match &msg {
-                        SignalOut::Join { channel_id, user_id } => ClientMessage::Join {
-                            channel_id: channel_id.clone(),
-                            user_id: user_id.clone(),
-                        },
-                        SignalOut::Offer { to, sdp } => ClientMessage::Offer { to: to.clone(), sdp: sdp.clone() },
-                        SignalOut::Answer { to, sdp } => ClientMessage::Answer { to: to.clone(), sdp: sdp.clone() },
-                        SignalOut::IceCandidate { to, candidate } => {
-                            ClientMessage::IceCandidate { to: to.clone(), candidate: candidate.clone() }
-                        }
-                    };
-                    let text = match serde_json::to_string(&m) {
-                        Ok(t) => t,
-                        Err(_) => continue,
-                    };
-                    if write.send(Message::Text(text.into())).await.is_err() {
-                        break;
-                    }
-                }
-                let _ = write.flush().await;
-                let _ = write.close().await;
-        });
-
-        // Reader task.
+        // Reader task: emit events; any inbound frame means the socket lives.
+        let alive_tx_reader = alive_tx.clone();
+        let ev_tx_reader = ev_tx.clone();
+        let ev_tx_hb = ev_tx.clone();
         let reader = {
             async move {
+                let mut replaced = false;
                 while let Some(msg) = read.next().await {
                     let msg = match msg {
                         Ok(msg) => msg,
@@ -137,8 +132,17 @@ impl SignalingClient {
                     };
                     let text = match msg {
                         Message::Text(t) => t,
+                        Message::Close(Some(frame)) => {
+                            // The DO evicts stale connections for the same
+                            // user with close 4000 "replaced".
+                            use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+                            replaced = frame.code == CloseCode::Bad(4000u16);
+                            break;
+                        }
+                        Message::Close(None) => break,
                         _ => continue,
                     };
+                    let _ = alive_tx_reader.send(());
                     let parsed = match serde_json::from_str::<ServerMessage>(&text) {
                         Ok(p) => p,
                         Err(_) => continue,
@@ -155,14 +159,83 @@ impl SignalingClient {
                         ServerMessage::Error { code, message } => SignalEvent::Error { code, message },
                         _ => continue,
                     };
-                    if ev_tx.send(event).is_err() {
+                    if ev_tx_reader.send(event).is_err() {
                         break;
                     }
                 }
-                let _ = ev_tx.send(SignalEvent::Closed);
+                let _ = ev_tx.send(SignalEvent::Closed { replaced });
             }
         };
-        tokio::spawn(reader);
+        // Spawn the reader FIRST: the writer aborts it on Close so both halves
+        // of the split stream drop, which is what actually closes the TCP
+        // connection — a close frame alone is not enough, the reader half
+        // keeps the stream (and the socket) alive.
+        let reader_handle = tokio::spawn(reader);
+
+        // Writer task: serialize + send, flush on drop.
+        tokio::spawn(async move {
+                while let Some(msg) = out_rx.recv().await {
+                    let m = match &msg {
+                        SignalOut::Join { channel_id, user_id } => ClientMessage::Join {
+                            channel_id: channel_id.clone(),
+                            user_id: user_id.clone(),
+                        },
+                        SignalOut::Offer { to, sdp } => ClientMessage::Offer { to: to.clone(), sdp: sdp.clone() },
+                        SignalOut::Answer { to, sdp } => ClientMessage::Answer { to: to.clone(), sdp: sdp.clone() },
+                        SignalOut::IceCandidate { to, candidate } => {
+                            ClientMessage::IceCandidate { to: to.clone(), candidate: candidate.clone() }
+                        }
+                        SignalOut::Ping => ClientMessage::Ping,
+                        SignalOut::Close => {
+                            // Session over: abort the reader half so both
+                            // halves of the split stream drop. That tears the
+                            // TCP connection down; the DO sees it and
+                            // broadcasts peer-left.
+                            reader_handle.abort();
+                            break;
+                        }
+                    };
+                    let text = match serde_json::to_string(&m) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+                    if write.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = write.flush().await;
+                let _ = write.close().await;
+        });
+
+        // Heartbeat: ping the DO every 5 s and declare the socket dead if
+        // nothing comes back for 20 s. Both timers use tokio's monotonic
+        // clock, which does NOT advance across system suspend — a laptop that
+        // hibernates for hours wakes up with the deadline still fresh, sends
+        // its next ping, and resumes normally instead of spuriously dropping
+        // the session.
+        let out_hb = out_tx.clone();
+        tokio::spawn(async move {
+            let mut ping = tokio::time::interval(Duration::from_secs(5));
+            let mut deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                tokio::select! {
+                    _ = ping.tick() => {
+                        let _ = out_hb.send(SignalOut::Ping);
+                        deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+                    }
+                    alive = alive_rx.recv() => {
+                        match alive {
+                            Some(()) => deadline = tokio::time::Instant::now() + Duration::from_secs(20),
+                            None => break, // reader ended → socket closed
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        let _ = ev_tx_hb.send(SignalEvent::Closed { replaced: false });
+                        break;
+                    }
+                }
+            }
+        });
 
         out_tx.send(SignalOut::Join {
             channel_id: channel_id.to_string(),
@@ -189,6 +262,8 @@ mod tests {
             serde_json::to_value(&m).unwrap(),
             serde_json::json!({"type": "offer", "to": "p-2", "sdp": "v=0"})
         );
+        let m = ClientMessage::Ping;
+        assert_eq!(serde_json::to_value(&m).unwrap(), serde_json::json!({"type": "ping"}));
     }
 
     #[test]
@@ -204,6 +279,11 @@ mod tests {
                 assert_eq!(peer_id, "me");
                 assert_eq!(peers[0].peer_id, "p");
             }
+            _ => panic!("wrong variant"),
+        }
+        let m: ServerMessage = serde_json::from_value(serde_json::json!({"type": "peer-left", "peerId": "p"})).unwrap();
+        match m {
+            ServerMessage::PeerLeft { peer_id } => assert_eq!(peer_id, "p"),
             _ => panic!("wrong variant"),
         }
         let m: ServerMessage = serde_json::from_value(serde_json::json!({"type": "ice-candidate", "from": "x", "candidate": {"candidate": "candidate:1 1 UDP 1 1.2.3.4 123 typ host"}})).unwrap();

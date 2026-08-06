@@ -19,5 +19,5 @@ pub mod event;
 pub mod rtp;
 pub mod signaling;
 
-pub use client::{VoiceClient, VoiceJoinArgs};
+pub use client::{IceServer, VoiceClient, VoiceJoinArgs};
 pub use event::{PeerLevel, PeerState, SignalingState, VoiceEvent};

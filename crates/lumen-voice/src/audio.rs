@@ -115,6 +115,10 @@ struct OutputState {
     resampler: LinearResampler,
     /// Output device channel count (typically 2 — stereo).
     channels: usize,
+    /// Device-rate samples per 20 ms frame (device_rate / 50).
+    frame_size: usize,
+    /// TEMP DIAG: samples shed by the overflow guard in `push`.
+    dropped_samples: u64,
 }
 
 impl AudioOutput {
@@ -135,14 +139,32 @@ impl AudioOutput {
     }
 
     /// Mix one decoded 48 kHz mono frame into the output, resampled to the
-    /// device rate.
+    /// device rate. Keeps playout latency bounded to a few frames: if the
+    /// drain can't keep up (bursts, several peers, a peer still pushing during
+    /// a re-join) the buffer sheds the oldest samples instead of growing — a
+    /// buffer that swells to seconds is exactly how stale audio (what was said
+    /// seconds ago) ends up being played after re-entering a channel.
     pub fn push(&self, frame: &[i16]) {
         let mut guard = self.state.lock();
         let Some(st) = guard.as_mut() else { return };
         st.buf.extend_from_slice(&st.resampler.resample(frame));
-        let excess = st.buf.len().saturating_sub(48_000 * 4); // 4 s safety ceiling
+        // ~4 frames of device-rate samples (~80 ms) is enough to smooth cpal
+        // callback phase without accumulating audible delay.
+        let target = st.frame_size.saturating_mul(4).max(st.frame_size);
+        let excess = st.buf.len().saturating_sub(target);
         if excess > 0 {
+            st.dropped_samples += excess as u64;
             st.buf.drain(..excess);
+        }
+    }
+
+    /// TEMP DIAG: current playout buffer occupancy (in frames) and total shed
+    /// samples. Lets a test observe the latency/packet-loss mechanics live.
+    pub fn stats(&self) -> (usize, u64) {
+        let guard = self.state.lock();
+        match guard.as_ref() {
+            Some(st) => (st.buf.len() / st.frame_size.max(1), st.dropped_samples),
+            None => (0, 0),
         }
     }
 
@@ -183,6 +205,8 @@ impl AudioOutput {
             buf: Vec::with_capacity((dev_rate / 2) as usize),
             resampler: LinearResampler::new(CLOCK_RATE, dev_rate),
             channels: config.channels() as usize,
+            frame_size: ((dev_rate as usize) * FRAME_SAMPLES / CLOCK_RATE as usize).max(1),
+            dropped_samples: 0,
         });
         let out = self.clone();
         let err_fn = |err| eprintln!("lumen voice: output stream error: {err}");
@@ -539,6 +563,8 @@ mod tests {
             buf: Vec::new(),
             resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
             channels: 2,
+            frame_size: FRAME_SAMPLES,
+            dropped_samples: 0,
         });
         let frame: Vec<i16> = (0..FRAME_SAMPLES as i16).collect();
         output.push(&frame);
@@ -674,6 +700,32 @@ mod tests {
         assert!(
             output_rms < input_rms * 0.5,
             "NS should strongly attenuate white noise: {input_rms} -> {output_rms}"
+        );
+    }
+
+    #[test]
+    fn output_bounds_playout_latency() {
+        // Regression: a push/drain imbalance (bursts, several peers, a peer
+        // still pushing during a re-join) must not let the output ring grow to
+        // seconds of stale audio. push() sheds the oldest samples to keep
+        // latency bounded to ~4 frames.
+        let output = AudioOutput::new();
+        *output.state.lock() = Some(OutputState {
+            buf: Vec::new(),
+            resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
+            channels: 1,
+            frame_size: FRAME_SAMPLES,
+            dropped_samples: 0,
+        });
+        let frame: Vec<i16> = (0..FRAME_SAMPLES as i16).collect();
+        // Push far more frames than could ever drain (e.g. 30 s of audio).
+        for _ in 0..(30 * 50) {
+            output.push(&frame);
+        }
+        let len = output.state.lock().as_ref().unwrap().buf.len();
+        assert!(
+            len <= FRAME_SAMPLES * 4,
+            "output buffer grew to {len} samples (> 80 ms latency)"
         );
     }
 }

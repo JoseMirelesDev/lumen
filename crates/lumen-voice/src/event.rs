@@ -32,12 +32,16 @@ impl PeerState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignalingState {
     Closed,
+    /// The server evicted this connection because the same user re-joined
+    /// elsewhere. Do not auto-reconnect — it would fight the new connection.
+    Replaced,
 }
 
 impl SignalingState {
     pub fn as_str(self) -> &'static str {
         match self {
             SignalingState::Closed => "closed",
+            SignalingState::Replaced => "replaced",
         }
     }
 }

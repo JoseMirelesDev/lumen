@@ -94,6 +94,21 @@ impl VoiceClient {
     }
 
     pub async fn join(&self, args: VoiceJoinArgs) -> std::result::Result<(), String> {
+        // A previous session may have died on its own — the signaling socket
+        // dropped (network, server eviction) and the run_loop exited without
+        // an explicit leave(). The slot would otherwise block every re-join
+        // and break auto-reconnect, which retries forever with
+        // "already in a voice channel".
+        let stale = {
+            let guard = self.session.lock().await;
+            match guard.as_ref() {
+                Some(s) => s.run_ended().await,
+                None => false,
+            }
+        };
+        if stale {
+            *self.session.lock().await = None;
+        }
         let mut guard = self.session.lock().await;
         if guard.is_some() {
             return Err("already in a voice channel".into());
@@ -123,6 +138,11 @@ impl VoiceClient {
             s.output.set_enabled(!deafened);
         }
     }
+
+    /// TEMP DIAG: (playout buffer occupancy in frames, total shed samples).
+    pub async fn output_stats(&self) -> Option<(usize, u64)> {
+        self.session.lock().await.as_ref().map(|s| s.output.stats())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +162,9 @@ struct VoiceSession {
     /// The outbound signaling handle. Dropping it closes the WS → loop exits.
     signal_tx: Mutex<Option<mpsc::UnboundedSender<SignalOut>>>,
     stopping: Arc<AtomicBool>,
+    /// Handle of the signaling run_loop task; awaited in stop() so the session
+    /// (and its cpal output stream) is fully dropped before a re-join starts.
+    run: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl VoiceSession {
@@ -238,6 +261,63 @@ impl VoiceSession {
             });
         }
 
+        // Playout (session-wide mixer): one 20 ms clock drives every peer's
+        // jitter buffer, decoding and summing all frames into a single mixed
+        // frame pushed to the shared output. This keeps the output ring at
+        // ~1 frame occupancy regardless of how many peers are connected — a
+        // per-peer playout (each pushing its own 20 ms frame per tick) used to
+        // saturate the shared ring and shed half the audio whenever 2+ peers
+        // were connected, and a dropped peer's silence kept eating the buffer
+        // for the whole time its connection lingered.
+        {
+            let peers = peers.clone();
+            let output = output.clone();
+            let stopping = stopping.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_millis(20));
+                let mut acc = vec![0i32; FRAME_SAMPLES];
+                let mut mixed = vec![0i16; FRAME_SAMPLES];
+                let silence = vec![0i16; FRAME_SAMPLES];
+                loop {
+                    if stopping.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    ticker.tick().await;
+                    acc.fill(0);
+                    let mut talking = 0usize;
+                    // Clone handles out of the lock so decoding never holds
+                    // the peers map (signaling/send tasks lock it too).
+                    let snapshot: Vec<Peer> = peers.lock().values().cloned().collect();
+                    for peer in &snapshot {
+                        let frame = peer.jb.lock().pop();
+                        let pcm = match frame {
+                            Some(Some((_, payload))) => {
+                                peer.decoder.lock().decode(Some(payload.as_slice())).ok()
+                            }
+                            // Lost frame: OPUS PLC fills the gap.
+                            Some(None) => peer.decoder.lock().decode(None).ok(),
+                            // Still filling or idle: this peer contributes silence.
+                            None => None,
+                        };
+                        let Some(pcm) = pcm else { continue };
+                        peer.level.store(rms_level(&pcm).to_bits(), Ordering::SeqCst);
+                        for (i, s) in pcm.iter().enumerate() {
+                            acc[i] = acc[i].saturating_add(*s as i32);
+                        }
+                        talking += 1;
+                    }
+                    if talking == 0 {
+                        output.push(&silence);
+                    } else {
+                        for (i, a) in acc.iter().enumerate() {
+                            mixed[i] = (*a).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                        }
+                        output.push(&mixed);
+                    }
+                }
+            });
+        }
+
         let session = Arc::new(Self {
             events,
             peers,
@@ -250,20 +330,30 @@ impl VoiceSession {
             ice,
             signal_tx: Mutex::new(Some(signal_tx)),
             stopping,
+            run: tokio::sync::Mutex::new(None),
         });
 
         let loop_session = Arc::clone(&session);
-        tokio::spawn(async move { loop_session.run_loop(signal_rx).await; });
+        *session.run.lock().await = Some(tokio::spawn(async move {
+            loop_session.run_loop(signal_rx).await;
+        }));
         Ok(session)
     }
 
     /// Drive the signaling loop until the session closes (stop() or socket end).
     async fn run_loop(self: Arc<Self>, mut signal_rx: mpsc::UnboundedReceiver<SignalEvent>) {
+        let mut replaced = false;
         loop {
             tokio::select! {
                 event = signal_rx.recv() => {
                     let Some(event) = event else { break };
-                    self.handle_event(event).await;
+                    match event {
+                        SignalEvent::Closed { replaced: r } => {
+                            replaced = r;
+                            break;
+                        }
+                        _ => self.handle_event(event).await,
+                    }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
                     if self.stopping.load(Ordering::SeqCst) {
@@ -272,7 +362,7 @@ impl VoiceSession {
                 }
             }
         }
-        self.teardown().await;
+        self.teardown(replaced).await;
     }
 
     async fn handle_event(&self, event: SignalEvent) {
@@ -336,7 +426,7 @@ impl VoiceSession {
             SignalEvent::Error { code, message } => {
                 let _ = self.events.send(VoiceEvent::Error { code: Some(code), message });
             }
-            SignalEvent::Closed => {}
+            SignalEvent::Closed { .. } => {}
         }
     }
 
@@ -375,6 +465,7 @@ impl VoiceSession {
         )));
 
         let jb = Arc::new(Mutex::new(JitterBuffer::new(4)));
+        let decoder = Arc::new(Mutex::new(OpusDecoder::new()?));
         let level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -383,8 +474,6 @@ impl VoiceSession {
             signal: signal_tx.clone(),
             events: self.events.clone(),
             jb: jb.clone(),
-            output: self.output.clone(),
-            level: level.clone(),
             stop: stop.clone(),
         });
 
@@ -412,6 +501,7 @@ impl VoiceSession {
             sender,
             send_tx,
             jb,
+            decoder,
             level,
             stop,
         })
@@ -499,26 +589,47 @@ impl VoiceSession {
         }
     }
 
-    async fn teardown(&self) {
+    async fn teardown(&self, replaced: bool) {
         self.stopping.store(true, Ordering::SeqCst);
         let peers: Vec<Peer> = self.peers.lock().drain().map(|(_, p)| p).collect();
         for peer in peers {
             peer.stop.store(true, Ordering::SeqCst);
             let _ = peer.pc.close().await;
         }
-        let _ = self.events.send(VoiceEvent::Signaling { state: SignalingState::Closed });
+        let state = if replaced { SignalingState::Replaced } else { SignalingState::Closed };
+        let _ = self.events.send(VoiceEvent::Signaling { state });
+    }
+
+    /// True once the signaling loop has exited on its own (socket death,
+    /// server eviction) and the session is no longer usable. `run` is always
+    /// Some after start; None (never started) counts as ended.
+    async fn run_ended(&self) -> bool {
+        self.run.lock().await.as_ref().map_or(true, |h| h.is_finished())
     }
 
     /// End the session. Closes peers and the WS; the loop breaks and tears down.
     async fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
-        *self.signal_tx.lock() = None; // closes the WS → run_loop exits
+        // Explicitly ask the signaling writer to close the socket: dropping
+        // the sender alone would NOT close it (the heartbeat task holds a
+        // clone of the outbound channel, so the writer never sees it close),
+        // leaving a ghost peer in the DO map until the next re-join dedup.
+        if let Some(tx) = self.signal_tx.lock().take() {
+            let _ = tx.send(SignalOut::Close);
+        }
         let peers: Vec<Peer> = self.peers.lock().drain().map(|(_, p)| p).collect();
         for peer in peers {
             peer.stop.store(true, Ordering::SeqCst);
             let _ = peer.pc.close().await;
         }
         self.output.set_enabled(false);
+        // Block until the signaling loop has exited and dropped the session,
+        // so the old cpal output stream is gone before a re-join starts.
+        // Otherwise a fast leave→join keeps the previous stream draining its
+        // residual buffer, which plays seconds of stale audio.
+        if let Some(handle) = self.run.lock().await.take() {
+            let _ = handle.await;
+        }
     }
 }
 
@@ -533,8 +644,11 @@ struct Peer {
     #[allow(dead_code)]
     sender: Arc<dyn RtpSender>,
     send_tx: mpsc::UnboundedSender<Vec<u8>>,
-    #[allow(dead_code)]
+    /// Inbound packet ordering; filled by the per-peer receive task, drained
+    /// by the session-wide playout task (one pop per 20 ms tick).
     jb: Arc<Mutex<JitterBuffer>>,
+    /// Per-peer OPUS decoder, owned by the session-wide playout task.
+    decoder: Arc<Mutex<OpusDecoder>>,
     level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
 }
@@ -548,6 +662,7 @@ impl Clone for Peer {
             sender: self.sender.clone(),
             send_tx: self.send_tx.clone(),
             jb: self.jb.clone(),
+            decoder: self.decoder.clone(),
             level: self.level.clone(),
             stop: self.stop.clone(),
         }
@@ -598,8 +713,6 @@ struct PeerHandler {
     signal: mpsc::UnboundedSender<SignalOut>,
     events: mpsc::UnboundedSender<VoiceEvent>,
     jb: Arc<Mutex<JitterBuffer>>,
-    output: AudioOutput,
-    level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
 }
 
@@ -653,7 +766,9 @@ impl PeerConnectionEventHandler for PeerHandler {
     async fn on_signaling_state_change(&self, _state: RTCSignalingState) {}
 
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
-        // Receiver: push inbound RTP into the shared jitter buffer.
+        // Receiver: push inbound RTP into this peer's jitter buffer. Playout
+        // is session-wide (see the mixer task in VoiceSession::start) so the
+        // shared output buffer gets exactly one mixed frame per 20 ms tick.
         let recv_jb = self.jb.clone();
         let stop_recv = self.stop.clone();
         tokio::spawn(async move {
@@ -671,47 +786,6 @@ impl PeerConnectionEventHandler for PeerHandler {
                         break;
                     }
                     _ => {}
-                }
-            }
-        });
-
-        // Player: playout clock at 20 ms cadence; decode + push to output.
-        let play_jb = self.jb.clone();
-        let output = self.output.clone();
-        let level = self.level.clone();
-        let stop_play = self.stop.clone();
-        tokio::spawn(async move {
-            let mut decoder = match OpusDecoder::new() {
-                Ok(d) => d,
-                Err(_) => return,
-            };
-            let mut ticker = tokio::time::interval(Duration::from_millis(20));
-            // Keep the device fed even when the jitter buffer has nothing
-            // (remote silent / still filling): an empty tick would let the
-            // output ring underrun ("A buffer underrun or overrun occurred")
-            // and click on resume.
-            let silence = vec![0i16; FRAME_SAMPLES];
-            loop {
-                if stop_play.load(Ordering::SeqCst) {
-                    break;
-                }
-                ticker.tick().await;
-                let frame = play_jb.lock().pop();
-                match frame {
-                    Some(Some((_, payload))) => {
-                        if let Ok(pcm) = decoder.decode(Some(payload.as_slice())) {
-                            level.store(rms_level(&pcm).to_bits(), Ordering::SeqCst);
-                            output.push(&pcm);
-                        }
-                    }
-                    // Lost frame: run PLC to avoid a gap.
-                    Some(None) => {
-                        if let Ok(pcm) = decoder.decode(None) {
-                            output.push(&pcm);
-                        }
-                    }
-                    // Nothing to play: push silence to keep the clock running.
-                    None => output.push(&silence),
                 }
             }
         });
