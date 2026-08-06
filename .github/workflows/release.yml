@@ -22,11 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install system deps (ALSA for cpal, X11/xkb for winit, meson/ninja/libclang for the voice stack)
+      - name: Install system deps (ALSA for cpal, fontconfig/X11/xkb for Slint-winit, meson/ninja/libclang for the voice stack)
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config cmake build-essential \
-            libasound2-dev libxkbcommon-dev libxcb-render0-dev \
+            libasound2-dev libfontconfig1-dev libx11-dev libxrender-dev \
+            libwayland-dev libxkbcommon-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
             meson ninja-build libclang-dev
       - name: Build release binary
