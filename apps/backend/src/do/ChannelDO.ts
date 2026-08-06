@@ -95,6 +95,29 @@ export class LumenChannelDO {
           peers = live;
           await this.state.storage.put(PEERS_KEY, peers);
         }
+        // Dedup: one connection per user. A stale socket for the same userId
+        // (client died without a close event, or reconnected from elsewhere)
+        // must not linger as a ghost peer — close it and replace the entry.
+        // The old socket's webSocketClose will call removePeer, which is
+        // idempotent once its peerId is gone from the map.
+        const previous = peers.find((p) => p.userId === att.userId);
+        console.log(`[do] join userId=${att.userId} previous=${previous?.peerId ?? "none"} peers=${peers.map((p) => p.userId.slice(0, 6)).join(",")}`);
+        if (previous) {
+          const old = this.findLiveSocket(previous.peerId, previous.userId);
+          if (old && old !== ws) {
+            try {
+              old.close(4000, "replaced");
+            } catch {
+              /* already closed */
+            }
+          }
+          peers = peers.filter((p) => p.userId !== att.userId);
+          await this.state.storage.put(PEERS_KEY, peers);
+          await this.broadcast(
+            { type: "peer-left", peerId: previous.peerId } satisfies ServerMessage,
+            ws,
+          );
+        }
         if (peers.length >= MAX_PEERS) {
           this.sendError(ws, "channel_full", "channel is full (max 4 peers)");
           ws.close(1013, "channel_full");
@@ -106,7 +129,7 @@ export class LumenChannelDO {
         ws.send(
           JSON.stringify({ type: "joined", peerId: att.peerId, peers: others } satisfies ServerMessage),
         );
-        this.broadcast(
+        await this.broadcast(
           { type: "peer-joined", peer: { peerId: att.peerId, userId: att.userId } } satisfies ServerMessage,
           ws,
         );
@@ -140,7 +163,7 @@ export class LumenChannelDO {
           this.sendError(ws, "not_joined", "send join first");
           return;
         }
-        this.broadcast(
+        await this.broadcast(
           { type: "presence", userId: att.userId, status: msg.status } satisfies ServerMessage,
           ws,
         );
@@ -199,15 +222,27 @@ export class LumenChannelDO {
     peers.splice(idx, 1);
     await this.state.storage.put(PEERS_KEY, peers);
     if (att.joined) {
-      this.broadcast({ type: "peer-left", peerId: att.peerId } satisfies ServerMessage, ws);
+      const live = this.state.getWebSockets().filter((s) => s.readyState === OPEN).length;
+      console.log(`[do] removePeer ${att.peerId.slice(0, 6)} joined=${att.joined} liveSockets=${live}`);
+      await this.broadcast({ type: "peer-left", peerId: att.peerId } satisfies ServerMessage, ws);
     }
   }
 
-  private broadcast(message: ServerMessage, except?: WebSocket): void {
+  /**
+   * Send to every joined peer. MUST resolve sockets from the peer map, not
+   * `getWebSockets()`: inside a WebSocket event (message/close/error) the
+   * Hibernation API scopes the tag-less call to the event socket's tags, so a
+   * broadcast from `webSocketClose` would reach nobody else. Each peer's
+   * socket is looked up explicitly by its own userId tag.
+   */
+  private async broadcast(message: ServerMessage, except?: WebSocket): Promise<void> {
     const payload = JSON.stringify(message);
-    for (const socket of this.state.getWebSockets()) {
-      if (socket === except || socket.readyState !== OPEN) continue;
-      socket.send(payload);
+    const peers = (await this.state.storage.get<PeerInfo[]>(PEERS_KEY)) ?? [];
+    for (const p of peers) {
+      const socket = this.findLiveSocket(p.peerId, p.userId);
+      if (socket && socket !== except && socket.readyState === OPEN) {
+        socket.send(payload);
+      }
     }
   }
 
