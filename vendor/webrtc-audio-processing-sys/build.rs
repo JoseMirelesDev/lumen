@@ -268,18 +268,21 @@ mod webrtc {
         lib_dirs: &[PathBuf],
         prefix: &str,
     ) -> Result<Vec<String>> {
-        let static_lib_filename = format!("lib{LIB_NAME}.a");
-
+        // VENDORED PATCH: symbol prefixing is DISABLED. The rename step
+        // assumes GNU archive names (lib*.a); on MSVC, cc-rs emits the
+        // wrapper as *.lib, so only the meson library gets prefixed and the
+        // wrapper's references never match (LNK2019 x12). Nothing in Lumen
+        // links another WebRTC C++ copy (webrtc-rs is pure Rust), so the
+        // prefix serves no purpose here. Both sides keep original names.
+        let _ = prefix;
         for lib_dir in lib_dirs {
-            let lib_path = lib_dir.join(&static_lib_filename);
+            let lib_path = lib_dir.join(&format!("lib{LIB_NAME}.a"));
             if lib_path.exists() {
-                let symbols = get_defined_symbols(&lib_path)?;
-                prefix_archive_symbols(&lib_path, &symbols, prefix)?;
-                return Ok(symbols);
+                return Ok(Vec::new());
             }
         }
 
-        bail!("Cannot find {static_lib_filename} in {lib_dirs:?} to prefix its symbols.");
+        bail!("Cannot find lib{LIB_NAME}.a in {lib_dirs:?}.");
     }
 
     fn webrtc_source_dir() -> PathBuf {
@@ -356,7 +359,7 @@ fn main() -> Result<()> {
 
     // Prefix defined symbols in the webrtc library (bundled builds only)
     // Returns the list of renamed symbols to update wrapper references later
-    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;
+    let _renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;
 
     for dir in &lib_dirs {
         println!("cargo:rustc-link-search=native={}", dir.display());
@@ -419,11 +422,11 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/wrapper.hpp");
     println!("cargo:rerun-if-changed=src/wrapper.cpp");
 
-    // Prefix the wrapper library's references to webrtc symbols to match the renamed webrtc library.
+    // VENDORED PATCH: wrapper symbol prefixing disabled (see
+    // prefix_library_symbols) — the .a name only exists on non-MSVC, and
+    // prefixing just one side breaks the link on Windows.
     let wrapper_lib = out_dir().join("libwebrtc_audio_processing_wrapper.a");
-    if wrapper_lib.exists() {
-        prefix_archive_symbols(&wrapper_lib, &renamed_symbols, SYMBOL_PREFIX)?;
-    }
+    let _ = wrapper_lib.exists();
 
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static={LIB_NAME}");
