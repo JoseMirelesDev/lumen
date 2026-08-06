@@ -22,6 +22,9 @@ tokio-tungstenite.workspace = true
 url.workspace = true
 webrtc.workspace = true
 webrtc-audio-processing.workspace = true
+# NetEQ-inspired adaptive jitter buffer for the receive path (replaces the
+# hand-rolled JitterBuffer). Core-only: no cpal/axum/tokio/ropus features.
+neteq = { version = "0.9", default-features = false }
 
 [dev-dependencies]
 reqwest.workspace = true

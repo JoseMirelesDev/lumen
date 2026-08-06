@@ -303,6 +303,35 @@ impl OpusDecoder {
     }
 }
 
+/// Bridge our `OpusDecoder` (i16 PCM) onto neteq's `AudioDecoder` (f32 PCM),
+/// so the NetEQ adaptive jitter buffer can decode inbound OPUS frames itself.
+/// Owned by a `NetEq` instance via `register_decoder`.
+pub struct NetEqOpusDecoder {
+    inner: OpusDecoder,
+}
+
+impl NetEqOpusDecoder {
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self { inner: OpusDecoder::new()? })
+    }
+}
+
+impl neteq::codec::AudioDecoder for NetEqOpusDecoder {
+    fn sample_rate(&self) -> u32 {
+        CLOCK_RATE
+    }
+    fn channels(&self) -> u8 {
+        1
+    }
+    fn decode(&mut self, encoded: &[u8]) -> neteq::Result<Vec<f32>> {
+        let pcm = self
+            .inner
+            .decode(Some(encoded))
+            .map_err(|e| neteq::NetEqError::DecoderError(e.to_string()))?;
+        Ok(pcm.iter().map(|&s| s as f32 / 32768.0).collect())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Noise suppression (WebRTC AudioProcessing — the module Chrome/Discord use)
 // ---------------------------------------------------------------------------

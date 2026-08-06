@@ -46,11 +46,13 @@ use webrtc::peer_connection::{
 use webrtc::rtp_transceiver::RtpSender;
 
 use crate::audio::{
-    rms_level, AudioOutput, JitterBuffer, OpusDecoder, OpusEncoder, FRAME_SAMPLES,
+    rms_level, AudioOutput, NetEqOpusDecoder, OpusEncoder, FRAME_SAMPLES,
 };
 use crate::event::{PeerLevel, PeerState, SignalingState, VoiceEvent};
 use crate::rtp::AudioPacketizer;
 use crate::signaling::{SignalEvent, SignalOut, SignalingClient};
+
+use neteq::{AudioPacket, NetEq, NetEqConfig, RtpHeader};
 
 /// STUN/TURN server as the frontend supplies it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +201,14 @@ impl VoiceSession {
             .collect();
 
         // Send: encode mic frames and fan out to every peer's send worker.
+        //
+        // The mic hardware drives the cadence — no ticker needed. cpal
+        // delivers one 960-sample (20 ms) frame per callback, resampled and
+        // buffered by `feed()`. This task just awaits each frame, encodes,
+        // and fans out. Using the mic as the clock (instead of a tokio
+        // interval) avoids two-clock drift: a software timer and the audio
+        // hardware inevitably slip against each other, causing either frame
+        // drops (Skip) or stale-audio backlog (Burst).
         {
             let peers = peers.clone();
             let muted = muted.clone();
@@ -206,33 +216,25 @@ impl VoiceSession {
             let local_level = local_level.clone();
             let stopping = stopping.clone();
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_millis(20));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 // WebRTC APM on the mic: noise suppression + AGC before OPUS.
                 let mut ns = crate::audio::NoiseSuppressor::new();
-                loop {
+                while let Some(mut frame) = mic_rx.recv().await {
                     if stopping.load(Ordering::SeqCst) {
                         break;
                     }
-                    ticker.tick().await;
                     if muted.load(Ordering::SeqCst) {
-                        // Drain and discard while muted so frames don't pile up.
-                        while mic_rx.try_recv().is_ok() {}
                         continue;
                     }
-                    // Drain the channel and keep only the most recent frame.
-                    // The mic produces 20 ms frames at real-time pace, but if
-                    // encoding + APM takes any measurable time the channel can
-                    // accumulate stale frames. Encoding them all in order would
-                    // shift playout seconds into the future — the exact symptom
-                    // of the delay bug. Skipping to the latest keeps us at the
-                    // live edge: one frame of loss is inaudible, seconds of
-                    // accumulated delay is not.
-                    let mut frame: Option<Vec<i16>> = None;
+                    // Stay at the live edge: if processing (encode + NS) fell
+                    // behind the mic and frames piled up while we encoded the
+                    // previous one, shed them and keep the newest. In steady
+                    // state the channel holds 0-1 frames, so this is a no-op —
+                    // no frames are dropped and the voice is never cut. It
+                    // only kicks in when genuinely overloaded, bounding the
+                    // backlog so delay can't re-accumulate.
                     while let Ok(f) = mic_rx.try_recv() {
-                        frame = Some(f);
+                        frame = f;
                     }
-                    let Some(frame) = frame else { continue };
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
                     let cleaned = ns.process(&frame);
                     let encoded = match encoder.lock().await.encode(&cleaned) {
@@ -303,19 +305,31 @@ impl VoiceSession {
                     // the peers map (signaling/send tasks lock it too).
                     let snapshot: Vec<Peer> = peers.lock().values().cloned().collect();
                     for peer in &snapshot {
-                        let frame = peer.jb.lock().pop();
-                        let pcm = match frame {
-                            Some(Some((_, payload))) => {
-                                peer.decoder.lock().decode(Some(payload.as_slice())).ok()
+                        // Pull two 10 ms frames from NetEQ = one 20 ms frame
+                        // (960 samples). NetEQ reorders, conceals loss and
+                        // adapts its delay, so a frame is always available; a
+                        // peer with nothing yet contributes silence.
+                        let mut pcm = vec![0i16; FRAME_SAMPLES];
+                        let mut got = 0usize;
+                        for _ in 0..2 {
+                            match peer.neteq.lock().get_audio() {
+                                Ok(audio) => {
+                                    let n = audio.samples.len().min(FRAME_SAMPLES - got);
+                                    for (i, s) in audio.samples[..n].iter().enumerate() {
+                                        pcm[got + i] = (*s * 32767.0)
+                                            .round()
+                                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                                    }
+                                    got += n;
+                                }
+                                Err(_) => break,
                             }
-                            // Lost frame: OPUS PLC fills the gap.
-                            Some(None) => peer.decoder.lock().decode(None).ok(),
-                            // Still filling or idle: this peer contributes silence.
-                            None => None,
-                        };
-                        let Some(pcm) = pcm else { continue };
-                        peer.level.store(rms_level(&pcm).to_bits(), Ordering::SeqCst);
-                        for (i, s) in pcm.iter().enumerate() {
+                        }
+                        if got == 0 {
+                            continue; // peer idle: contributes silence
+                        }
+                        peer.level.store(rms_level(&pcm[..got]).to_bits(), Ordering::SeqCst);
+                        for (i, s) in pcm[..got].iter().enumerate() {
                             acc[i] = acc[i].saturating_add(*s as i32);
                         }
                         talking += 1;
@@ -478,8 +492,22 @@ impl VoiceSession {
             }],
         )));
 
-        let jb = Arc::new(Mutex::new(JitterBuffer::new(2)));
-        let decoder = Arc::new(Mutex::new(OpusDecoder::new()?));
+        // Per-peer NetEQ: adaptive jitter buffer + decoder. 48 kHz mono, delay
+        // clamped (max 200 ms) so a jitter burst can't balloon latency to
+        // seconds; min 20 ms keeps it tight when the network is calm.
+        let neteq = {
+            let mut n = NetEq::new(NetEqConfig {
+                sample_rate: 48000,
+                channels: 1,
+                max_delay_ms: 200,
+                min_delay_ms: 20,
+                ..Default::default()
+            })
+            .map_err(anyhow::Error::msg)?;
+            n.register_decoder(111, Box::new(NetEqOpusDecoder::new()?));
+            n
+        };
+        let neteq = Arc::new(Mutex::new(neteq));
         let level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -487,7 +515,7 @@ impl VoiceSession {
             peer_id: peer_id.to_string(),
             signal: signal_tx.clone(),
             events: self.events.clone(),
-            jb: jb.clone(),
+            neteq: neteq.clone(),
             stop: stop.clone(),
         });
 
@@ -514,8 +542,7 @@ impl VoiceSession {
             pc,
             sender,
             send_tx,
-            jb,
-            decoder,
+            neteq,
             level,
             stop,
         })
@@ -658,11 +685,10 @@ struct Peer {
     #[allow(dead_code)]
     sender: Arc<dyn RtpSender>,
     send_tx: mpsc::UnboundedSender<Vec<u8>>,
-    /// Inbound packet ordering; filled by the per-peer receive task, drained
-    /// by the session-wide playout task (one pop per 20 ms tick).
-    jb: Arc<Mutex<JitterBuffer>>,
-    /// Per-peer OPUS decoder, owned by the session-wide playout task.
-    decoder: Arc<Mutex<OpusDecoder>>,
+    /// Inbound adaptive jitter buffer + decoder (NetEQ). Filled by the
+    /// per-peer receive task (`insert_packet`), drained by the session-wide
+    /// playout task (`get_audio`, two 10 ms frames per 20 ms tick).
+    neteq: Arc<Mutex<NetEq>>,
     level: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
 }
@@ -675,8 +701,7 @@ impl Clone for Peer {
             pc: self.pc.clone(),
             sender: self.sender.clone(),
             send_tx: self.send_tx.clone(),
-            jb: self.jb.clone(),
-            decoder: self.decoder.clone(),
+            neteq: self.neteq.clone(),
             level: self.level.clone(),
             stop: self.stop.clone(),
         }
@@ -726,7 +751,7 @@ struct PeerHandler {
     peer_id: String,
     signal: mpsc::UnboundedSender<SignalOut>,
     events: mpsc::UnboundedSender<VoiceEvent>,
-    jb: Arc<Mutex<JitterBuffer>>,
+    neteq: Arc<Mutex<NetEq>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -780,10 +805,10 @@ impl PeerConnectionEventHandler for PeerHandler {
     async fn on_signaling_state_change(&self, _state: RTCSignalingState) {}
 
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
-        // Receiver: push inbound RTP into this peer's jitter buffer. Playout
-        // is session-wide (see the mixer task in VoiceSession::start) so the
-        // shared output buffer gets exactly one mixed frame per 20 ms tick.
-        let recv_jb = self.jb.clone();
+        // Receiver: feed inbound RTP into this peer's NetEQ jitter buffer.
+        // Playout is session-wide (see the mixer task in VoiceSession::start):
+        // it pulls two 10 ms frames per 20 ms tick and mixes them.
+        let recv_neteq = self.neteq.clone();
         let stop_recv = self.stop.clone();
         tokio::spawn(async move {
             while let Some(event) = track.poll().await {
@@ -792,9 +817,20 @@ impl PeerConnectionEventHandler for PeerHandler {
                 }
                 match event {
                     TrackRemoteEvent::OnRtpPacket(pkt) => {
-                        let ts = pkt.header.timestamp;
-                        let seq = pkt.header.sequence_number;
-                        recv_jb.lock().push(seq, ts, pkt.payload.to_vec());
+                        let header = RtpHeader {
+                            sequence_number: pkt.header.sequence_number,
+                            timestamp: pkt.header.timestamp,
+                            ssrc: pkt.header.ssrc,
+                            payload_type: pkt.header.payload_type,
+                            marker: pkt.header.marker,
+                        };
+                        let _ = recv_neteq.lock().insert_packet(AudioPacket::new(
+                            header,
+                            pkt.payload.to_vec(),
+                            48000, // sample rate
+                            1,     // channels
+                            20,    // one 20 ms OPUS frame per packet
+                        ));
                     }
                     TrackRemoteEvent::OnEnded | TrackRemoteEvent::OnEnding | TrackRemoteEvent::OnError => {
                         break;
