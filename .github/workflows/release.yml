@@ -60,6 +60,9 @@ jobs:
         env:
           CC: cl
           CXX: cl
+          # webrtc-audio-processing uses designated initializers (C++20);
+          # MSVC defaults to C++17.
+          CXXFLAGS: /std:c++20
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       - uses: actions/upload-artifact@v4
         with:
