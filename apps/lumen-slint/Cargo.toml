@@ -1,0 +1,24 @@
+[package]
+name = "lumen-desktop"
+version.workspace = true
+edition.workspace = true
+description = "Lumen desktop client — Slint UI host"
+license = "MIT"
+
+[[bin]]
+name = "lumen"
+path = "src/main.rs"
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dependencies]
+slint.workspace = true
+lumen-core = { path = "../../crates/lumen-core" }
+lumen-voice = { path = "../../crates/lumen-voice" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+parking_lot.workspace = true
+arboard = "3"

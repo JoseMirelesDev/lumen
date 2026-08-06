@@ -1,0 +1,74 @@
+// Reusable modal card: dimmed full-window overlay + centered card with a
+// single text field and Cancel/submit buttons. Used for create-server,
+// join-server and create-channel dialogs (hosted at AppWindow level).
+
+import { AppTheme } from "theme.slint";
+import { Button, LineEdit } from "std-widgets.slint";
+
+export component ModalCard inherits Rectangle {
+    in property <string> title;
+    in property <string> placeholder;
+    in property <string> button-label;
+    in property <bool> show-kind;
+    callback cancel();
+    callback submit-kind(string, string);
+    property <string> value;
+    property <string> kind: "text";
+
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.6);
+
+    Rectangle {
+        width: 300px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: AppTheme.colors.bg-raised;
+        border-radius: AppTheme.radius;
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: root.title;
+                font-size: 16px;
+                font-weight: 700;
+                color: AppTheme.colors.text;
+            }
+            LineEdit {
+                text <=> root.value;
+                placeholder-text: root.placeholder;
+                accepted => { root.submit-kind(root.value, root.kind); }
+            }
+            if root.show-kind : HorizontalLayout {
+                spacing: 14px;
+                Button {
+                    text: "Text";
+                    primary: root.kind == "text";
+                    clicked => { root.kind = "text"; }
+                }
+                Button {
+                    text: "Voice";
+                    primary: root.kind == "voice";
+                    clicked => { root.kind = "voice"; }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    
+                    clicked => { root.cancel(); }
+                }
+                Button {
+                    text: root.button-label;
+                    enabled: root.value != "";
+                    primary: true;
+                    clicked => { root.submit-kind(root.value, root.kind); }
+                }
+            }
+        }
+    }
+}

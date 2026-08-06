@@ -1,0 +1,114 @@
+// Server rail — port of apps/desktop/src/lib/components/ServerRail.svelte.
+// Pure view: renders servers + emits callbacks. Create/join modals live at
+// AppWindow level (ui/modal.slint); this view only signals open-*.
+
+import { AppTheme } from "theme.slint";
+import { ServerItem } from "types.slint";
+
+export component ServerRail inherits Rectangle {
+    in property <[ServerItem]> servers;
+    in property <string> user-label;
+    in property <bool> friends-active;
+    callback select-server(string);
+    callback open-friends();
+    callback logout();
+    callback open-create-server();
+    callback open-join-server();
+
+    width: AppTheme.rail-width;
+    vertical-stretch: 1;
+    background: AppTheme.colors.bg-rail;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: AppTheme.sp-2;
+
+        for s in root.servers: Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: (s.active || ta.has-hover) ? 12px : 20px;
+            background: s.active ? AppTheme.colors.accent : (ta.has-hover ? AppTheme.colors.bg-hover : AppTheme.colors.bg-raised);
+            animate border-radius { duration: 120ms; }
+            animate background { duration: 100ms; }
+            ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.select-server(s.id); }
+                Text {
+                    text: s.label;
+                    color: s.active ? white : AppTheme.colors.text;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+            }
+        }
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: 20px;
+            border-width: 1px;
+            border-color: AppTheme.colors.border;
+            background: ta_create.has-hover ? AppTheme.colors.bg-hover : transparent;
+            animate background { duration: 100ms; }
+            ta_create := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open-create-server(); }
+                Text { text: "+"; color: AppTheme.colors.accent; font-size: 18px; font-weight: 700; }
+            }
+        }
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: 20px;
+            border-width: 1px;
+            border-color: AppTheme.colors.border;
+            background: ta_join.has-hover ? AppTheme.colors.bg-hover : transparent;
+            animate background { duration: 100ms; }
+            ta_join := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open-join-server(); }
+                Text { text: "@"; color: AppTheme.colors.accent; font-size: 18px; font-weight: 700; }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: (root.friends-active || ta_friends.has-hover) ? 12px : 20px;
+            background: root.friends-active ? AppTheme.colors.accent : (ta_friends.has-hover ? AppTheme.colors.bg-hover : AppTheme.colors.bg-raised);
+            animate border-radius { duration: 120ms; }
+            animate background { duration: 100ms; }
+            ta_friends := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open-friends(); }
+                Text {
+                    text: "Friends";
+                    color: root.friends-active ? white : AppTheme.colors.text;
+                    font-size: 9px;
+                    font-weight: 700;
+                }
+            }
+        }
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: 20px;
+            background: ta_logout.has-hover ? AppTheme.colors.bg-active : AppTheme.colors.bg-hover;
+            animate background { duration: 100ms; }
+            ta_logout := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.logout(); }
+                Text {
+                    text: root.user-label;
+                    color: AppTheme.colors.text-dim;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+            }
+        }
+    }
+}

@@ -25,6 +25,3 @@ lumen-voice = { path = "../../../crates/lumen-voice" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
-
-[patch.crates-io]
-wry = { path = "../../../vendor/wry" }

@@ -4,7 +4,9 @@
 resolver = "2"
 members = [
     "apps/desktop/src-tauri",
+    "apps/lumen-slint",
     "crates/lumen-voice",
+    "crates/lumen-core",
 ]
 
 [workspace.package]
@@ -12,6 +14,8 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace.dependencies]
+slint = { version = "1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-winit-software"] }
+slint-build = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -28,3 +32,11 @@ cpal = "0.18"
 opus = "0.3"
 parking_lot = "0.12"
 webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+directories = "6"
+thiserror = "2"
+
+# Vendored wry patch (WebKitGTK media-permission hook). Must live at the
+# workspace root — a patch in a workspace member is silently ignored.
+[patch.crates-io]
+wry = { path = "vendor/wry" }

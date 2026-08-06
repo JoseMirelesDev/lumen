@@ -1,0 +1,199 @@
+// AppWindow: the single root composition for the Lumen Slint client.
+// It only wires views to the AppWindow contract; all logic lives in Rust
+// (src/controller.rs, src/voice.rs) which drives these `in`-properties and
+// handles the callbacks. Port of apps/desktop/src/routes/+page.svelte.
+
+import { AppTheme } from "theme.slint";
+import { ServerItem, ChannelItem, MessageItem, FriendItem, FriendRequestItem, DmItem, PeerTile } from "types.slint";
+import { Login } from "login.slint";
+import { ModalCard } from "modal.slint";
+import { ServerRail } from "server-rail.slint";
+import { ChannelList } from "channel-list.slint";
+import { ChatView } from "chat-view.slint";
+import { FriendsView } from "friends-view.slint";
+import { VoiceView } from "voice-view.slint";
+
+export component AppWindow inherits Window {
+    title: "Lumen";
+    // Preferred = initial size; the window stays freely resizable (a bare
+    // `width`/`height` here would pin the WM minimum to that exact size).
+    preferred-width: 1100px;
+    preferred-height: 720px;
+    // Floor: rail (56) + sidebar (220) + ~324px of chat; tall enough for
+    // header + composer + a readable message area.
+    min-width: 600px;
+    min-height: 400px;
+    background: AppTheme.colors.bg;
+
+    // --- auth / boot ---
+    in-out property <bool> logged-in;
+    in-out property <bool> auth-busy;
+    in-out property <bool> is-register;
+    in-out property <string> auth-error;
+    in-out property <string> backend-url;
+    callback login-submit(string, string);
+    callback login-toggle-mode();
+    callback backend-changed(string);
+    callback logout();
+
+    // --- shell / nav ---
+    in-out property <bool> friends-view;
+    in-out property <string> current-user;
+    in-out property <[ServerItem]> servers;
+    callback select-server(string);
+    callback create-server(string);
+    callback join-server(string);
+    callback open-friends();
+
+    // --- channel list ---
+    in-out property <[ChannelItem]> channels;
+    in-out property <string> channel-list-title;
+    in-out property <bool> can-create-channel;
+    callback select-channel(string);
+    callback create-channel(string, string);
+    callback copy-invite();
+
+    // --- chat ---
+    in-out property <[MessageItem]> messages;
+    in-out property <string> chat-title;
+    in-out property <bool> is-dm;
+    in-out property <bool> dm-call;
+    in-out property <string> chat-error;
+    callback send-message(string);
+    callback toggle-dm-call();
+
+    // --- friends ---
+    in-out property <[DmItem]> dms;
+    in-out property <[FriendItem]> friends-online;
+    in-out property <[FriendItem]> friends-offline;
+    in-out property <[FriendRequestItem]> friend-requests;
+    in-out property <string> friends-error;
+    callback open-dm(string);
+    callback accept-friend(string);
+    callback decline-friend(string);
+    callback add-friend(string);
+
+    // --- voice ---
+    in-out property <bool> voice-visible;
+    in-out property <bool> voice-active;
+    in-out property <string> voice-channel-name;
+    in-out property <string> voice-status;
+    in-out property <string> voice-error;
+    in-out property <bool> voice-muted;
+    in-out property <bool> voice-deafened;
+    in-out property <float> voice-local-level;
+    in-out property <bool> voice-local-speaking;
+    in-out property <string> voice-local-user;
+    in-out property <string> voice-local-initial;
+    in-out property <[PeerTile]> voice-peers;
+    callback voice-join();
+    callback voice-leave();
+    callback voice-toggle-mute();
+    callback voice-toggle-deafen();
+
+    // --- modals (window level, internal) ---
+    property <bool> modal-create-server;
+    property <bool> modal-join-server;
+    property <bool> modal-create-channel;
+
+    if !root.logged-in : Login {
+        width: 100%;
+        height: 100%;
+        busy: root.auth-busy;
+        is-register: root.is-register;
+        error: root.auth-error;
+        backend-url <=> root.backend-url;
+        submit(username, password) => { root.login-submit(username, password); }
+        toggle-mode => { root.login-toggle-mode(); }
+        backend-changed(url) => { root.backend-changed(url); }
+    }
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        if root.logged-in : HorizontalLayout {
+            spacing: 0;
+            ServerRail {
+            servers: root.servers;
+            user-label: root.current-user;
+            friends-active: root.friends-view;
+            select-server(id) => { root.select-server(id); }
+            open-friends => { root.open-friends(); }
+            logout => { root.logout(); }
+            open-create-server => { root.modal-create-server = true; }
+            open-join-server => { root.modal-join-server = true; }
+        }
+        if !root.friends-view : ChannelList {
+            channels: root.channels;
+            server-name: root.channel-list-title;
+            can-create: root.can-create-channel;
+            select-channel(id) => { root.select-channel(id); }
+            copy-invite => { root.copy-invite(); }
+            open-create-channel => { root.modal-create-channel = true; }
+        }
+        if root.friends-view : FriendsView {
+            dms: root.dms;
+            online: root.friends-online;
+            offline: root.friends-offline;
+            requests: root.friend-requests;
+            error: root.friends-error;
+            open-dm(username) => { root.open-dm(username); }
+            accept-friend(id) => { root.accept-friend(id); }
+            decline-friend(id) => { root.decline-friend(id); }
+            add-friend(username) => { root.add-friend(username); }
+        }
+        if root.voice-visible : VoiceView {
+            channel-name: root.voice-channel-name;
+            active: root.voice-active;
+            status: root.voice-status;
+            status-connected: root.voice-active;
+            error: root.voice-error;
+            muted: root.voice-muted;
+            deafened: root.voice-deafened;
+            local-level: root.voice-local-level;
+            local-speaking: root.voice-local-speaking;
+            local-user: root.voice-local-user;
+            local-initial: root.voice-local-initial;
+            peers: root.voice-peers;
+            join => { root.voice-join(); }
+            leave => { root.voice-leave(); }
+            toggle-mute => { root.voice-toggle-mute(); }
+            toggle-deafen => { root.voice-toggle-deafen(); }
+        }
+        if !root.voice-visible : ChatView {
+            title: root.chat-title;
+            is-dm: root.is-dm;
+            dm-call: root.dm-call;
+            messages: root.messages;
+            error: root.chat-error;
+            send-message(content) => { root.send-message(content); }
+            toggle-dm-call => { root.toggle-dm-call(); }
+        }
+    }
+
+    if root.modal-create-server : ModalCard {
+        title: "Create server";
+        placeholder: "Server name";
+        button-label: "Create";
+        show-kind: false;
+        cancel => { root.modal-create-server = false; }
+        submit-kind(value, kind) => { root.create-server(value); root.modal-create-server = false; }
+    }
+    if root.modal-join-server : ModalCard {
+        title: "Join by invite";
+        placeholder: "Invite code";
+        button-label: "Join";
+        show-kind: false;
+        cancel => { root.modal-join-server = false; }
+        submit-kind(value, kind) => { root.join-server(value); root.modal-join-server = false; }
+    }
+    if root.modal-create-channel : ModalCard {
+        title: "Create channel";
+        placeholder: "Channel name";
+        button-label: "Create";
+        show-kind: true;
+        cancel => { root.modal-create-channel = false; }
+        submit-kind(value, kind) => { root.create-channel(value, kind); root.modal-create-channel = false; }
+    }
+    }
+}

@@ -1,0 +1,49 @@
+// Shared data structs for the AppWindow and its views. Keep these in lockstep
+// with the Rust side (see src/model.rs, src/voice.rs) — they are the UI data
+// contract.
+
+export struct ServerItem {
+    id: string,
+    label: string,
+    active: bool,
+}
+
+export struct ChannelItem {
+    id: string,
+    name: string,
+    kind: string, // "text" | "voice"
+    active: bool,
+}
+
+export struct MessageItem {
+    id: string,
+    author: string,
+    time: string,
+    content: string,
+    mine: bool, // authored by the current user
+}
+
+export struct FriendItem {
+    username: string,
+    shared: int,
+}
+
+export struct FriendRequestItem {
+    id: string,
+    username: string,
+}
+
+export struct DmItem {
+    id: string,
+    username: string,
+}
+
+export struct PeerTile {
+    id: string,
+    username: string,
+    initial: string,
+    level: float,      // RMS 0..1
+    speaking: bool,
+    state: string,     // "new"|"connecting"|"connected"|"disconnected"|"failed"|"closed"
+    muted: bool,
+}

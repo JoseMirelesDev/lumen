@@ -1,0 +1,201 @@
+// Friends pane — port of apps/desktop/src/lib/components/FriendsView.svelte.
+// Pure view: DMs, online/offline friends, incoming requests, add-friend box.
+
+import { AppTheme } from "theme.slint";
+import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+import { DmItem, FriendItem, FriendRequestItem } from "types.slint";
+import { HeaderBar, ListRow, Divider } from "base.slint";
+
+component FriendRow inherits ListRow {
+    in property <string> label;
+    in property <bool> online;
+    Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: root.online ? AppTheme.colors.online : AppTheme.colors.state-mid;
+        opacity: root.online ? 1.0 : 0.6;
+    }
+    Text {
+        text: root.label;
+        color: root.online ? AppTheme.colors.text : AppTheme.colors.text-dim;
+        font-size: AppTheme.font-md;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+component DmRow inherits ListRow {
+    in property <string> label;
+    Text { text: "@"; color: AppTheme.colors.text-dim; font-size: AppTheme.font-md; }
+    Text {
+        text: root.label;
+        color: AppTheme.colors.text;
+        font-size: AppTheme.font-md;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+export component FriendsView inherits Rectangle {
+    in property <[DmItem]> dms;
+    in property <[FriendItem]> online;
+    in property <[FriendItem]> offline;
+    in property <[FriendRequestItem]> requests;
+    in property <string> error;
+    callback open-dm(string);
+    callback accept-friend(string);
+    callback decline-friend(string);
+    callback add-friend(string);
+    property <string> request-user;
+
+    width: AppTheme.sidebar-width;
+    vertical-stretch: 1;
+    background: AppTheme.colors.bg-list;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        HeaderBar {
+            pad-x: 14px;
+            Text { text: "Friends"; font-size: AppTheme.font-base; font-weight: 700; color: AppTheme.colors.text; }
+        }
+        Divider { }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-top: AppTheme.sp-2;
+                padding-bottom: AppTheme.sp-2;
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 2px;
+
+                HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    Text { text: "DIRECT MESSAGES"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
+                }
+                if root.dms.length == 0 : HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    padding-right: AppTheme.sp-2;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    Text { text: "No DMs yet — send a friend request below."; font-size: AppTheme.font-sm; color: AppTheme.colors.text-dim; wrap: word-wrap; }
+                }
+                for d in root.dms: DmRow {
+                    label: d.username;
+                    clicked => { root.open-dm(d.username); }
+                }
+
+                HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    Text { text: "ONLINE"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
+                }
+                if root.online.length == 0 : HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    padding-right: AppTheme.sp-2;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    Text { text: "No friends online."; font-size: AppTheme.font-sm; color: AppTheme.colors.text-dim; }
+                }
+                for f in root.online: FriendRow {
+                    label: f.username;
+                    online: true;
+                    clicked => { root.open-dm(f.username); }
+                }
+
+                HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    Text { text: "OFFLINE"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
+                }
+                if root.offline.length == 0 : HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    padding-right: AppTheme.sp-2;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    Text { text: "No friends yet."; font-size: AppTheme.font-sm; color: AppTheme.colors.text-dim; }
+                }
+                for f in root.offline: FriendRow {
+                    label: f.username;
+                    online: false;
+                    clicked => { root.open-dm(f.username); }
+                }
+
+                if root.requests.length > 0 : VerticalLayout {
+                    alignment: start;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        padding-left: AppTheme.sp-2;
+                        padding-top: AppTheme.sp-1;
+                        padding-bottom: AppTheme.sp-1;
+                        Text { text: "REQUESTS"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
+                    }
+                    for r in root.requests: Rectangle {
+                        height: AppTheme.row-height;
+                        border-radius: AppTheme.radius-sm;
+                        HorizontalLayout {
+                            alignment: start;
+                            padding-left: AppTheme.sp-2;
+                            padding-right: AppTheme.sp-2;
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: AppTheme.sp-2;
+                            Text {
+                                text: r.username;
+                                color: AppTheme.colors.text;
+                                font-size: AppTheme.font-md;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Button {
+                                text: "✓";
+                                clicked => { root.accept-friend(r.id); }
+                            }
+                            Button {
+                                text: "✕";
+                                clicked => { root.decline-friend(r.id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.error != "" : HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: AppTheme.sp-1;
+            padding-bottom: AppTheme.sp-1;
+            Text { text: root.error; color: AppTheme.colors.danger; font-size: AppTheme.font-sm; wrap: word-wrap; }
+        }
+
+        Divider { }
+        Rectangle {
+            VerticalLayout {
+                padding: 10px;
+                HorizontalLayout {
+                    spacing: AppTheme.sp-2;
+                    LineEdit {
+                        text <=> root.request-user;
+                        placeholder-text: "Add friend by username";
+                        horizontal-stretch: 1;
+                        accepted => { root.add-friend(root.request-user); root.request-user = ""; }
+                    }
+                    Button {
+                        text: "Send";
+                        primary: true;
+                        enabled: root.request-user != "";
+                        clicked => { root.add-friend(root.request-user); root.request-user = ""; }
+                    }
+                }
+            }
+        }
+    }
+}

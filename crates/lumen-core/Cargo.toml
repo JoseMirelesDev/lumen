@@ -1,0 +1,17 @@
+[package]
+name = "lumen-core"
+version.workspace = true
+edition.workspace = true
+description = "Lumen app core — protocol types, REST API client, auth, shell state, event bus (framework-agnostic)"
+license = "MIT"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+directories.workspace = true
+url.workspace = true
+parking_lot.workspace = true

@@ -1,0 +1,63 @@
+// Lumen visual identity — port of apps/desktop/src/app.css + the component
+// spacing of the original Svelte UI. The single source for every view:
+// colors, spacing grid, layout constants and typography. Views consume these
+// tokens (and the primitives in base.slint) instead of repeating literals.
+
+export struct Theme {
+    bg: color,
+    bg-raised: color,
+    bg-list: color,
+    bg-rail: color,
+    bg-hover: color,
+    bg-active: color,
+    bg-pressed: color,
+    border: color,
+    text: color,
+    text-dim: color,
+    accent: color,
+    danger: color,
+    online: color,
+    state-mid: color,
+}
+
+export global AppTheme {
+    in property <Theme> colors: {
+        bg: #1e1f22,
+        bg-raised: #2b2d31,
+        bg-list: #2b2d31,
+        bg-rail: #1a1b1e,
+        bg-hover: #35373c,
+        bg-active: #393c41,
+        bg-pressed: #2f3136,
+        border: #26272b,
+        text: #e6e6ea,
+        text-dim: #9ba0a8,
+        accent: #5865f2,
+        danger: #f23f43,
+        online: #3ba55d,
+        state-mid: #b9bbbe,
+    };
+    // Spacing grid — 4 px base, as the original CSS used.
+    in property <length> sp-1: 4px;
+    in property <length> sp-2: 8px;
+    in property <length> sp-3: 12px;
+    in property <length> sp-4: 16px;
+    // Layout constants (measured from the original components).
+    in property <length> header-height: 48px;
+    in property <length> row-height: 28px;
+    in property <length> rail-width: 56px;
+    in property <length> sidebar-width: 220px;
+    in property <length> login-width: 320px;
+    // Radii.
+    in property <length> radius: 8px;
+    in property <length> radius-sm: 4px;
+    // Typography scale (original font-sizes).
+    in property <length> font-xs: 11px;
+    in property <length> font-sm: 12px;
+    in property <length> font-md: 13px;
+    in property <length> font-base: 14px;
+    in property <length> font-lg: 16px;
+    in property <length> font-xl: 18px;
+    in property <length> font-title: 20px;
+    in property <length> font-hero: 28px;
+}

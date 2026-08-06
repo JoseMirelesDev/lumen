@@ -1,0 +1,199 @@
+// Voice pane — port of apps/desktop/src/lib/components/VoiceView.svelte.
+// Pure view: participant tile grid + callbar; voice state arrives via
+// in-properties driven by src/voice.rs. The peers model is updated in place
+// by VoiceController (same VecModel, per-row row_changed) so tile animations
+// (speaking glow, level bar) stay continuous instead of resetting every frame.
+
+import { AppTheme } from "theme.slint";
+import { Button, ScrollView } from "std-widgets.slint";
+import { PeerTile } from "types.slint";
+import { DangerButton } from "base.slint";
+
+component LevelBar inherits Rectangle {
+    in property <float> level;
+    height: 4px;
+    border-radius: 2px;
+    background: AppTheme.colors.bg;
+    Rectangle {
+        width: parent.width * min(1.0, root.level);
+        height: 100%;
+        border-radius: 2px;
+        background: AppTheme.colors.accent;
+        animate width { duration: 60ms; }
+    }
+}
+
+component PeerTileView inherits Rectangle {
+    in property <string> label;
+    in property <string> initial;
+    in property <float> level;
+    in property <bool> speaking;
+    in property <string> state;
+    in property <bool> muted;
+    border-radius: AppTheme.radius;
+    border-width: root.speaking ? 2px : 0px;
+    border-color: AppTheme.colors.accent;
+    background: AppTheme.colors.bg-raised;
+    animate border-width { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    VerticalLayout {
+        alignment: start;
+        cross-axis-alignment: center;
+        padding-top: 14px; padding-bottom: 14px; padding-left: 8px; padding-right: 8px;
+        spacing: 6px;
+        Rectangle {
+            width: 56px;
+            height: 56px;
+            border-radius: 28px;
+            background: AppTheme.colors.bg-hover;
+            border-width: root.speaking ? 3px : 0px;
+            border-color: AppTheme.colors.accent;
+            animate border-width { duration: 120ms; }
+            opacity: root.muted ? 0.5 : 1.0;
+            animate opacity { duration: 150ms; }
+            // Pulsing accent glow while speaking (absolute-time sine, no state reset).
+            drop-shadow-blur: root.speaking ? 8px + 6px * Math.abs(Math.sin((animation-tick() / 120ms) * 360deg)) : 0px;
+            drop-shadow-color: AppTheme.colors.accent;
+            drop-shadow-offset-x: 0px;
+            drop-shadow-offset-y: 0px;
+            animate drop-shadow-blur { duration: 60ms; }
+            Text {
+                text: root.initial;
+                color: AppTheme.colors.text;
+                font-size: 22px;
+                font-weight: 700;
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: root.state == "connected"
+                    ? AppTheme.colors.online
+                    : (root.state == "failed" || root.state == "closed" || root.state == "disconnected")
+                        ? AppTheme.colors.danger
+                        : AppTheme.colors.state-mid;
+            }
+            Text {
+                text: root.label;
+                color: AppTheme.colors.text;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+        LevelBar { level: root.level; width: 80%; }
+    }
+}
+
+export component VoiceView inherits Rectangle {
+    in property <string> channel-name;
+    in property <bool> active;
+    in property <string> status;
+    in property <bool> status-connected;
+    in property <string> error;
+    in property <bool> muted;
+    in property <bool> deafened;
+    in property <float> local-level;
+    in property <bool> local-speaking;
+    in property <string> local-user;
+    in property <string> local-initial;
+    in property <[PeerTile]> peers;
+    callback join();
+    callback leave();
+    callback toggle-mute();
+    callback toggle-deafen();
+
+    background: AppTheme.colors.bg;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        Rectangle {
+            height: 48px;
+            HorizontalLayout {
+                padding-top: 12px; padding-bottom: 12px; padding-left: 16px; padding-right: 16px;
+                spacing: 8px;
+                Text {
+                    text: root.channel-name;
+                    color: AppTheme.colors.text;
+                    font-size: 14px;
+                    font-weight: 700;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.status;
+                    color: root.status-connected ? AppTheme.colors.online : AppTheme.colors.text-dim;
+                    font-size: 12px;
+                }
+                if !root.active : Button {
+                    text: "Join voice";
+                    primary: true;
+                    clicked => { root.join(); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: AppTheme.colors.border; }
+
+        if root.error != "" : HorizontalLayout {
+            padding-top: 4px; padding-bottom: 4px; padding-left: 16px; padding-right: 16px;
+            Text { text: root.error; color: AppTheme.colors.danger; font-size: 13px; wrap: word-wrap; }
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            GridLayout {
+                padding: 20px;
+                spacing: 14px;
+                PeerTileView {
+                    row: 0; col: 0;
+                    label: root.local-user;
+                    initial: root.local-initial;
+                    level: root.local-level;
+                    speaking: root.local-speaking;
+                    state: "connected";
+                    muted: root.muted;
+                }
+                for p[i] in root.peers: PeerTileView {
+                    row: (i + 1) / 3;
+                    col: Math.mod(i + 1, 3);
+                    label: p.username;
+                    initial: p.initial;
+                    level: p.level;
+                    speaking: p.speaking;
+                    state: p.state;
+                    muted: p.muted;
+                }
+            }
+        }
+
+        if root.active : Rectangle {
+            height: 56px;
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 10px;
+                alignment: center;
+                Button {
+                    text: root.muted ? "Muted" : "Mute";
+                    primary: root.muted;
+                    clicked => { root.toggle-mute(); }
+                }
+                Button {
+                    text: root.deafened ? "Deafened" : "Deafen";
+                    primary: root.deafened;
+                    clicked => { root.toggle-deafen(); }
+                }
+                DangerButton {
+                    text: "Leave";
+                    clicked => { root.leave(); }
+                }
+            }
+        }
+    }
+}

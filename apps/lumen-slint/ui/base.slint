@@ -1,0 +1,91 @@
+// Base UI primitives — the "shell" building blocks every view composes.
+// They consume AppTheme tokens so spacing/height/typography stay consistent
+// with the original design and are adjustable in one place.
+
+import { AppTheme } from "theme.slint";
+
+// One-pixel separator between shell regions.
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: AppTheme.colors.border;
+}
+
+// Standard 48 px view header row. Children flow horizontally, left-aligned,
+// with the standard horizontal padding (pad-x, default 16px like the
+// original ChatView header).
+export component HeaderBar inherits Rectangle {
+    in property <length> pad-x: AppTheme.sp-4;
+    height: AppTheme.header-height;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+        spacing: AppTheme.sp-2;
+
+        @children
+    }
+}
+
+// Standard list row (channels, friends, DMs): fixed height, small radius,
+// hover/pressed/active backgrounds, clickable. Children flow horizontally
+// with the standard 6px vertical / 8px horizontal padding of the original
+// rows. The active state shows a white pill on the left edge, like Discord.
+export component ListRow inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> hoverable: true;
+    in property <length> pad-x: AppTheme.sp-2;
+    in property <length> pad-y: 6px;
+    callback clicked();
+    height: AppTheme.row-height;
+    border-radius: AppTheme.radius-sm;
+    background: root.active
+        ? AppTheme.colors.bg-active
+        : (ta.has-hover && root.hoverable)
+            ? AppTheme.colors.bg-hover
+            : ta.pressed
+                ? AppTheme.colors.bg-pressed
+                : transparent;
+    animate background { duration: 80ms; }
+
+    Rectangle {
+        x: 0px;
+        y: (parent.height - 14px) / 2;
+        width: 3px;
+        height: 14px;
+        border-radius: 2px;
+        background: white;
+        visible: root.active;
+        animate x { duration: 120ms; }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        HorizontalLayout {
+            alignment: start;
+            padding-top: root.pad-y;
+            padding-bottom: root.pad-y;
+            padding-left: root.pad-x;
+            padding-right: root.pad-x;
+            spacing: AppTheme.sp-2;
+            @children
+        }
+    }
+}
+
+// Destructive action button (leave voice, etc.) — moved here from voice-view
+// so any view can use it.
+export component DangerButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    preferred-width: 90px;
+    preferred-height: 34px;
+    background: AppTheme.colors.danger;
+    border-radius: AppTheme.radius-sm;
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        Text { text: root.text; color: white; font-size: AppTheme.font-md; font-weight: 600; }
+    }
+}
