@@ -32,3 +32,4 @@ apps/backend/.dev.vars.*
 # tauri
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
+dist-artifacts/
