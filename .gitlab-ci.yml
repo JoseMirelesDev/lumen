@@ -1,0 +1,49 @@
+# Lumen Windows build on GitLab CI (shared Windows runners).
+#
+# Same steps as .github/workflows/release.yml (release-windows job):
+# Tauri 2 + native voice core (webrtc-audio-processing via meson/ninja,
+# audiopus_sys via CMake) -> .msi installer.
+#
+# Runner requirements (GitLab.com shared `windows` runner):
+#   - preinstalled: Visual Studio Build Tools (MSVC), Node.js, Python,
+#     CMake, WebView2. LLVM is needed for bindgen/libclang; install it if
+#     the build fails with "unable to find libclang" (see before_script).
+#
+# Usage: mirror the GitHub repo into a GitLab project; the pipeline runs
+# ONLY on release tags (v*) or manual "Run pipeline" (minutes are scarce:
+# GitLab free gives 400 min/month per namespace, Windows runners ~2x).
+# Artifacts expire after 7 days.
+
+stages:
+  - build
+
+windows-msi:
+  stage: build
+  tags:
+    - windows
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+    - if: $CI_PIPELINE_SOURCE == "web"
+  variables:
+    # tauri build reads CI into its --ci flag and errors on `CI=1`.
+    CI: "false"
+    # audiopus_sys bundles a libopus whose CMakeLists needs CMake < 3.5
+    # compat, which CMake 4.x removed. Official escape hatch.
+    CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  before_script:
+    - rustup toolchain install stable-msvc --profile minimal
+    - rustup default stable-msvc
+    - python -m pip install meson ninja
+    # Uncomment if the runner lacks LLVM (bindgen/libclang):
+    # - choco install llvm -y --no-progress
+  script:
+    - corepack enable
+    - corepack prepare pnpm@latest --activate
+    - pnpm install --frozen-lockfile
+    - pnpm --filter @lumen/desktop build
+    - pnpm --filter @lumen/desktop tauri build
+  artifacts:
+    name: "lumen-windows-$CI_COMMIT_REF_SLUG"
+    paths:
+      - apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+    expire_in: 7 days
