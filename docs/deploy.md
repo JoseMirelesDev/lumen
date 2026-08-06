@@ -127,6 +127,13 @@ Measured on 2026-08-04 against the deployed worker (account
 
 ## 2. Desktop installers
 
+> **DEPRECATED — Tauri is discontinued.** The current client is the native
+> Slint app (`apps/lumen-slint`, bin `lumen`). Releases are built by the
+> GitHub Actions workflow `.github/workflows/release.yml` (Linux/Windows/macOS
+> `cargo build --release -p lumen-desktop`, binaries uploaded as artifacts —
+> `target/release/lumen` / `target/release/lumen.exe`). The Tauri installer
+> path below is kept as historical reference until the Fase 6 cutover.
+
 Build on each target OS (Tauri produces native installers only on the matching
 OS; there is no cross-compile path for these formats):
 
@@ -151,7 +158,7 @@ Notes:
   outside your own machines; unsigned builds work locally.
 - Linux `.AppImage` requires `patchelf` (already a listed prerequisite).
 
-### 2.1 Verifying an installer
+### 2.1 Verifying an installer (Tauri, deprecated)
 
 ```bash
 # .deb
@@ -161,9 +168,13 @@ sudo apt install ./lumen_0.1.0_amd64.deb && lumen
 chmod +x ./Lumen_0.1.0_amd64.AppImage && ./Lumen_0.1.0_amd64.AppImage
 ```
 
+For the current Slint client, run the release binary directly
+(`./target/release/lumen`) or use the artifact from the release workflow.
+
 The desktop app defaults to `http://localhost:8787`; on a real deployment,
-enter the deployed worker URL on the login screen (persisted in localStorage)
-or bake it at build time with `VITE_BACKEND_URL`.
+enter the deployed worker URL on the login screen. The Slint client persists
+it in `<config_dir>/lumen/settings.json`; the deprecated Tauri client used
+localStorage / `VITE_BACKEND_URL`.
 
 ## 3. End-to-end acceptance (Fase 5 DoD)
 

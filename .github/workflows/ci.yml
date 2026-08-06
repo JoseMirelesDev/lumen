@@ -30,3 +30,67 @@ jobs:
       - run: pnpm --filter @lumen/backend typecheck
       - run: pnpm --filter @lumen/backend lint
       - run: pnpm --filter @lumen/backend test
+
+  # Native Slint client: compile check on every push/PR (release artifacts
+  # come from release.yml on tags). Windows needs the MSVC toolchain pinned
+  # (meson picks gcc from PATH otherwise) + llvm-tools for rust-objcopy, and
+  # /std:c++20 for webrtc-audio-processing — mirror release.yml exactly.
+  desktop:
+    name: desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: windows-latest
+            cc: cl
+            cxx: cl
+            cxxflags: "/std:c++20"
+          - os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake build-essential \
+            libasound2-dev libfontconfig1-dev libx11-dev libxrender-dev \
+            libwayland-dev libxkbcommon-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+            meson ninja-build libclang-dev
+      - name: Install system deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config meson ninja
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.cc != ''
+      - name: Install meson/ninja + llvm-tools (Windows)
+        if: matrix.cc != ''
+        shell: pwsh
+        run: |
+          python -m pip install meson ninja
+          rustup component add llvm-tools-preview
+      - name: Point build at MSVC (Windows)
+        if: matrix.cc != ''
+        shell: bash
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+          echo "CXXFLAGS=${{ matrix.cxxflags }}" >> "$GITHUB_ENV"
+      - name: Build lumen-desktop (debug)
+        run: cargo build -p lumen-desktop
+        env:
+          # audiopus_sys bundles a libopus whose CMakeLists needs CMake < 3.5
+          # compat, which CMake 4.x removed. Official escape hatch.
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"

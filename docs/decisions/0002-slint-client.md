@@ -2,6 +2,13 @@
 
 Status: accepted · Date: 2026-08-05 · Branch: `slint-client`
 
+> **Update 2026-08-06 — Tauri descontinuado.** La app `apps/desktop`
+> (Tauri 2 + Svelte) queda **DEPRECATED / descontinuada**: no se usará más.
+> El cliente actual es `apps/lumen-slint` (bin `lumen`). El código Tauri se
+> conserva como referencia hasta el corte (Fase 6) y su job de CI en GitLab
+> está deshabilitado. Empaquetado: workflow GitHub `release.yml` (binario
+> release, `cargo build --release -p lumen-desktop`).
+
 ## Context
 
 El cliente desktop (Tauri 2 + Svelte 5 en WebView) carga ~313 MB RSS en idle

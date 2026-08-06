@@ -207,6 +207,7 @@ impl VoiceSession {
             let stopping = stopping.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_millis(20));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 // WebRTC APM on the mic: noise suppression + AGC before OPUS.
                 let mut ns = crate::audio::NoiseSuppressor::new();
                 loop {
@@ -215,12 +216,23 @@ impl VoiceSession {
                     }
                     ticker.tick().await;
                     if muted.load(Ordering::SeqCst) {
+                        // Drain and discard while muted so frames don't pile up.
+                        while mic_rx.try_recv().is_ok() {}
                         continue;
                     }
-                    let frame = match mic_rx.try_recv() {
-                        Ok(f) => f,
-                        Err(_) => continue,
-                    };
+                    // Drain the channel and keep only the most recent frame.
+                    // The mic produces 20 ms frames at real-time pace, but if
+                    // encoding + APM takes any measurable time the channel can
+                    // accumulate stale frames. Encoding them all in order would
+                    // shift playout seconds into the future — the exact symptom
+                    // of the delay bug. Skipping to the latest keeps us at the
+                    // live edge: one frame of loss is inaudible, seconds of
+                    // accumulated delay is not.
+                    let mut frame: Option<Vec<i16>> = None;
+                    while let Ok(f) = mic_rx.try_recv() {
+                        frame = Some(f);
+                    }
+                    let Some(frame) = frame else { continue };
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
                     let cleaned = ns.process(&frame);
                     let encoded = match encoder.lock().await.encode(&cleaned) {
@@ -242,6 +254,7 @@ impl VoiceSession {
             let stopping = stopping.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_millis(100));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     if stopping.load(Ordering::SeqCst) {
                         break;
@@ -275,6 +288,7 @@ impl VoiceSession {
             let stopping = stopping.clone();
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(Duration::from_millis(20));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut acc = vec![0i32; FRAME_SAMPLES];
                 let mut mixed = vec![0i16; FRAME_SAMPLES];
                 let silence = vec![0i16; FRAME_SAMPLES];
@@ -464,7 +478,7 @@ impl VoiceSession {
             }],
         )));
 
-        let jb = Arc::new(Mutex::new(JitterBuffer::new(4)));
+        let jb = Arc::new(Mutex::new(JitterBuffer::new(2)));
         let decoder = Arc::new(Mutex::new(OpusDecoder::new()?));
         let level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let stop = Arc::new(AtomicBool::new(false));

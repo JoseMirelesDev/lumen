@@ -3,6 +3,11 @@
 // to the AppWindow and runs the Slint event loop. All async work runs on the
 // tokio runtime; UI updates only via Weak<AppWindow>::upgrade_in_event_loop.
 
+// Windows: link with the GUI subsystem in release builds so no console window
+// opens next to the app. Debug builds keep the console (panics/backtraces stay
+// visible when running `cargo run`).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod controller;
 mod model;
 mod voice;
