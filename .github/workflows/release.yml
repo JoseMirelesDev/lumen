@@ -1,143 +1,87 @@
 name: Release
 
-# Publishes the desktop bundles as a GitHub Release.
+# Builds the native Slint desktop client (apps/lumen-slint, bin `lumen`)
+# for Linux / Windows / macOS and uploads the binaries as artifacts.
 #
 # Triggers:
-#   - push a tag `v*` (e.g. `git tag v0.2.1 && git push --tags`)
-#   - manual dispatch (workflow_dispatch) with a version string
+#   - push a tag `v*` (e.g. `git tag v0.3.0 && git push --tags`)
+#   - manual dispatch (workflow_dispatch)
 #
-# The release is created as a DRAFT so you can review the assets before
-# publishing. Installers: Linux (.deb/.rpm/.AppImage), Windows (.msi),
-# macOS (.dmg, unsigned).
+# No Tauri, no Svelte: the client is the Slint app + the native voice core
+# (cpal/opus/webrtc-rs). Rust build with the same system deps the voice
+# stack needs (webrtc-audio-processing via meson/ninja, audiopus via CMake).
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Release version (e.g. 0.2.1). Ignored when pushed from a v* tag."
-        required: false
 
 jobs:
-  release-linux:
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Tauri system deps
+      - name: Install system deps (ALSA for cpal, X11/xkb for winit, meson/ninja/libclang for the voice stack)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev patchelf \
-            libasound2-dev pkg-config cmake build-essential \
-            meson ninja-build libclang-dev
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @lumen/desktop build
-      - name: Bundle installers (.deb/.rpm/.AppImage)
-        run: pnpm --filter @lumen/desktop tauri build
+          sudo apt-get install -y pkg-config cmake build-essential \
+            libasound2-dev libxkbcommon-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+            meson ninja-build libclang-dev python3-pip
+          python3 -m pip install meson ninja
+      - name: Build release binary
+        run: cargo build --release -p lumen-desktop
         env:
-          CI: "false"
           # audiopus_sys bundles a libopus whose CMakeLists needs CMake < 3.5
-          # compat, which CMake 4.x removed. This env is the official escape hatch.
+          # compat, which CMake 4.x removed. Official escape hatch.
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       - uses: actions/upload-artifact@v4
         with:
           name: lumen-linux
-          path: apps/desktop/src-tauri/target/release/bundle/**
+          path: target/release/lumen
           if-no-files-found: error
 
-  release-windows:
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install build tooling (meson/ninja for webrtc-audio-processing)
+      # GitHub's windows-latest ships MinGW in PATH; meson picks gcc over MSVC
+      # and webrtc-audio-processing's abseil fails to compile with mingw
+      # (redefinition of ABI::Windows::Foundation::IReference). Activate the
+      # MSVC environment and pin CC/CXX so meson/CMake use cl.exe.
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install meson/ninja
         run: python -m pip install meson ninja
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @lumen/desktop build
-      - name: Bundle installer (.msi)
-        run: pnpm --filter @lumen/desktop tauri build
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --release -p lumen-desktop
         env:
-          CI: "false"
+          CC: cl
+          CXX: cl
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       - uses: actions/upload-artifact@v4
         with:
           name: lumen-windows
-          path: apps/desktop/src-tauri/target/release/bundle/msi/*.msi
+          path: target/release/lumen.exe
           if-no-files-found: error
 
-  release-macos:
+  build-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install Tauri system deps
-        run: brew install cmake pkg-config meson ninja
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @lumen/desktop build
-      - name: Bundle installer (.dmg)
-        run: pnpm --filter @lumen/desktop tauri build
+      - name: Install system deps
+        run: |
+          brew install cmake pkg-config meson ninja
+          python3 -m pip install meson ninja
+      - name: Build release binary
+        run: cargo build --release -p lumen-desktop
         env:
-          CI: "false"
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       - uses: actions/upload-artifact@v4
         with:
           name: lumen-macos
-          path: apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          path: target/release/lumen
           if-no-files-found: error
-
-  publish:
-    needs: [release-linux, release-windows, release-macos]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: Resolve version tag
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            V="${{ inputs.version }}"
-            if [ -z "$V" ]; then V="manual-$(date +%Y%m%d%H%M%S)"; fi
-            echo "tag=v${V}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Publish draft release
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Only the installers (the bundle dirs also contain the AppImage's
-          # extracted runtime and deb control files).
-          files=$(find dist -type f \( -name '*.deb' -o -name '*.rpm' -o \
-            -name '*.AppImage' -o -name '*.msi' -o -name '*.dmg' \))
-          gh release create "$TAG" $files \
-            --draft \
-            --title "Lumen $TAG" \
-            --notes "Desktop bundles for Lumen (native voice client).
-
-            Linux: .deb / .rpm / .AppImage
-            Windows: .msi
-            macOS: .dmg (unsigned)
-
-            > Draft — review and publish manually from the Releases page."
