@@ -52,6 +52,12 @@ jobs:
       # (redefinition of ABI::Windows::Foundation::IReference). Activate the
       # MSVC environment and pin CC/CXX so meson/CMake use cl.exe.
       - uses: ilammy/msvc-dev-cmd@v1
+      # webrtc-audio-processing-sys prefixes its symbols with rust-objcopy to
+      # avoid clashing with webrtc-rs; rust-objcopy only ships with the
+      # llvm-tools component, which is NOT in the MSVC toolchain by default
+      # (it is in the linux/macos toolchains, which is why they pass).
+      - name: Install llvm-tools (rust-objcopy for symbol prefixing)
+        run: rustup component add llvm-tools-preview
       - name: Install meson/ninja
         run: python -m pip install meson ninja
       - name: Build release binary
