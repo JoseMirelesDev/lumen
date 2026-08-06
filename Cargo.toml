@@ -40,3 +40,6 @@ thiserror = "2"
 # workspace root — a patch in a workspace member is silently ignored.
 [patch.crates-io]
 wry = { path = "vendor/wry" }
+# Vendored webrtc-audio-processing-sys patch: drops the GCC-only
+# -Wno-unused-parameter flag that breaks MSVC (cl D8021).
+webrtc-audio-processing-sys = { path = "vendor/webrtc-audio-processing-sys" }
