@@ -79,6 +79,8 @@ fn load_wav() -> Vec<f32> {
         off = body + size + (size & 1); // chunks are word-aligned
     }
     assert!(!pcm.is_empty(), "no data chunk");
+    // Trim to a whole number of 20 ms frames.
+    pcm.truncate((pcm.len() / FRAME) * FRAME);
     pcm
 }
 
