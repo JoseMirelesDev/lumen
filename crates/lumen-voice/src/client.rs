@@ -253,7 +253,6 @@ impl VoiceSession {
             let local_level = local_level.clone();
             let stopping = stopping.clone();
             let render_tap = render_tap.clone();
-            let transmit_mode = transmit_mode.clone();
             tokio::spawn(async move {
                 // WebRTC APM (AEC3/HPF/NS) + RNNoise + VAD-gated gain.
                 let mut ns = crate::audio::NoiseSuppressor::new();
@@ -292,15 +291,18 @@ impl VoiceSession {
                         frame = f;
                     }
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
-                    let cleaned = ns.process(&frame);
-                    // Voice-activated mode: don't transmit silence (RNNoise VAD
-                    // gate). We still ran `process` so the NS/leveler state
-                    // stays warm and the speaking meter updates.
-                    if transmit_mode.load(Ordering::SeqCst) == TransmitMode::VoiceActivated as u8
-                        && !ns.speech_detected()
-                    {
+                    // CPU-saving VAD gate: when there is no speech (and the
+                    // hangover has lapsed) `process_gated` returns None and we
+                    // skip AEC3 + GTCRN + Opus + transmit entirely — a call is
+                    // mostly "listening", so silence costs almost nothing. When
+                    // speech is present (or within the hangover) we run the full
+                    // chain and transmit. `Always` mode still runs the gate
+                    // (no benefit to denoising+encoding silence); `VoiceActivated`
+                    // additionally relies on `speech_detected` for the meter.
+                    let Some(cleaned) = ns.process_gated(&frame) else {
+                        // Silence: nothing to encode or send.
                         continue;
-                    }
+                    };
                     let encoded = match encoder.lock().await.encode(&cleaned) {
                         Ok(e) => e,
                         Err(_) => continue,

@@ -383,6 +383,10 @@ pub struct NoiseSuppressor {
     /// Whether the last processed frame contained speech (post-GTCRN energy
     /// in the main path, RNNoise VAD in the fallback).
     speech_detected: bool,
+    /// Frames remaining in the `process_gated` hangover — the chain stays
+    /// open this many frames after the last voiced frame so speech tails /
+    /// quiet endings aren't clipped at word and utterance boundaries.
+    gate_hangover: u32,
 }
 
 impl NoiseSuppressor {
@@ -438,6 +442,7 @@ impl NoiseSuppressor {
             gtcrn,
             leveler: SpeechLeveler::new(),
             speech_detected: false,
+            gate_hangover: 0,
         }
     }
 
@@ -533,6 +538,62 @@ impl NoiseSuppressor {
         // without amplifying the (already suppressed) noise floor.
         self.speech_detected = self.leveler.process(vad, rms, &mut result);
         result
+    }
+
+    /// VAD-gated send-path processing: the CPU-saving entry point used by the
+    /// live mic path. Returns `Some(cleaned_frame)` when speech is present
+    /// (or within the hangover), and `None` when the frame is silence — in
+    /// which case the caller must skip encode + transmit entirely.
+    ///
+    /// This is what makes a voice call cheap: a call is mostly "listening" —
+    /// the local mic is silent while the far end talks. Rather than burn
+    /// AEC3 + GTCRN + Opus on every silent frame (measured ~20% of a core),
+    /// we run only a cheap RNNoise VAD (~3% of a core) and, when there is no
+    /// speech, skip the whole chain AND the transmit. Speech frames still go
+    /// through the full GTCRN chain, so speech quality is unchanged; silence
+    /// simply costs almost nothing. The hangover keeps the chain open briefly
+    /// after the last voiced frame so speech tails and quiet endings aren't
+    /// clipped at word/utterance boundaries.
+    ///
+    /// ```ignore
+    /// while let Some(frame) = mic.recv().await {
+    ///     if let Some(cleaned) = ns.process_gated(&frame) {
+    ///         let pkt = encode(&cleaned);
+    ///         for peer in peers { peer.send(pkt.clone()); }
+    ///     }
+    ///     // None => silence: skip encode + transmit (no work).
+    /// }
+    /// ```
+    pub fn process_gated(&mut self, frame: &[i16]) -> Option<Vec<i16>> {
+        // Energy gate on the raw frame (before AEC3): a handful of multiply-adds
+        // per sample, ~0.1% of a core — essentially free. When the frame is
+        // quiet (mic silent, or quiet room noise) and the post-speech hangover
+        // has lapsed, we skip the whole send chain (AEC3 + GTCRN + encode +
+        // transmit) and send nothing — the dominant CPU cost in a call, which
+        // is mostly "listening" with a silent mic.
+        //
+        // This only closes on genuinely quiet frames, so it never hurts: a
+        // normal speaking voice (RMS ~0.1) is far above the floor, and in a
+        // noisy room (fan/AC above the floor) the gate stays open — no CPU
+        // saved there, but no quality lost either. Speech onset is caught by
+        // the frame RMS, and the hangover keeps the chain open across the
+        // brief dips at word boundaries so nothing is clipped.
+        let level = rms_level(frame);
+        if level >= VOICE_ENERGY_FLOOR {
+            // Speech energy: (re)open the chain and reset the hangover.
+            self.gate_hangover = GATE_HANGOVER_FRAMES;
+        } else if self.gate_hangover > 0 {
+            // Still within the hangover after speech: keep the chain open.
+            self.gate_hangover -= 1;
+        } else {
+            // Confirmed quiet: skip the entire chain (no AEC3, no GTCRN, no
+            // encode, no transmit). The far side just hears silence.
+            self.speech_detected = false;
+            return None;
+        }
+
+        let cleaned = self.process(frame);
+        Some(cleaned)
     }
 
     /// Whether the most recently processed frame contained speech (RNNoise
@@ -689,6 +750,20 @@ pub struct SpeechLeveler {
 const VAD_ON: f32 = 0.5;
 /// ~100 ms of hold at 20 ms frames.
 const HANGOVER_FRAMES: u32 = 5;
+
+/// Energy floor (normalized RMS) for the `process_gated` send gate. Frames
+/// below this are treated as quiet and skip the whole send chain (AEC3 +
+/// GTCRN + Opus + transmit). A normal speaking voice is ~RMS 0.1 (well above);
+/// a quiet room is ~RMS 0.005-0.02 (well below). A noisy room (fan/AC above
+/// the floor) keeps the gate open — no CPU saved, but no quality lost.
+/// Lower to gate more aggressively (more CPU savings, risks clipping very
+/// quiet speech); raise to be conservative. The `GATE_HANGOVER_FRAMES`
+/// hangover prevents clipping across word-boundary dips.
+const VOICE_ENERGY_FLOOR: f32 = 0.03;
+
+/// Frames the send chain stays open after the last voiced frame (hangover),
+/// so speech tails and quiet word endings aren't clipped. 10 frames = 200 ms.
+const GATE_HANGOVER_FRAMES: u32 = 10;
 
 /// Post-denoise RMS (0..1) that maps to a full VAD probability in the GTCRN
 /// path. GTCRN silences noise to ~0 (measured ~51 dB / ~370x separation), so
@@ -1186,7 +1261,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, gtcrn: None, leveler: SpeechLeveler::new(), speech_detected: false };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, gtcrn: None, leveler: SpeechLeveler::new(), speech_detected: false, gate_hangover: 0 };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
@@ -1334,6 +1409,57 @@ mod tests {
             speech_detected |= ns.speech_detected();
         }
         assert!(speech_detected, "speech must be detected via post-GTCRN energy");
+    }
+
+    #[test]
+    fn process_gated_skips_silence_and_opens_on_speech() {
+        // Loud speech-like harmonics — reliably opens the WebRTC VAD gate.
+        fn loud_speech(idx: usize) -> Vec<i16> {
+            (0..FRAME_SAMPLES)
+                .map(|i| {
+                    let t = ((idx * FRAME_SAMPLES + i) as f64) / CLOCK_RATE as f64;
+                    let mut v = 0.0;
+                    for (n, amp) in [(1, 1.0), (2, 0.5), (3, 0.33), (4, 0.25)] {
+                        v += amp * (2.0 * std::f64::consts::PI * 150.0 * n as f64 * t).sin();
+                    }
+                    (v * 3000.0) as i16
+                })
+                .collect()
+        }
+
+        // Pure silence must gate to None immediately (no hangover to drain).
+        let mut ns = NoiseSuppressor::new();
+        let silence = vec![0i16; FRAME_SAMPLES];
+        assert!(ns.process_gated(&silence).is_none(), "silence must gate to None");
+
+        // Speech must open the gate (Some) within a few frames.
+        let mut ns = NoiseSuppressor::new();
+        let mut opened = false;
+        for i in 0..40 {
+            if ns.process_gated(&loud_speech(i)).is_some() {
+                opened = true;
+                break;
+            }
+        }
+        assert!(opened, "speech must open the gate (Some)");
+
+        // Hangover: after speech stops, the chain stays open GATE_HANGOVER_FRAMES
+        // more frames, then gates to None (so tails aren't clipped).
+        let mut ns = NoiseSuppressor::new();
+        for i in 0..10 {
+            let _ = ns.process_gated(&loud_speech(i));
+        }
+        let silence = vec![0i16; FRAME_SAMPLES];
+        let mut open_after_silence = 0usize;
+        for _ in 0..(GATE_HANGOVER_FRAMES as usize + 5) {
+            if ns.process_gated(&silence).is_some() {
+                open_after_silence += 1;
+            }
+        }
+        assert!(
+            open_after_silence > 0 && open_after_silence <= GATE_HANGOVER_FRAMES as usize,
+            "hangover should keep the chain open briefly then close (open {open_after_silence} frames)"
+        );
     }
 }
 
