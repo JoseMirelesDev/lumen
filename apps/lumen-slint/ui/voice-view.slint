@@ -52,8 +52,12 @@ component PeerTileView inherits Rectangle {
             animate border-width { duration: 120ms; }
             opacity: root.muted ? 0.5 : 1.0;
             animate opacity { duration: 150ms; }
-            // Pulsing accent glow while speaking (absolute-time sine, no state reset).
-            drop-shadow-blur: root.speaking ? 8px + 6px * Math.abs(Math.sin((animation-tick() / 120ms) * 360deg)) : 0px;
+            // Static speaking glow. No `animation-tick()`: a continuous pulse
+            // re-renders every frame AND blurs on the CPU software renderer —
+            // a major CPU cost while talking (measured as the dominant spike).
+            // A static blur + the 120ms border/width anims give feedback on
+            // state change only (blur is 0 when not speaking → no glow).
+            drop-shadow-blur: root.speaking ? 8px : 0px;
             drop-shadow-color: AppTheme.colors.accent;
             drop-shadow-offset-x: 0px;
             drop-shadow-offset-y: 0px;
