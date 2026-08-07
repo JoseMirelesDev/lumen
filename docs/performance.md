@@ -131,3 +131,29 @@ idle footprint is roughly half of that while keeping the install small.
 
 `WEBKIT_DISABLE_COMPOSITING_MODE=1` is required for the window to map on this
 machine's Intel HD 4600 (see README); it does not affect RSS materially.
+
+## GTCRN (sherpa-onnx) denoiser — ON vs OFF (native voice, Fase 6)
+
+Measured headless + deterministic by `cargo test -p lumen-voice --test gtcrn_probe`
+(CI `voice-probe` job) on this i5-4590, release build. "WITHOUT" = the pre-GTCRN
+send path (`new_without_neural_denoiser`: WebRTC AEC3/NS VeryHigh + RNNoise +
+leveler); "WITH" = the shipped path with the sherpa-onnx GTCRN stage added.
+
+| metric | WITHOUT GTCRN | WITH GTCRN | delta |
+|---|---|---|---|
+| full-chain CPU | 2.58 ms / 20 ms frame (RTF 0.129) | 6.07 ms / 20 ms frame (RTF 0.304) | **+3.50 ms / frame (17.5 % of the 20 ms budget)** |
+| GTCRN alone | — | 2.79 ms / 20 ms (RTF 0.139) | — |
+| RAM (Linux VmRSS, warmed chain) | — | — | **+5.0 MB** (model + onnxruntime) |
+| noise reduction (stationary noise, dB) | 19.3 dB | 71.5 dB | **+52.2 dB** |
+| streaming latency | — | 40 ms | — |
+
+Reads: GTCRN more than doubles the send-path CPU (2.58 → 6.07 ms/frame) but
+stays at RTF 0.30 — 3.3× real-time headroom on this 2014 quad-core, i.e. ~17.5 %
+of one core's 20 ms budget while streaming. It costs ~5 MB of RSS (the model is
+535 KB; the rest is the onnxruntime session/activations). On pure stationary
+background noise the neural stage essentially gates it entirely (71.5 dB ≈ −3700×,
+vs 19.3 dB ≈ −9× for the classic chain), and speech in a +10 dB-SNR mix survives
+unscathed (out RMS 461 vs 1.24 for noise-only) — the denoiser removes the noise
+without gating the voice. These are the tradeoff numbers for "quality > Discord"
+vs the pre-GTCRN fallback; the probe asserts them as gates (full RTF < 1.0,
+GTCRN RTF < 0.5, latency ≤ 80 ms, reduction delta > 0, speech preserved).

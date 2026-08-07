@@ -384,6 +384,22 @@ pub struct NoiseSuppressor {
 
 impl NoiseSuppressor {
     pub fn new() -> Self {
+        Self::chain(GtcrnDenoiser::new())
+    }
+
+    /// Construct the send-path DSP WITHOUT the GTCRN (sherpa-onnx) neural
+    /// denoiser stage — WebRTC AEC3/NS + RNNoise + leveler only. Exists so
+    /// performance/noise-reduction probes can isolate the marginal CPU/RAM
+    /// cost and the extra noise reduction of the neural stage against the
+    /// pre-GTCRN chain. Production always uses [`NoiseSuppressor::new`],
+    /// which attempts to load GTCRN.
+    pub fn new_without_neural_denoiser() -> Self {
+        Self::chain(None)
+    }
+
+    /// Shared construction: WebRTC APM + RNNoise + leveler, plus the optional
+    /// GTCRN neural denoiser stage.
+    fn chain(gtcrn: Option<GtcrnDenoiser>) -> Self {
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
             processor.set_config(Config {
                 echo_canceller: Some(EchoCanceller::Full { stream_delay_ms: None }),
@@ -407,7 +423,7 @@ impl NoiseSuppressor {
         Self {
             processor,
             rnnoise: Some(nnnoiseless::DenoiseState::new()),
-            gtcrn: GtcrnDenoiser::new(),
+            gtcrn,
             leveler: SpeechLeveler::new(),
             speech_detected: false,
         }
@@ -1124,7 +1140,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, leveler: SpeechLeveler::new(), speech_detected: false };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, gtcrn: None, leveler: SpeechLeveler::new(), speech_detected: false };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
