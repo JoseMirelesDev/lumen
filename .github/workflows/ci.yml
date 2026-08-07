@@ -101,3 +101,35 @@ jobs:
           name: lumen-${{ matrix.os }}
           path: ${{ runner.os == 'Windows' && 'target/debug/lumen.exe' || 'target/debug/lumen' }}
           if-no-files-found: error
+
+  # Denoiser probe: build the voice crate (incl. sherpa-onnx / GTCRN — the
+  # heavy onnxruntime dep that fails locally) and run the headless DSP probe,
+  # printing the real noise-reduction / speech-preservation numbers. Local
+  # builds can't handle the sherpa-onnx-sys link, so we iterate here instead.
+  voice-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake build-essential \
+            libasound2-dev libfontconfig1-dev libx11-dev libxrender-dev \
+            libwayland-dev libxkbcommon-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
+            meson ninja-build libclang-dev
+      - name: Build + run GTCRN probe
+        run: cargo test -p lumen-voice --test gtcrn_probe -- --nocapture
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"

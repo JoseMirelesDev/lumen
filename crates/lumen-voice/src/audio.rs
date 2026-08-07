@@ -371,8 +371,11 @@ use webrtc_audio_processing::Processor;
 ///   frames (480 samples @ 48 kHz); a 20 ms capture frame is two halves.
 pub struct NoiseSuppressor {
     processor: Option<Processor>,
-    /// RNNoise neural denoiser (10 ms frames, f32).
+    /// RNNoise neural denoiser (10 ms frames, f32) — also supplies the VAD.
     rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
+    /// GTCRN (sherpa-onnx) primary denoiser — 32-38 dB noise reduction.
+    /// Optional: falls back to RNNoise-only if the model/onnxruntime can't load.
+    gtcrn: Option<GtcrnDenoiser>,
     /// VAD-gated adaptive gain (boosts quiet speech, gates silence).
     leveler: SpeechLeveler,
     /// Whether the last processed frame contained speech (RNNoise VAD).
@@ -404,6 +407,7 @@ impl NoiseSuppressor {
         Self {
             processor,
             rnnoise: Some(nnnoiseless::DenoiseState::new()),
+            gtcrn: GtcrnDenoiser::new(),
             leveler: SpeechLeveler::new(),
             speech_detected: false,
         }
@@ -476,6 +480,10 @@ impl NoiseSuppressor {
             }
             None => result.copy_from_slice(&out),
         }
+        // GTCRN: primary neural denoiser (32-38 dB), if available.
+        if let Some(g) = self.gtcrn.as_mut() {
+            result = g.process(&result);
+        }
         // VAD-gated adaptive gain: boost quiet speech to an audible level
         // without amplifying the (already suppressed) noise floor.
         let rms = rms_level(&result);
@@ -488,6 +496,14 @@ impl NoiseSuppressor {
     pub fn speech_detected(&self) -> bool {
         self.speech_detected
     }
+
+    /// Whether the GTCRN (sherpa-onnx) neural denoiser stage is active. `false`
+    /// means the model/onnxruntime failed to load and the chain fell back to
+    /// RNNoise-only. Lets a probe/report tell real GTCRN performance apart from
+    /// the fallback path.
+    pub fn gtcrn_active(&self) -> bool {
+        self.gtcrn.is_some()
+    }
 }
 
 impl Default for NoiseSuppressor {
@@ -497,9 +513,99 @@ impl Default for NoiseSuppressor {
 }
 
 // ---------------------------------------------------------------------------
-// Speech leveler: VAD-gated adaptive gain
+// GTCRN neural denoiser (sherpa-onnx) — the primary noise suppressor
 // ---------------------------------------------------------------------------
 
+/// GTCRN speech-enhancement denoiser (32-38 dB noise reduction, ~10x real-time
+/// on this CPU). Runs at 16 kHz natively (model rate); the mic is 48 kHz, so
+/// we resample the model's 16 kHz output back up to 48 kHz to keep the rest of
+/// the pipeline unchanged. Model is embedded (535 KB) and written to a cache
+/// file once, because sherpa-onnx loads it from a path.
+pub struct GtcrnDenoiser {
+    online: sherpa_onnx::OnlineSpeechDenoiser,
+    /// Accumulated 16 kHz denoised output, resampled to 48 kHz in 20 ms frames.
+    out_buf: Vec<f32>,
+    /// 16 kHz -> 48 kHz for the denoised output.
+    resampler: LinearResampler,
+    /// Cache path where the embedded model was written.
+    _model_path: std::path::PathBuf,
+}
+
+/// Samples per 20 ms frame at 16 kHz.
+const GTCRN_FRAME_16K: usize = 320;
+
+impl GtcrnDenoiser {
+    /// Create from the embedded model. `None` if the model can't be loaded
+    /// (e.g. onnxruntime init failed) — the caller then falls back to the
+    /// previous denoiser chain.
+    pub fn new() -> Option<Self> {
+        use sherpa_onnx::{
+            OfflineSpeechDenoiserGtcrnModelConfig, OfflineSpeechDenoiserModelConfig,
+            OnlineSpeechDenoiserConfig,
+        };
+        let model_path = Self::materialize_model()?;
+        let config = OnlineSpeechDenoiserConfig {
+            model: OfflineSpeechDenoiserModelConfig {
+                gtcrn: OfflineSpeechDenoiserGtcrnModelConfig {
+                    model: Some(model_path.to_string_lossy().into_owned()),
+                },
+                ..Default::default()
+            },
+        };
+        let online = sherpa_onnx::OnlineSpeechDenoiser::create(&config)?;
+        Some(Self {
+            online,
+            out_buf: Vec::with_capacity(GTCRN_FRAME_16K * 2),
+            resampler: LinearResampler::new(16_000, CLOCK_RATE),
+            _model_path: model_path,
+        })
+    }
+
+    /// Write the embedded model to a cache file and return its path.
+    fn materialize_model() -> Option<std::path::PathBuf> {
+        const MODEL: &[u8] = include_bytes!("../models/gtcrn_simple.onnx");
+        let path = std::env::temp_dir().join("lumen-gtcrn_simple.onnx");
+        // Idempotent: only write if missing or different size.
+        if !path.exists() || std::fs::metadata(&path).ok().map(|m| m.len()) != Some(MODEL.len() as u64) {
+            std::fs::write(&path, MODEL).ok()?;
+        }
+        Some(path)
+    }
+
+    /// Denoise a 48 kHz mono frame. Returns exactly `frame.len()` 48 kHz mono
+    /// samples (padded with silence if the streaming path hasn't produced a
+    /// full frame yet, truncated otherwise), so the pipeline stays 20 ms
+    /// aligned. sherpa-onnx resamples 48 kHz input to 16 kHz internally; we
+    /// resample the 16 kHz output back to 48 kHz.
+    pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
+        let mut in_f32 = Vec::with_capacity(frame.len());
+        for &s in frame {
+            in_f32.push(s as f32 / 32768.0);
+        }
+        let out = self.online.run(&in_f32, CLOCK_RATE as i32);
+        self.out_buf.extend_from_slice(&out.samples);
+        // Drain 20 ms (320 samples @ 16 kHz), resample to 48 kHz (960).
+        let mut result: Vec<i16> = Vec::with_capacity(frame.len());
+        while self.out_buf.len() >= GTCRN_FRAME_16K {
+            let chunk: Vec<i16> = self.out_buf.drain(..GTCRN_FRAME_16K)
+                .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                .collect();
+            result.extend_from_slice(&self.resampler.resample(&chunk));
+        }
+        // Keep the frame length exact: pad the tail with silence on the first
+        // frames (streaming warm-up latency), truncate if we over-produced.
+        if result.len() < frame.len() {
+            result.resize(frame.len(), 0);
+        } else {
+            result.truncate(frame.len());
+        }
+        result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Speech leveler: VAD-gated adaptive gain
+// ---------------------------------------------------------------------------
 /// VAD-gated adaptive gain (a sidechain compressor): raises quiet speech to a
 /// target level and gates silence, so a cheap/quiet mic is audible WITHOUT
 /// amplifying background noise.

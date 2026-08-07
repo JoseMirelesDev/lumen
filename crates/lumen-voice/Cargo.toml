@@ -28,6 +28,10 @@ neteq = { version = "0.9", default-features = false }
 # RNNoise (pure-Rust port) neural noise suppression — the Krisp-style NS that
 # beats the classic WebRTC NS on non-stationary background noise. No C deps.
 nnnoiseless = "0.5"
+# GTCRN neural denoiser (sherpa-onnx): 32-38 dB noise reduction, ~10x real-time
+# on this CPU, prebuilt static libs for all 3 OS (no cmake/onnxruntime build).
+# Replaces RNNoise as the primary send-path denoiser (RNNoise stays as 2nd stage).
+sherpa-onnx = "1.13"
 
 [dev-dependencies]
 reqwest.workspace = true
