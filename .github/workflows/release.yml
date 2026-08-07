@@ -22,6 +22,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Incremental builds across release runs: cache the cargo registry + the
+      # whole target dir (keyed on Cargo.lock, with a restore fallback) so a
+      # small change recompiles only the affected crates instead of the heavy
+      # sherpa-onnx/onnxruntime/webrtc tree from scratch every time.
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
       - name: Install system deps (ALSA for cpal, fontconfig/X11/xkb for Slint-winit, meson/ninja/libclang for the voice stack)
         run: |
           sudo apt-get update
@@ -47,6 +61,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
       # GitHub's windows-latest ships MinGW in PATH; meson picks gcc over MSVC
       # and webrtc-audio-processing's abseil fails to compile with mingw
       # (redefinition of ABI::Windows::Foundation::IReference). Activate the
@@ -83,6 +107,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
       - name: Install system deps
         run: brew install cmake pkg-config meson ninja
       - name: Build release binary
