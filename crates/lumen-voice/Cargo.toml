@@ -36,10 +36,10 @@ nnnoiseless = "0.5"
 # /MD like the rest of the build, and sherpa-onnx-sys copies the DLLs next to
 # the exe at build time. Replaces RNNoise as the primary send-path denoiser.
 [target.'cfg(windows)'.dependencies]
-sherpa-onnx = { version = "1.13", features = ["shared"] }
+sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
 
 [target.'cfg(not(windows))'.dependencies]
-sherpa-onnx = "1.13"
+sherpa-onnx = { version = "1.13", default-features = false, features = ["static"] }
 
 [dev-dependencies]
 reqwest.workspace = true
