@@ -123,14 +123,14 @@ export class LumenChannelDO {
           ws.close(1013, "channel_full");
           return;
         }
-        peers.push({ peerId: att.peerId, userId: att.userId });
+        peers.push({ peerId: att.peerId, userId: att.userId, username: msg.username });
         await this.state.storage.put(PEERS_KEY, peers);
         const others = peers.filter((p) => p.peerId !== att.peerId);
         ws.send(
           JSON.stringify({ type: "joined", peerId: att.peerId, peers: others } satisfies ServerMessage),
         );
         await this.broadcast(
-          { type: "peer-joined", peer: { peerId: att.peerId, userId: att.userId } } satisfies ServerMessage,
+          { type: "peer-joined", peer: { peerId: att.peerId, userId: att.userId, username: msg.username } } satisfies ServerMessage,
           ws,
         );
         return;

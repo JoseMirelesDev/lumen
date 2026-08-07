@@ -275,7 +275,7 @@ async function main() {
     const wsA = await openWs(`/api/ws/${voiceChannel.id}`, tokenA);
     sockets.push(wsA);
     const joinedAP = waitFor(wsA, (m) => m.type === "joined");
-    wsA.send(JSON.stringify({ type: "join", channelId: voiceChannel.id, userId: aliceId }));
+    wsA.send(JSON.stringify({ type: "join", channelId: voiceChannel.id, userId: aliceId, username: alice.username }));
     const joinedA = await joinedAP;
     step(
       "A joined, peers=[]",
@@ -288,7 +288,7 @@ async function main() {
     sockets.push(wsB);
     const joinedBP = waitFor(wsB, (m) => m.type === "joined");
     const peerJoinedA = waitFor(wsA, (m) => m.type === "peer-joined");
-    wsB.send(JSON.stringify({ type: "join", channelId: voiceChannel.id, userId: bobId }));
+    wsB.send(JSON.stringify({ type: "join", channelId: voiceChannel.id, userId: bobId, username: bob.username }));
     const joinedB = await joinedBP;
     step(
       "B joined, peers=[A]",
@@ -414,7 +414,7 @@ async function main() {
       const ws = await openWs(`/api/ws/${voiceChannel.id}`, extraTokens[i]);
       sockets.push(ws);
       const joined = waitFor(ws, (m) => m.type === "joined");
-      ws.send(JSON.stringify({ type: "join", channelId: voiceChannel.id, userId: extraIds[i] }));
+      ws.send(JSON.stringify({ type: "join", channelId: voiceChannel.id, userId: extraIds[i], username: "extra" }));
       await joined;
     }
     step("3 more peers joined (4 total)", true);

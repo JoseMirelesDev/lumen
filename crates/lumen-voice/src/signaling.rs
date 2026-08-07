@@ -17,6 +17,9 @@ pub struct PeerInfo {
     pub peer_id: String,
     #[serde(rename = "userId")]
     pub user_id: String,
+    /// Display name, sent by the peer on join and relayed by the DO.
+    #[serde(default)]
+    pub username: String,
 }
 
 /// Inbound messages from the DO, re-typed for the session.
@@ -39,7 +42,7 @@ pub enum SignalEvent {
 /// Outbound messages this client may send.
 #[derive(Debug, Clone)]
 pub enum SignalOut {
-    Join { channel_id: String, user_id: String },
+    Join { channel_id: String, user_id: String, username: String },
     Offer { to: String, sdp: String },
     Answer { to: String, sdp: String },
     IceCandidate { to: String, candidate: Value },
@@ -59,7 +62,7 @@ pub enum SignalOut {
 #[serde(tag = "type", rename_all = "kebab-case")]
 enum ClientMessage {
     #[serde(rename_all = "camelCase")]
-    Join { channel_id: String, user_id: String },
+    Join { channel_id: String, user_id: String, username: String },
     Offer { to: String, sdp: String },
     Answer { to: String, sdp: String },
     IceCandidate { to: String, candidate: Value },
@@ -102,6 +105,7 @@ impl SignalingClient {
         token: &str,
         channel_id: &str,
         user_id: &str,
+        username: &str,
     ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<SignalEvent>)> {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
@@ -176,9 +180,10 @@ impl SignalingClient {
         tokio::spawn(async move {
                 while let Some(msg) = out_rx.recv().await {
                     let m = match &msg {
-                        SignalOut::Join { channel_id, user_id } => ClientMessage::Join {
+                        SignalOut::Join { channel_id, user_id, username } => ClientMessage::Join {
                             channel_id: channel_id.clone(),
                             user_id: user_id.clone(),
+                            username: username.clone(),
                         },
                         SignalOut::Offer { to, sdp } => ClientMessage::Offer { to: to.clone(), sdp: sdp.clone() },
                         SignalOut::Answer { to, sdp } => ClientMessage::Answer { to: to.clone(), sdp: sdp.clone() },
@@ -240,6 +245,7 @@ impl SignalingClient {
         out_tx.send(SignalOut::Join {
             channel_id: channel_id.to_string(),
             user_id: user_id.to_string(),
+            username: username.to_string(),
         })?;
 
         Ok((Self { tx: out_tx }, ev_rx))
@@ -252,10 +258,10 @@ mod tests {
 
     #[test]
     fn client_message_wire_format() {
-        let m = ClientMessage::Join { channel_id: "ch-1".into(), user_id: "u-1".into() };
+        let m = ClientMessage::Join { channel_id: "ch-1".into(), user_id: "u-1".into(), username: "alice".into() };
         assert_eq!(
             serde_json::to_value(&m).unwrap(),
-            serde_json::json!({"type": "join", "channelId": "ch-1", "userId": "u-1"})
+            serde_json::json!({"type": "join", "channelId": "ch-1", "userId": "u-1", "username": "alice"})
         );
         let m = ClientMessage::Offer { to: "p-2".into(), sdp: "v=0".into() };
         assert_eq!(

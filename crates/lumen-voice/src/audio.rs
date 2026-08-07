@@ -373,6 +373,10 @@ pub struct NoiseSuppressor {
     processor: Option<Processor>,
     /// RNNoise neural denoiser (10 ms frames, f32).
     rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
+    /// VAD-gated adaptive gain (boosts quiet speech, gates silence).
+    leveler: SpeechLeveler,
+    /// Whether the last processed frame contained speech (RNNoise VAD).
+    speech_detected: bool,
 }
 
 impl NoiseSuppressor {
@@ -400,6 +404,8 @@ impl NoiseSuppressor {
         Self {
             processor,
             rnnoise: Some(nnnoiseless::DenoiseState::new()),
+            leveler: SpeechLeveler::new(),
+            speech_detected: false,
         }
     }
 
@@ -420,10 +426,11 @@ impl NoiseSuppressor {
     }
 
     /// Suppress noise in a 48 kHz mono frame (length must be a multiple of
-    /// 480, e.g. 960). AEC3 + high-pass + AGC run first (WebRTC APM), then
-    /// RNNoise. Falls back to the raw frame if neither processor initialized.
+    /// 480, e.g. 960). AEC3 + high-pass run first (WebRTC APM), then RNNoise,
+    /// then VAD-gated adaptive gain. Falls back to the raw frame if neither
+    /// processor initialized.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
-        // WebRTC APM: AEC3 + high-pass + fixed-digital AGC.
+        // WebRTC APM: AEC3 + high-pass + NS (VeryHigh).
         let out: Vec<i16> = match self.processor.as_mut() {
             Some(processor) => {
                 let mut out = vec![0i16; frame.len()];
@@ -447,33 +454,128 @@ impl NoiseSuppressor {
             }
             None => frame.to_vec(),
         };
-        // RNNoise: neural noise suppression on top.
+        // RNNoise: neural noise suppression on top; capture the VAD.
+        let mut result = vec![0i16; out.len()];
+        let mut max_vad = 0.0f32;
         match self.rnnoise.as_mut() {
             Some(rn) => {
-                let mut result = vec![0i16; out.len()];
                 let mut input = [0f32; 480];
                 let mut denoised = [0f32; 480];
                 for (chunk, out_chunk) in out.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
                     for (i, s) in chunk.iter().enumerate() {
                         input[i] = *s as f32 / 32768.0;
                     }
-                    // Returns the voice-activity probability; we only need the
-                    // denoised audio.
-                    let _vad = rn.process_frame(&mut denoised, &input);
+                    let vad = rn.process_frame(&mut denoised, &input);
+                    max_vad = max_vad.max(vad);
                     for (i, v) in denoised.iter().enumerate() {
                         out_chunk[i] = (v * 32767.0)
                             .round()
                             .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                     }
                 }
-                result
             }
-            None => out,
+            None => result.copy_from_slice(&out),
         }
+        // VAD-gated adaptive gain: boost quiet speech to an audible level
+        // without amplifying the (already suppressed) noise floor.
+        let rms = rms_level(&result);
+        self.speech_detected = self.leveler.process(max_vad, rms, &mut result);
+        result
+    }
+
+    /// Whether the most recently processed frame contained speech (RNNoise
+    /// VAD). Drives voice-activation (transmit gating) and the speaking meter.
+    pub fn speech_detected(&self) -> bool {
+        self.speech_detected
     }
 }
 
 impl Default for NoiseSuppressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Speech leveler: VAD-gated adaptive gain
+// ---------------------------------------------------------------------------
+
+/// VAD-gated adaptive gain (a sidechain compressor): raises quiet speech to a
+/// target level and gates silence, so a cheap/quiet mic is audible WITHOUT
+/// amplifying background noise.
+///
+/// WebRTC's adaptive AGC (GainController2) was measured to boost the noise
+/// floor (+15 dB on quiet noise), so we do the gate ourselves: RNNoise's
+/// voice-activity probability opens the gain, which chases a target RMS and
+/// holds through a hangover so words aren't clipped; on silence the gain
+/// decays to unity (no boost), leaving the already-suppressed noise inaudible.
+pub struct SpeechLeveler {
+    /// Target RMS for speech after gain (~ -18 dBFS).
+    target_rms: f32,
+    /// Max gain factor (+24 dB).
+    max_gain: f32,
+    /// Current smoothed gain factor.
+    gain: f32,
+    /// Smoothed voice-activity probability (0..1).
+    vad_smooth: f32,
+    /// Smoothed pre-gain speech level (for gain computation).
+    speech_rms: f32,
+    /// Frames to keep gain up after VAD drops (avoids clipping word tails).
+    hold: u32,
+}
+
+const VAD_ON: f32 = 0.5;
+/// ~100 ms of hold at 20 ms frames.
+const HANGOVER_FRAMES: u32 = 5;
+
+impl SpeechLeveler {
+    pub fn new() -> Self {
+        Self {
+            target_rms: 0.12,
+            max_gain: 16.0,
+            gain: 1.0,
+            vad_smooth: 0.0,
+            speech_rms: 0.001,
+            hold: 0,
+        }
+    }
+
+    /// Apply gain to `samples` in place based on the frame's VAD probability
+    /// and RMS. Returns true if speech was detected this frame.
+    pub fn process(&mut self, vad: f32, frame_rms: f32, samples: &mut [i16]) -> bool {
+        self.vad_smooth = self.vad_smooth * 0.8 + vad * 0.2;
+        let speech = self.vad_smooth > VAD_ON;
+        if speech {
+            // In production `frame_rms` is the fresh pre-gain level (the caller
+            // measures before we apply gain), so track it directly with a fast
+            // attack and slow release.
+            if frame_rms > self.speech_rms {
+                self.speech_rms = frame_rms;
+            } else {
+                self.speech_rms = self.speech_rms * 0.9 + frame_rms * 0.1;
+            }
+            let desired =
+                (self.target_rms / self.speech_rms.max(0.0001)).clamp(1.0, self.max_gain);
+            self.gain = self.gain * 0.85 + desired * 0.15;
+            self.hold = HANGOVER_FRAMES;
+        } else if self.hold > 0 {
+            self.hold -= 1;
+        } else {
+            // Silence: decay the boost toward unity so noise stays un-boosted.
+            self.gain = (self.gain - 1.0) * 0.85 + 1.0;
+        }
+        if self.gain > 1.0001 {
+            for s in samples.iter_mut() {
+                *s = ((*s as f32) * self.gain)
+                    .round()
+                    .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            }
+        }
+        speech
+    }
+}
+
+impl Default for SpeechLeveler {
     fn default() -> Self {
         Self::new()
     }
@@ -485,7 +587,6 @@ impl Default for NoiseSuppressor {
 
 /// Orders RTP packets by timestamp and hands frames out in play order at a
 /// fixed 20 ms cadence (driven by the caller ticking `pop` every 20 ms).
-///
 /// Playout starts once `target` frames are buffered, then never waits: a
 /// missing timestamp yields `Some(None)` so the caller runs OPUS PLC instead
 /// of stalling. Packets that arrive after their play time are discarded.
@@ -787,6 +888,85 @@ mod tests {
     }
 
     #[test]
+    fn speech_leveler_boosts_quiet_speech_not_silence() {
+        let mut lvl = SpeechLeveler::new();
+        // Build a quiet speech-like frame generator (fresh, un-gained each time
+        // — like production where every frame is new).
+        let base: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| {
+                (((i as f32 / CLOCK_RATE as f32) * 2.0 * std::f32::consts::PI * 200.0).sin()
+                    * 600.0) as i16 // RMS ~0.013
+            })
+            .collect();
+        let before = rms_level(&base);
+        let mut out = base.clone();
+        // Warm up the gain toward the target over several fresh frames.
+        for _ in 0..15 {
+            let mut frame = base.clone();
+            lvl.process(0.9, rms_level(&frame), &mut frame);
+            out = frame;
+        }
+        let after = rms_level(&out);
+        eprintln!("speech leveler: {before:.4} -> {after:.4}");
+        assert!(
+            after > before * 2.0,
+            "quiet speech should be boosted: {before} -> {after}"
+        );
+        assert!(
+            after < 0.5,
+            "boost must not clip/overshoot: {after}"
+        );
+
+        // A new leveler on a low-VAD (silence) frame must NOT boost.
+        let mut lvl2 = SpeechLeveler::new();
+        let silence = vec![400i16; FRAME_SAMPLES]; // low-level noise-ish
+        let sb = rms_level(&silence);
+        let mut out2 = silence.clone();
+        for _ in 0..15 {
+            let mut frame = silence.clone();
+            lvl2.process(0.05, rms_level(&frame), &mut frame);
+            out2 = frame;
+        }
+        let sa = rms_level(&out2);
+        eprintln!("silence: {sb:.4} -> {sa:.4}");
+        assert!(
+            sa <= sb * 1.5,
+            "silence must not be boosted: {sb} -> {sa}"
+        );
+    }
+
+    #[test]
+    fn speech_leveler_gates_silence_with_hangover() {
+        let mut lvl = SpeechLeveler::new();
+        let base: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| {
+                (((i as f32 / CLOCK_RATE as f32) * 2.0 * std::f32::consts::PI * 200.0).sin()
+                    * 600.0) as i16
+            })
+            .collect();
+        // Speak for several frames (fresh each time) to open the gain, then go
+        // silent. Gain must persist through the hangover, then decay toward 1.
+        for _ in 0..15 {
+            let mut frame = base.clone();
+            lvl.process(0.9, rms_level(&frame), &mut frame);
+        }
+        let gain_after_speech = lvl.gain;
+        assert!(gain_after_speech > 1.0, "gain should open on speech");
+        // Silence for longer than the hangover -> gain decays back toward 1.
+        let silence = vec![400i16; FRAME_SAMPLES];
+        for _ in 0..(HANGOVER_FRAMES + 10) {
+            let mut frame = silence.clone();
+            lvl.process(0.05, rms_level(&frame), &mut frame);
+        }
+        assert!(
+            lvl.gain < gain_after_speech * 0.6,
+            "gain should decay on sustained silence: {} -> {}",
+            gain_after_speech,
+            lvl.gain
+        );
+    }
+
+    #[test]
     fn noise_suppressor_attenuates_background_noise() {
         // The shipped send-path DSP (AEC3 + NS VeryHigh + RNNoise, AGC off)
         // must strongly attenuate moderate stationary background noise — the
@@ -838,7 +1018,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, leveler: SpeechLeveler::new(), speech_detected: false };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
@@ -879,5 +1059,6 @@ mod tests {
         );
     }
 }
+
 
 

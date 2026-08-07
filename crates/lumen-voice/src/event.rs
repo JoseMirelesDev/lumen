@@ -62,7 +62,7 @@ pub enum VoiceEvent {
     /// `voice://debug` — signaling/negotiation diagnostics (optional peer id).
     Debug { peer_id: Option<String>, message: String },
     /// `voice://peer-joined` — a participant joined the channel.
-    PeerJoined { peer_id: String, user_id: String },
+    PeerJoined { peer_id: String, user_id: String, username: String },
     /// `voice://peer-left`.
     PeerLeft { peer_id: String },
     /// `voice://state` — a peer's RTCPeerConnection state changed.

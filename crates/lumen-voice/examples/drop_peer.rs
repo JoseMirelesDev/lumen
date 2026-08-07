@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             token,
             channel_id,
             user_id,
+            username: "drop_peer".to_string(),
             ice_servers: vec![],
         })
         .await

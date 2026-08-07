@@ -14,11 +14,12 @@ export type PresenceStatus = "online" | "idle" | "offline";
 export interface PeerInfo {
   peerId: string;
   userId: string;
+  username: string;
 }
 
 /** Messages the client sends to the channel Durable Object. */
 export type ClientMessage =
-  | { type: "join"; channelId: string; userId: string }
+  | { type: "join"; channelId: string; userId: string; username: string }
   | { type: "offer"; to: string; sdp: string }
   | { type: "answer"; to: string; sdp: string }
   | { type: "ice-candidate"; to: string; candidate: unknown }

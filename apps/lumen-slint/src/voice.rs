@@ -44,6 +44,7 @@ struct JoinInfo {
     backend_url: String,
     token: String,
     user_id: String,
+    username: String,
     channel_id: String,
     channel_name: String,
 }
@@ -133,11 +134,20 @@ impl VoiceController {
     }
 
     /// Resolve ICE servers and join the channel. Idempotent per channel.
-    pub async fn join(&self, backend_url: String, token: String, user_id: String, channel_id: String, channel_name: String) {
+    pub async fn join(
+        &self,
+        backend_url: String,
+        token: String,
+        user_id: String,
+        username: String,
+        channel_id: String,
+        channel_name: String,
+    ) {
         *self.join_info.write() = Some(JoinInfo {
             backend_url: backend_url.clone(),
             token: token.clone(),
             user_id: user_id.clone(),
+            username: username.clone(),
             channel_id: channel_id.clone(),
             channel_name: channel_name.clone(),
         });
@@ -164,6 +174,7 @@ impl VoiceController {
             token,
             channel_id,
             user_id,
+            username,
             ice_servers: ice,
         };
         *self.channel_name.write() = Some(channel_name);
@@ -223,9 +234,14 @@ impl VoiceController {
                 self.peers_dirty.store(true, Ordering::SeqCst);
                 self.push();
             }
-            VoiceEvent::PeerJoined { peer_id, user_id } => {
-                let short: String = user_id.chars().take(8).collect();
-                let initial: String = user_id
+            VoiceEvent::PeerJoined { peer_id, user_id, username } => {
+                let short: String = if username.is_empty() {
+                    // Fallback if the peer didn't send a name: last 6 of the id.
+                    user_id.chars().rev().take(6).collect::<String>().chars().rev().collect()
+                } else {
+                    username
+                };
+                let initial: String = short
                     .chars()
                     .next()
                     .map(|c| c.to_uppercase().collect::<String>())
@@ -305,7 +321,15 @@ impl VoiceController {
             while this.join_info.read().is_some() {
                 tokio::time::sleep(delay).await;
                 let Some(info) = this.join_info.read().clone() else { break };
-                this.join(info.backend_url, info.token, info.user_id, info.channel_id, info.channel_name).await;
+                this.join(
+                    info.backend_url,
+                    info.token,
+                    info.user_id,
+                    info.username,
+                    info.channel_id,
+                    info.channel_name,
+                )
+                .await;
                 if this.active.load(Ordering::SeqCst) {
                     break;
                 }

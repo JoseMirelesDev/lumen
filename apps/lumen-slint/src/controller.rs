@@ -367,9 +367,10 @@ impl UiController {
         let name = channel.name.clone();
         let channel_id = channel.id.clone();
         let user_id = user.id.clone();
+        let username = user.username.clone();
         let this = self.clone();
         self.rt.spawn(async move {
-            this.voice.join(backend, token, user_id, channel_id, name).await;
+            this.voice.join(backend, token, user_id, username, channel_id, name).await;
             this.push();
         });
     }

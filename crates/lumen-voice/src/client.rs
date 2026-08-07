@@ -15,7 +15,7 @@
 //! seam where a video `TrackLocalStaticRTP` slots in later, unchanged.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,8 +73,20 @@ pub struct VoiceJoinArgs {
     pub token: String,
     pub channel_id: String,
     pub user_id: String,
+    /// Display name, sent on join so peers can show it (not just an ID).
+    pub username: String,
     #[serde(default)]
     pub ice_servers: Vec<IceServer>,
+}
+
+/// How the local mic decides when to transmit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransmitMode {
+    /// Always transmit (current behavior).
+    Always,
+    /// Transmit only while RNNoise detects voice (VAD gate).
+    VoiceActivated,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +153,13 @@ impl VoiceClient {
         }
     }
 
+    /// Set how the mic decides to transmit (always vs voice-activated).
+    pub async fn set_transmit_mode(&self, mode: TransmitMode) {
+        if let Some(s) = self.session.lock().await.as_ref() {
+            s.transmit_mode.store(mode as u8, Ordering::SeqCst);
+        }
+    }
+
     /// TEMP DIAG: (playout buffer occupancy in frames, total shed samples).
     pub async fn output_stats(&self) -> Option<(usize, u64)> {
         self.session.lock().await.as_ref().map(|s| s.output.stats())
@@ -159,6 +178,8 @@ struct VoiceSession {
     _out_stream: cpal::Stream,
     muted: Arc<AtomicBool>,
     deafened: Arc<AtomicBool>,
+    /// `TransmitMode` as u8 (0 = Always, 1 = VoiceActivated).
+    transmit_mode: Arc<AtomicU8>,
     _encoder: Arc<tokio::sync::Mutex<OpusEncoder>>,
     ice: Vec<RTCIceServer>,
     /// The outbound signaling handle. Dropping it closes the WS → loop exits.
@@ -174,9 +195,15 @@ impl VoiceSession {
         let ws_base = args.backend_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
         let ws_url = format!("{ws_base}/api/ws/{}", args.channel_id);
         let (signal, signal_rx) =
-            SignalingClient::connect(&ws_url, &args.token, &args.channel_id, &args.user_id)
-                .await
-                .context("signaling connect")?;
+            SignalingClient::connect(
+                &ws_url,
+                &args.token,
+                &args.channel_id,
+                &args.user_id,
+                &args.username,
+            )
+            .await
+            .context("signaling connect")?;
         let signal_tx = signal.tx.clone();
 
         let (mic_tx, mut mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
@@ -190,6 +217,7 @@ impl VoiceSession {
         let peers = Arc::new(Mutex::new(HashMap::<String, Peer>::new()));
         let muted = Arc::new(AtomicBool::new(false));
         let deafened = Arc::new(AtomicBool::new(false));
+        let transmit_mode = Arc::new(AtomicU8::new(TransmitMode::VoiceActivated as u8));
         let local_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let encoder = Arc::new(tokio::sync::Mutex::new(OpusEncoder::new()?));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -219,8 +247,9 @@ impl VoiceSession {
             let local_level = local_level.clone();
             let stopping = stopping.clone();
             let render_tap = render_tap.clone();
+            let transmit_mode = transmit_mode.clone();
             tokio::spawn(async move {
-                // WebRTC APM (AEC3/HPF/AGC) + RNNoise on the mic.
+                // WebRTC APM (AEC3/HPF/NS) + RNNoise + VAD-gated gain.
                 let mut ns = crate::audio::NoiseSuppressor::new();
                 while let Some(mut frame) = mic_rx.recv().await {
                     if stopping.load(Ordering::SeqCst) {
@@ -258,6 +287,14 @@ impl VoiceSession {
                     }
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
                     let cleaned = ns.process(&frame);
+                    // Voice-activated mode: don't transmit silence (RNNoise VAD
+                    // gate). We still ran `process` so the NS/leveler state
+                    // stays warm and the speaking meter updates.
+                    if transmit_mode.load(Ordering::SeqCst) == TransmitMode::VoiceActivated as u8
+                        && !ns.speech_detected()
+                    {
+                        continue;
+                    }
                     let encoded = match encoder.lock().await.encode(&cleaned) {
                         Ok(e) => e,
                         Err(_) => continue,
@@ -375,6 +412,7 @@ impl VoiceSession {
             _out_stream: out_stream,
             muted,
             deafened,
+            transmit_mode,
             _encoder: encoder,
             ice,
             signal_tx: Mutex::new(Some(signal_tx)),
@@ -429,6 +467,7 @@ impl VoiceSession {
                     let _ = self.events.send(VoiceEvent::PeerJoined {
                         peer_id: p.peer_id,
                         user_id: p.user_id,
+                        username: p.username,
                     });
                 }
             }
@@ -436,6 +475,7 @@ impl VoiceSession {
                 let _ = self.events.send(VoiceEvent::PeerJoined {
                     peer_id: p.peer_id.clone(),
                     user_id: p.user_id.clone(),
+                    username: p.username.clone(),
                 });
                 if !self.peers.lock().contains_key(&p.peer_id) {
                     let peer = match self.create_peer(&p.peer_id, &p.user_id, &signal_tx).await {

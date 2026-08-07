@@ -92,14 +92,14 @@ async fn main() -> anyhow::Result<()> {
     let ws_url = format!("{ws_base}/api/ws/{channel_id}");
 
     // Observer (alice) joins first.
-    let (_observer, mut obs_rx) = SignalingClient::connect(&ws_url, token_a, channel_id, user_a).await?;
+    let (_observer, mut obs_rx) = SignalingClient::connect(&ws_url, token_a, channel_id, user_a, "observer").await?;
     let joined_a = wait_for(&mut obs_rx, Duration::from_secs(10), |e| matches!(e, SignalEvent::Joined { .. })).await
         .expect("observer never joined");
     let SignalEvent::Joined { peer_id: observer_id, .. } = joined_a else { unreachable!() };
     println!("observer joined as {observer_id}");
 
     // Peer (bob) joins; observer must see peer-joined.
-    let (peer, mut peer_rx) = SignalingClient::connect(&ws_url, token_b, channel_id, user_b).await?;
+    let (peer, mut peer_rx) = SignalingClient::connect(&ws_url, token_b, channel_id, user_b, "peer").await?;
     let joined_b = wait_for(&mut peer_rx, Duration::from_secs(10), |e| matches!(e, SignalEvent::Joined { .. })).await
         .expect("peer never joined");
     let SignalEvent::Joined { peer_id: peer_id_b, .. } = joined_b else { unreachable!() };
