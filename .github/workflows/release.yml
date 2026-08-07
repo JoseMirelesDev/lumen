@@ -73,7 +73,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: lumen-windows
-          path: target/release/lumen.exe
+          path: |
+            target/release/lumen.exe
+            target/release/*.dll
           if-no-files-found: error
 
   build-macos:
