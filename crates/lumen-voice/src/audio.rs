@@ -589,10 +589,18 @@ impl GtcrnDenoiser {
     }
 
     /// Denoise a 48 kHz mono frame. Returns exactly `frame.len()` 48 kHz mono
-    /// samples (padded with silence if the streaming path hasn't produced a
-    /// full frame yet, truncated otherwise), so the pipeline stays 20 ms
-    /// aligned. sherpa-onnx resamples 48 kHz input to 16 kHz internally; we
-    /// resample the 16 kHz output back to 48 kHz.
+    /// samples (padded with silence until the streaming path has produced a
+    /// full 20 ms frame), so the pipeline stays 20 ms aligned.
+    ///
+    /// The streaming denoiser does NOT emit a fixed 320 samples per 20 ms
+    /// input chunk: it outputs in 16 ms (256 @ 16 kHz) bursts (256,256,256,512
+    /// → 1280 per 4 frames = 320/frame on average). Draining a `while` loop and
+    /// truncating the excess to force 960 samples DROPPED a full frame every 4
+    /// (the burst period), leaving the next frame silence-padded → chopped /
+    /// cut-off audio. So we emit at most ONE 20 ms chunk per call and carry any
+    /// excess into the next frame: output stays lossless and the buffer stays
+    /// bounded (steady-state input rate == drain rate). sherpa-onnx resamples
+    /// 48 kHz input to 16 kHz internally; we resample the 16 kHz output back.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
         let mut in_f32 = Vec::with_capacity(frame.len());
         for &s in frame {
@@ -600,19 +608,22 @@ impl GtcrnDenoiser {
         }
         let out = self.online.run(&in_f32, CLOCK_RATE as i32);
         self.out_buf.extend_from_slice(&out.samples);
-        // Drain 20 ms (320 samples @ 16 kHz), resample to 48 kHz (960).
+        // Emit at most one 20 ms (320 @ 16 kHz) chunk per call; never truncate.
         let mut result: Vec<i16> = Vec::with_capacity(frame.len());
-        while self.out_buf.len() >= GTCRN_FRAME_16K {
+        if self.out_buf.len() >= GTCRN_FRAME_16K {
             let chunk: Vec<i16> = self.out_buf.drain(..GTCRN_FRAME_16K)
                 .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
                 .collect();
             result.extend_from_slice(&self.resampler.resample(&chunk));
         }
-        // Keep the frame length exact: pad the tail with silence on the first
-        // frames (streaming warm-up latency), truncate if we over-produced.
+        // Keep the frame length exact. We drain at most ONE 20 ms chunk per
+        // call, so the resampled result is 960 or 961 (the streaming resampler
+        // self-corrects its phase at ±1 sample). Pad the warm-up frames with
+        // silence; trim only that ≤1-sample rounding overshoot — never a whole
+        // frame (that would drop audio -> chopped output).
         if result.len() < frame.len() {
             result.resize(frame.len(), 0);
-        } else {
+        } else if result.len() > frame.len() {
             result.truncate(frame.len());
         }
         result
@@ -1179,6 +1190,65 @@ mod tests {
             len <= FRAME_SAMPLES * 4,
             "output buffer grew to {len} samples (> 80 ms latency)"
         );
+    }
+
+    #[test]
+    fn gtcrn_streaming_no_dropped_frames() {
+        // Regression: the streaming denoiser outputs in 16 ms (256 @ 16 kHz)
+        // bursts (256,256,256,512 per 4 frames), not 320 per call. The old
+        // `while` drain + `truncate` DROPPED a full 20 ms frame every 4 and
+        // silence-padded the next -> chopped/cut-off audio ("se escucha
+        // cortado"). The fix emits at most one 20 ms chunk per call and
+        // carries excess forward, so output is lossless and the buffer stays
+        // bounded. Use a speech-like AM signal: GTCRN preserves speech but
+        // legitimately gates a steady tone (stationary noise).
+        fn speech_frame(idx: usize) -> Vec<i16> {
+            (0..FRAME_SAMPLES)
+                .map(|i| {
+                    let t = ((idx * FRAME_SAMPLES + i) as f64) / CLOCK_RATE as f64;
+                    let mut v = 0.0;
+                    for (n, amp) in [(1, 1.0), (2, 0.5), (3, 0.33), (4, 0.25), (5, 0.2)] {
+                        v += amp * (2.0 * std::f64::consts::PI * 150.0 * n as f64 * t).sin();
+                    }
+                    let am = 0.7 + 0.3 * (2.0 * std::f64::consts::PI * 8.0 * t).sin();
+                    (v * am * 3000.0) as i16
+                })
+                .collect()
+        }
+        let Some(mut g) = GtcrnDenoiser::new() else { return };
+        let mut max_buf = 0usize;
+        let mut silent_after_warmup = 0usize;
+        let mut total_out = 0f64;
+        let mut total_in = 0f64;
+        for i in 0..80 {
+            let fr = speech_frame(i);
+            let out = g.process(&fr);
+            assert_eq!(out.len(), FRAME_SAMPLES);
+            max_buf = max_buf.max(g.out_buf.len());
+            if i >= 6 {
+                // Never a full frame of silence once the stream is warm: a
+                // drop (old code) left the next frame silence-padded.
+                if rms_level(&out) < 0.003 {
+                    silent_after_warmup += 1;
+                }
+                total_out += out.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>();
+                total_in += fr.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>();
+            }
+        }
+        let ratio = total_out / total_in.max(1e-9);
+        eprintln!("max buffered 16k samples: {max_buf} (2 chunks = {})", GTCRN_FRAME_16K * 2);
+        eprintln!("silent frames after warm-up: {silent_after_warmup}/74; speech out/in energy {ratio:.2}");
+        // Structural: never buffer a second full 20 ms chunk (would mean a
+        // frame was produced but not emitted -> dropped / latency pile-up).
+        assert!(
+            max_buf < GTCRN_FRAME_16K * 2,
+            "GTCRN buffered {max_buf} 16k samples -> frames are being dropped/accumulating"
+        );
+        assert_eq!(
+            silent_after_warmup, 0,
+            "GTCRN produced {silent_after_warmup} silent frames after warm-up -> dropped/chopped audio"
+        );
+        assert!(ratio > 0.15, "GTCRN gated speech away: out/in {ratio:.2}");
     }
 }
 

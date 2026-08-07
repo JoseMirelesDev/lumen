@@ -145,7 +145,15 @@ leveler); "WITH" = the shipped path with the sherpa-onnx GTCRN stage added.
 | GTCRN alone | — | 2.79 ms / 20 ms (RTF 0.139) | — |
 | RAM (Linux VmRSS, warmed chain) | — | — | **+5.0 MB** (model + onnxruntime) |
 | noise reduction (stationary noise, dB) | 19.3 dB | 71.5 dB | **+52.2 dB** |
-| streaming latency | — | 40 ms | — |
+| streaming latency | — | 20 ms | — |
+
+Note on the streaming latency / earlier probe: the online denoiser emits output
+in 16 ms (256 @ 16 kHz) bursts (256,256,256,512 per 4 frames), not 320 per
+20 ms call. An earlier `while`-drain + `truncate` to force 960 samples DROPPED a
+full 20 ms frame every 4 and silence-padded the next — heard as the mic
+cutting in/out while talking. `GtcrnDenoiser::process` now emits at most one
+20 ms chunk per call and carries excess forward (lossless, buffer bounded at
+~320 @ 16 kHz), which also cut the measured streaming latency to 20 ms.
 
 Reads: GTCRN more than doubles the send-path CPU (2.58 → 6.07 ms/frame) but
 stays at RTF 0.30 — 3.3× real-time headroom on this 2014 quad-core, i.e. ~17.5 %
