@@ -217,7 +217,13 @@ impl VoiceSession {
         let peers = Arc::new(Mutex::new(HashMap::<String, Peer>::new()));
         let muted = Arc::new(AtomicBool::new(false));
         let deafened = Arc::new(AtomicBool::new(false));
-        let transmit_mode = Arc::new(AtomicU8::new(TransmitMode::VoiceActivated as u8));
+        // Default to Always transmit: the RNNoise VAD gate (VoiceActivated) is
+        // not reliable enough yet — it cuts real speech frames, so the remote
+        // hears nothing while the local meter still shows "speaking". The
+        // SpeechLeveler below already gates gain (not transmission), so the
+        // mic is always audible. VoiceActivated stays available via
+        // `set_transmit_mode` once its threshold is calibrated (UI phase).
+        let transmit_mode = Arc::new(AtomicU8::new(TransmitMode::Always as u8));
         let local_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let encoder = Arc::new(tokio::sync::Mutex::new(OpusEncoder::new()?));
         let stopping = Arc::new(AtomicBool::new(false));
