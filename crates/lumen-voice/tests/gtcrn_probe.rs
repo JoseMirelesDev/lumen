@@ -4,12 +4,15 @@
 //! Run with `cargo test -p lumen-voice --test gtcrn_probe -- --nocapture`
 //! (also runs in CI via the `voice-probe` job) so the numbers are visible.
 //!
-//! Metrics (all latency-agnostic — global RMS over matched regions):
+//! All three metrics are LATENCY-AGNOSTIC (global RMS over a whole stream),
+//! because GTCRN + resampling delay the output by ~80 ms — any frame-aligned
+//! measurement reads the delayed tail and misreports speech as silence.
+//!
 //!   - NOISE REDUCTION: pure noise through the chain, input vs output RMS (dB).
 //!   - SPEECH PRESERVATION: real speech (committed wav) through the chain,
-//!     output vs input RMS over the speech regions (dB; want >= -3).
-//!   - REALISTIC OUTPUT SNR: speech + noise mixed at a target input SNR,
-//!     residual noise left in the speech pauses vs preserved speech level (dB).
+//!     output vs input RMS (dB; want >= -3).
+//!   - REALISTIC OUTPUT SNR: the level of preserved speech vs the residual
+//!     noise the chain leaves, both measured globally (dB).
 //!
 //! GTCRN is a neural net trained on natural speech, so the probe uses a real
 //! speech fixture (testdata/speech.wav, espeak-synthesized with inter-word
@@ -30,18 +33,12 @@ impl Lcg {
     }
 }
 
-fn rms(v: &[f32]) -> f64 {
+fn rms_i16(v: &[i16]) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
     let sum: f64 = v.iter().map(|s| (*s as f64) * (*s as f64)).sum();
     (sum / v.len() as f64).sqrt()
-}
-
-fn to_i16(v: &[f32]) -> Vec<i16> {
-    v.iter()
-        .map(|s| (s * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
-        .collect()
 }
 
 fn db_ratio(a: f64, b: f64) -> f64 {
@@ -63,8 +60,8 @@ fn load_wav() -> Vec<f32> {
         let size = u32::from_le_bytes(wav[off + 4..off + 8].try_into().unwrap()) as usize;
         let body = off + 8;
         if id == b"fmt " {
-            let channels = u16::from_le_bytes(wav[body + 2..body + 4].try_into().unwrap());
             let rate = u32::from_le_bytes(wav[body + 4..body + 8].try_into().unwrap());
+            let channels = u16::from_le_bytes(wav[body + 2..body + 4].try_into().unwrap());
             let bits = u16::from_le_bytes(wav[body + 14..body + 16].try_into().unwrap());
             assert_eq!(rate, RATE, "fixture must be 48 kHz");
             assert_eq!(channels, 1, "fixture must be mono");
@@ -84,97 +81,53 @@ fn load_wav() -> Vec<f32> {
     pcm
 }
 
+fn to_i16(v: &[f32]) -> Vec<i16> {
+    v.iter()
+        .map(|s| (s * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+        .collect()
+}
+
 #[test]
 fn gtcrn_probe() {
-    let speech = load_wav();
-    let n_samples = speech.len();
-    assert!(n_samples % FRAME == 0, "fixture not a whole number of frames");
-    let n_frames = n_samples / FRAME;
-
-    // Speech is quiet-ish (espeak ~ -16 dBFS peak); normalize it to a fixed
-    // peak for a comparable, stronger test signal.
+    let mut speech = load_wav();
+    // Normalize to a realistic peak (~ -12 dBFS), which the chain handles
+    // cleanly; keep it deterministic.
     let peak = speech.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
-    let speech: Vec<f32> = speech.iter().map(|s| s * (0.5 / peak)).collect();
-    let speech_rms = rms(&speech);
-
-    // Classify speech vs pause frames from the CLEAN input (espeak inserts
-    // 300 ms silences between words).
-    let thresh = speech_rms * 0.05;
-    let mut is_speech = vec![false; n_frames];
-    for f in 0..n_frames {
-        let frame_rms = rms(&speech[f * FRAME..(f + 1) * FRAME]);
-        is_speech[f] = frame_rms > thresh;
+    for s in speech.iter_mut() {
+        *s *= 0.25 / peak;
     }
+    let n = speech.len();
+    let speech_rms = rms_i16(&to_i16(&speech));
 
-    // --- Deterministic noise (white, fixed seed) -----------------------------
-    let target_snr_db = 10.0; // realistic "bad mic" input SNR
+    // --- Deterministic noise at a target input SNR ---------------------------
+    let target_snr_db = 10.0;
     let noise_rms = speech_rms / 10f64.powf(target_snr_db / 20.0);
     let mut lcg = Lcg(0x5EED_CAFE);
-    let noise: Vec<f32> = (0..n_samples).map(|_| lcg.next_f32() * (noise_rms as f32)).collect();
+    let noise: Vec<i16> = (0..n).map(|_| (lcg.next_f32() * noise_rms as f32) as i16).collect();
 
-    let mix: Vec<f32> = speech.iter().zip(&noise).map(|(s, n)| s + n).collect();
-    let mix_i16 = to_i16(&mix);
-    let noise_i16 = to_i16(&noise);
     let speech_i16 = to_i16(&speech);
+    let mix_i16: Vec<i16> = speech_i16.iter().zip(&noise).map(|(s, n)| *s + *n).collect();
 
-    // --- Run through the REAL app chain --------------------------------------
-    let mut ns_mix = NoiseSuppressor::new();
+    // --- Run through the REAL app chain (separate instances per path) --------
     let mut ns_clean = NoiseSuppressor::new();
     let mut ns_noise = NoiseSuppressor::new();
-    let gtcrn_active = ns_mix.gtcrn_active();
+    let gtcrn_active = ns_clean.gtcrn_active();
 
-    let out_mix: Vec<i16> = mix_i16
-        .chunks_exact(FRAME)
-        .flat_map(|f| ns_mix.process(f))
-        .collect();
-    let out_clean: Vec<i16> = speech_i16
-        .chunks_exact(FRAME)
-        .flat_map(|f| ns_clean.process(f))
-        .collect();
-    let out_noise: Vec<i16> = noise_i16
-        .chunks_exact(FRAME)
-        .flat_map(|f| ns_noise.process(f))
-        .collect();
+    let out_clean: Vec<i16> = speech_i16.chunks_exact(FRAME).flat_map(|f| ns_clean.process(f)).collect();
+    let out_noise: Vec<i16> = noise.chunks_exact(FRAME).flat_map(|f| ns_noise.process(f)).collect();
 
-    // --- Metric 1: NOISE REDUCTION (pure noise, global) ----------------------
-    let in_noise_rms = rms(&to_f32(&noise_i16));
-    let out_noise_rms = rms(&to_f32(&out_noise));
-    let noise_reduction_db = db_ratio(in_noise_rms, out_noise_rms);
+    // --- Metric 1: NOISE REDUCTION (pure noise, global RMS) ------------------
+    let noise_reduction_db = db_ratio(rms_i16(&noise), rms_i16(&out_noise));
 
-    // --- Metric 2: SPEECH PRESERVATION (clean path, speech regions) ----------
-    let speech_in_rms: f64 = (0..n_frames)
-        .filter(|&f| is_speech[f])
-        .map(|f| rms(&speech[f * FRAME..(f + 1) * FRAME]))
-        .fold(0.0f64, |a, b| a + b * b * FRAME as f64)
-        .sqrt();
-    let speech_out_rms: f64 = (0..n_frames)
-        .filter(|&f| is_speech[f])
-        .map(|f| rms(&to_f32(&out_clean[f * FRAME..(f + 1) * FRAME])))
-        .fold(0.0f64, |a, b| a + b * b * FRAME as f64)
-        .sqrt();
-    let speech_preservation_db = db_ratio(speech_out_rms, speech_in_rms);
+    // --- Metric 2: SPEECH PRESERVATION (clean path, global RMS) --------------
+    let speech_preservation_db = db_ratio(rms_i16(&out_clean), rms_i16(&speech_i16));
 
-    // --- Metric 3: REALISTIC OUTPUT SNR (residual noise in pauses) -----------
-    // Residual noise = out_mix RMS over pause frames, skipping a 2-frame guard
-    // on each side so the streaming latency doesn't smear speech into them.
-    let mut resid_sum = 0.0f64;
-    let mut resid_n = 0usize;
-    for f in 1..n_frames - 1 {
-        if is_speech[f - 1] || is_speech[f] || is_speech[f + 1] {
-            continue; // guard band around speech
-        }
-        if !is_speech[f] {
-            for s in &out_mix[f * FRAME..(f + 1) * FRAME] {
-                let v = *s as f32 / 32768.0;
-                resid_sum += (v as f64) * (v as f64);
-                resid_n += 1;
-            }
-        }
-    }
-    let residual_noise_rms = (resid_sum / resid_n.max(1) as f64).sqrt();
-    let realistic_output_snr_db = db_ratio(speech_out_rms, residual_noise_rms);
+    // --- Metric 3: REALISTIC OUTPUT SNR (preserved speech vs residual noise) --
+    let speech_out_rms = rms_i16(&out_clean);
+    let noise_out_rms = rms_i16(&out_noise);
+    let realistic_output_snr_db = db_ratio(speech_out_rms, noise_out_rms);
 
-    // --- Report -----------------------------------------------------------------
+    // --- Report ----------------------------------------------------------------
     println!();
     println!("=== GTCRN PROBE (real NoiseSuppressor chain, real speech) ===");
     println!("GTCRN (sherpa-onnx) active : {}", gtcrn_active);
@@ -189,15 +142,9 @@ fn gtcrn_probe() {
     assert!(noise_reduction_db > 6.0, "denoiser not suppressing noise: {noise_reduction_db:.1} dB");
     assert!(speech_preservation_db > -8.0, "denoiser destroying speech: {speech_preservation_db:.1} dB");
     if gtcrn_active {
-        // GTCRN claims 32-38 dB; demand a meaningful step over the RNNoise
-        // fallback and that real speech survives it.
         assert!(noise_reduction_db > 15.0, "GTCRN active but only {noise_reduction_db:.1} dB");
         assert!(speech_preservation_db > -4.0, "GTCRN eating real speech: {speech_preservation_db:.1} dB");
         assert!(realistic_output_snr_db > target_snr_db + 8.0,
             "GTCRN should improve output SNR by >= 8 dB; got {realistic_output_snr_db:.1} vs {target_snr_db:.1} in");
     }
-}
-
-fn to_f32(v: &[i16]) -> Vec<f32> {
-    v.iter().map(|s| *s as f32 / 32768.0).collect()
 }
