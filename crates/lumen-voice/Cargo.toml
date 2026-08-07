@@ -25,6 +25,9 @@ webrtc-audio-processing.workspace = true
 # NetEQ-inspired adaptive jitter buffer for the receive path (replaces the
 # hand-rolled JitterBuffer). Core-only: no cpal/axum/tokio/ropus features.
 neteq = { version = "0.9", default-features = false }
+# RNNoise (pure-Rust port) neural noise suppression — the Krisp-style NS that
+# beats the classic WebRTC NS on non-stationary background noise. No C deps.
+nnnoiseless = "0.5"
 
 [dev-dependencies]
 reqwest.workspace = true

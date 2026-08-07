@@ -181,7 +181,10 @@ impl VoiceSession {
 
         let (mic_tx, mut mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
         let mic_stream = crate::audio::start_capture(mic_tx).context("mic capture")?;
-        let output = AudioOutput::new();
+        let mut output = AudioOutput::new();
+        // AEC reference: the send path drains this and feeds it to AEC3.
+        let render_tap: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(48_000)));
+        output.set_render_tap(render_tap.clone());
         let out_stream = output.start().context("audio output")?;
 
         let peers = Arc::new(Mutex::new(HashMap::<String, Peer>::new()));
@@ -215,8 +218,9 @@ impl VoiceSession {
             let encoder = encoder.clone();
             let local_level = local_level.clone();
             let stopping = stopping.clone();
+            let render_tap = render_tap.clone();
             tokio::spawn(async move {
-                // WebRTC APM on the mic: noise suppression + AGC before OPUS.
+                // WebRTC APM (AEC3/HPF/AGC) + RNNoise on the mic.
                 let mut ns = crate::audio::NoiseSuppressor::new();
                 while let Some(mut frame) = mic_rx.recv().await {
                     if stopping.load(Ordering::SeqCst) {
@@ -224,6 +228,23 @@ impl VoiceSession {
                     }
                     if muted.load(Ordering::SeqCst) {
                         continue;
+                    }
+                    // Feed AEC3 the playback reference: drain whatever the
+                    // output callback tapped since the last mic frame (in 10 ms
+                    // chunks) so the echo canceller sees the far-end stream.
+                    // AEC3 auto-estimates the delay, so a little skew is fine;
+                    // cap the backlog so a stalled send task can't stall us.
+                    let render: Vec<i16> = {
+                        let mut tap = render_tap.lock();
+                        const RENDER_CAP: usize = 48_000 / 2; // 500 ms
+                        let excess = tap.len().saturating_sub(RENDER_CAP);
+                        if excess > 0 {
+                            tap.drain(..excess);
+                        }
+                        std::mem::take(&mut *tap)
+                    };
+                    for chunk in render.chunks(480) {
+                        ns.process_render_frame(chunk);
                     }
                     // Stay at the live edge: if processing (encode + NS) fell
                     // behind the mic and frames piled up while we encoded the
