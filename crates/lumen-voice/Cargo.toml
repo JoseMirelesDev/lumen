@@ -29,8 +29,16 @@ neteq = { version = "0.9", default-features = false }
 # beats the classic WebRTC NS on non-stationary background noise. No C deps.
 nnnoiseless = "0.5"
 # GTCRN neural denoiser (sherpa-onnx): 32-38 dB noise reduction, ~10x real-time
-# on this CPU, prebuilt static libs for all 3 OS (no cmake/onnxruntime build).
-# Replaces RNNoise as the primary send-path denoiser (RNNoise stays as 2nd stage).
+# on this CPU. On Linux/macOS the prebuilt static lib links cleanly; on Windows
+# the prebuilt static lib is built with the MSVC /MT (static) CRT, which clashes
+# with Rust's default /MD and breaks the link with LNK2005 (multiply-defined
+# std symbols). Use the shared (DLL) onnxruntime on Windows instead: it uses
+# /MD like the rest of the build, and sherpa-onnx-sys copies the DLLs next to
+# the exe at build time. Replaces RNNoise as the primary send-path denoiser.
+[target.'cfg(windows)'.dependencies]
+sherpa-onnx = { version = "1.13", features = ["shared"] }
+
+[target.'cfg(not(windows))'.dependencies]
 sherpa-onnx = "1.13"
 
 [dev-dependencies]
