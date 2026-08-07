@@ -371,14 +371,17 @@ use webrtc_audio_processing::Processor;
 ///   frames (480 samples @ 48 kHz); a 20 ms capture frame is two halves.
 pub struct NoiseSuppressor {
     processor: Option<Processor>,
-    /// RNNoise neural denoiser (10 ms frames, f32) — also supplies the VAD.
+    /// RNNoise neural denoiser — fallback only, used when GTCRN failed to
+    /// load (its forward pass also supplies the VAD in that path).
     rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
-    /// GTCRN (sherpa-onnx) primary denoiser — 32-38 dB noise reduction.
-    /// Optional: falls back to RNNoise-only if the model/onnxruntime can't load.
+    /// GTCRN (sherpa-onnx) — the primary and only denoiser in the main path
+    /// (32-38 dB noise reduction). Speech detection is derived from its
+    /// post-denoise energy. Falls back to RNNoise-only if it can't load.
     gtcrn: Option<GtcrnDenoiser>,
     /// VAD-gated adaptive gain (boosts quiet speech, gates silence).
     leveler: SpeechLeveler,
-    /// Whether the last processed frame contained speech (RNNoise VAD).
+    /// Whether the last processed frame contained speech (post-GTCRN energy
+    /// in the main path, RNNoise VAD in the fallback).
     speech_detected: bool,
 }
 
@@ -397,24 +400,33 @@ impl NoiseSuppressor {
         Self::chain(None)
     }
 
-    /// Shared construction: WebRTC APM + RNNoise + leveler, plus the optional
-    /// GTCRN neural denoiser stage.
+    /// Shared construction: WebRTC APM + leveler, plus the neural denoiser
+    /// (GTCRN) or, when it's unavailable, the RNNoise fallback. When GTCRN is
+    /// the active denoiser, classic WebRTC NS is disabled — it's redundant
+    /// (GTCRN suppresses more) and running it costs CPU + double-colors the
+    /// speech. The fallback (no GTCRN) keeps NS for the pre-GTCRN noise floor.
     fn chain(gtcrn: Option<GtcrnDenoiser>) -> Self {
+        let gtcrn_active = gtcrn.is_some();
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
             processor.set_config(Config {
                 echo_canceller: Some(EchoCanceller::Full { stream_delay_ms: None }),
                 high_pass_filter: Some(HighPassFilter { apply_in_full_band: true }),
-                // Classic NS at VeryHigh: ~9x attenuation on stationary noise
-                // (measured). AGC is deliberately OFF — the fixed-digital AGC
-                // (target +3 dBFS, +9 dB) amplified quiet background noise
-                // before NS could remove it (measured: 3.4x vs 9.4x noise
-                // reduction with AGC off). RNNoise after this handles the
-                // non-stationary noise (keyboard, TV) that spectral
-                // subtraction can't.
-                noise_suppression: Some(NoiseSuppression {
-                    level: NoiseSuppressionLevel::VeryHigh,
-                    analyze_linear_aec_output: false,
-                }),
+                noise_suppression: if gtcrn_active {
+                    // GTCRN is the single denoiser — classic NS is off.
+                    None
+                } else {
+                    // Fallback chain (no GTCRN): WebRTC NS at VeryHigh gives
+                    // ~9x attenuation on stationary noise (measured). AGC is
+                    // deliberately OFF — the fixed-digital AGC (target +3 dBFS,
+                    // +9 dB) amplified quiet background noise before NS could
+                    // remove it (measured: 3.4x vs 9.4x noise reduction with
+                    // AGC off). RNNoise after this handles the non-stationary
+                    // noise (keyboard, TV) that spectral subtraction can't.
+                    Some(NoiseSuppression {
+                        level: NoiseSuppressionLevel::VeryHigh,
+                        analyze_linear_aec_output: false,
+                    })
+                },
                 gain_controller: None,
                 ..Config::default()
             });
@@ -446,11 +458,13 @@ impl NoiseSuppressor {
     }
 
     /// Suppress noise in a 48 kHz mono frame (length must be a multiple of
-    /// 480, e.g. 960). AEC3 + high-pass run first (WebRTC APM), then RNNoise,
-    /// then VAD-gated adaptive gain. Falls back to the raw frame if neither
-    /// processor initialized.
+    /// 480, e.g. 960). AEC3 + high-pass run first (WebRTC APM); then the
+    /// single active denoiser — GTCRN (sherpa-onnx), or RNNoise as a fallback
+    /// when GTCRN failed to load — then VAD-gated adaptive gain. With GTCRN,
+    /// classic WebRTC NS is off (see [`Self::chain`]): one denoiser, not three.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
-        // WebRTC APM: AEC3 + high-pass + NS (VeryHigh).
+        // WebRTC APM: AEC3 + high-pass (classic NS is off when GTCRN is the
+        // denoiser — see chain()).
         let out: Vec<i16> = match self.processor.as_mut() {
             Some(processor) => {
                 let mut out = vec![0i16; frame.len()];
@@ -474,36 +488,50 @@ impl NoiseSuppressor {
             }
             None => frame.to_vec(),
         };
-        // RNNoise: neural noise suppression on top; capture the VAD.
-        let mut result = vec![0i16; out.len()];
-        let mut max_vad = 0.0f32;
-        match self.rnnoise.as_mut() {
-            Some(rn) => {
-                let mut input = [0f32; 480];
-                let mut denoised = [0f32; 480];
-                for (chunk, out_chunk) in out.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
-                    for (i, s) in chunk.iter().enumerate() {
-                        input[i] = *s as f32 / 32768.0;
-                    }
-                    let vad = rn.process_frame(&mut denoised, &input);
-                    max_vad = max_vad.max(vad);
-                    for (i, v) in denoised.iter().enumerate() {
-                        out_chunk[i] = (v * 32767.0)
-                            .round()
-                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        // Denoise with the single active stage and derive the speech signal.
+        let mut result: Vec<i16>;
+        let vad: f32;
+        let rms: f32;
+        if let Some(g) = self.gtcrn.as_mut() {
+            // GTCRN: the denoiser. It silences noise to ~0 (measured ~51 dB
+            // separation between noise-only and speech output), so the
+            // post-denoise energy IS the speech detector — no neural VAD, no
+            // extra CPU. Map it to a VAD probability for the leveler.
+            result = g.process(&out);
+            let r = rms_level(&result);
+            vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
+            rms = r;
+        } else {
+            // Fallback (model/onnxruntime unavailable): RNNoise denoising and
+            // its own VAD — the pre-GTCRN chain.
+            result = vec![0i16; out.len()];
+            let mut max_vad = 0.0f32;
+            match self.rnnoise.as_mut() {
+                Some(rn) => {
+                    let mut input = [0f32; 480];
+                    let mut denoised = [0f32; 480];
+                    for (chunk, out_chunk) in out.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
+                        for (i, s) in chunk.iter().enumerate() {
+                            input[i] = *s as f32 / 32768.0;
+                        }
+                        let v = rn.process_frame(&mut denoised, &input);
+                        max_vad = max_vad.max(v);
+                        for (i, v) in denoised.iter().enumerate() {
+                            out_chunk[i] = (v * 32767.0)
+                                .round()
+                                .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                        }
                     }
                 }
+                None => result.copy_from_slice(&out),
             }
-            None => result.copy_from_slice(&out),
-        }
-        // GTCRN: primary neural denoiser (32-38 dB), if available.
-        if let Some(g) = self.gtcrn.as_mut() {
-            result = g.process(&result);
-        }
+            let r = rms_level(&result);
+            vad = max_vad;
+            rms = r;
+        };
         // VAD-gated adaptive gain: boost quiet speech to an audible level
         // without amplifying the (already suppressed) noise floor.
-        let rms = rms_level(&result);
-        self.speech_detected = self.leveler.process(max_vad, rms, &mut result);
+        self.speech_detected = self.leveler.process(vad, rms, &mut result);
         result
     }
 
@@ -638,10 +666,11 @@ impl GtcrnDenoiser {
 /// amplifying background noise.
 ///
 /// WebRTC's adaptive AGC (GainController2) was measured to boost the noise
-/// floor (+15 dB on quiet noise), so we do the gate ourselves: RNNoise's
-/// voice-activity probability opens the gain, which chases a target RMS and
-/// holds through a hangover so words aren't clipped; on silence the gain
-/// decays to unity (no boost), leaving the already-suppressed noise inaudible.
+/// floor (+15 dB on quiet noise), so we do the gate ourselves: the VAD signal
+/// (post-GTCRN energy in the main path, RNNoise probability in the fallback)
+/// opens the gain, which chases a target RMS and holds through a hangover so
+/// words aren't clipped; on silence the gain decays to unity (no boost),
+/// leaving the already-suppressed noise inaudible.
 pub struct SpeechLeveler {
     /// Target RMS for speech after gain (~ -18 dBFS).
     target_rms: f32,
@@ -660,6 +689,12 @@ pub struct SpeechLeveler {
 const VAD_ON: f32 = 0.5;
 /// ~100 ms of hold at 20 ms frames.
 const HANGOVER_FRAMES: u32 = 5;
+
+/// Post-denoise RMS (0..1) that maps to a full VAD probability in the GTCRN
+/// path. GTCRN silences noise to ~0 (measured ~51 dB / ~370x separation), so
+/// any energy above this is speech; a value this low keeps quiet speech
+/// detectable while leaving the noise floor far below the leveler's VAD_ON.
+const SPEECH_ENERGY_REF: f32 = 0.01;
 
 impl SpeechLeveler {
     pub fn new() -> Self {
@@ -1249,6 +1284,56 @@ mod tests {
             "GTCRN produced {silent_after_warmup} silent frames after warm-up -> dropped/chopped audio"
         );
         assert!(ratio > 0.15, "GTCRN gated speech away: out/in {ratio:.2}");
+    }
+
+    #[test]
+    fn gtcrn_path_speech_detection_by_energy() {
+        // The GTCRN path derives speech detection from post-denoise energy (no
+        // separate neural VAD): GTCRN silences noise to ~0, so energy implies
+        // speech. Noise must not open the gate; speech must.
+        if GtcrnDenoiser::new().is_none() {
+            return;
+        }
+        fn speech(idx: usize) -> Vec<i16> {
+            (0..FRAME_SAMPLES)
+                .map(|i| {
+                    let t = ((idx * FRAME_SAMPLES + i) as f64) / CLOCK_RATE as f64;
+                    let mut v = 0.0;
+                    for (n, amp) in [(1, 1.0), (2, 0.5), (3, 0.33), (4, 0.25)] {
+                        v += amp * (2.0 * std::f64::consts::PI * 150.0 * n as f64 * t).sin();
+                    }
+                    let am = 0.7 + 0.3 * (2.0 * std::f64::consts::PI * 8.0 * t).sin();
+                    (v * am * 3000.0) as i16
+                })
+                .collect()
+        }
+        let noise: Vec<i16> = {
+            let mut state = 0x1234_5678u32;
+            (0..FRAME_SAMPLES)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    ((state >> 8) as i16) / 4
+                })
+                .collect()
+        };
+        // Noise: must NOT be detected as speech over many frames.
+        let mut ns = NoiseSuppressor::new();
+        let mut noise_detected = false;
+        for _ in 0..30 {
+            ns.process(&noise);
+            noise_detected |= ns.speech_detected();
+        }
+        assert!(!noise_detected, "noise must not open the VAD gate");
+        // Speech: must be detected (post-GTCRN energy above the threshold).
+        let mut ns = NoiseSuppressor::new();
+        let mut speech_detected = false;
+        for i in 0..40 {
+            ns.process(&speech(i));
+            speech_detected |= ns.speech_detected();
+        }
+        assert!(speech_detected, "speech must be detected via post-GTCRN energy");
     }
 }
 

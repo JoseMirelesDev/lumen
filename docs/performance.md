@@ -132,36 +132,39 @@ idle footprint is roughly half of that while keeping the install small.
 `WEBKIT_DISABLE_COMPOSITING_MODE=1` is required for the window to map on this
 machine's Intel HD 4600 (see README); it does not affect RSS materially.
 
-## GTCRN (sherpa-onnx) denoiser — ON vs OFF (native voice, Fase 6)
+## GTCRN (sherpa-onnx) denoiser — single-stage (native voice, Fase 6)
 
 Measured headless + deterministic by `cargo test -p lumen-voice --test gtcrn_probe`
-(CI `voice-probe` job) on this i5-4590, release build. "WITHOUT" = the pre-GTCRN
-send path (`new_without_neural_denoiser`: WebRTC AEC3/NS VeryHigh + RNNoise +
-leveler); "WITH" = the shipped path with the sherpa-onnx GTCRN stage added.
+(CI `voice-probe` job) on this i5-4590, release build. The shipped send path is
+**GTCRN-only** (`NoiseSuppressor::new`): WebRTC AEC3 + high-pass, then GTCRN as
+the *single* denoiser; classic WebRTC NS is disabled as redundant (it previously
+ran stacked with RNNoise + GTCRN, which roughly doubled CPU and double-colored
+the speech — Discord/Krisp-style is one denoiser). "WITHOUT GTCRN" is the
+fallback that runs if the model can't load (`new_without_neural_denoiser`:
+AEC3 + NS VeryHigh + RNNoise + leveler).
 
-| metric | WITHOUT GTCRN | WITH GTCRN | delta |
+| metric | WITHOUT GTCRN (fallback) | WITH GTCRN (shipped) | delta |
 |---|---|---|---|
-| full-chain CPU | 2.58 ms / 20 ms frame (RTF 0.129) | 6.07 ms / 20 ms frame (RTF 0.304) | **+3.50 ms / frame (17.5 % of the 20 ms budget)** |
-| GTCRN alone | — | 2.79 ms / 20 ms (RTF 0.139) | — |
-| RAM (Linux VmRSS, warmed chain) | — | — | **+5.0 MB** (model + onnxruntime) |
-| noise reduction (stationary noise, dB) | 19.3 dB | 71.5 dB | **+52.2 dB** |
+| full-chain CPU | 2.42 ms / 20 ms frame (RTF 0.121) | 2.85 ms / 20 ms frame (RTF 0.143) | **+0.43 ms / frame (2.1 %)** |
+| RAM (Linux VmRSS, warmed chain) | — | — | **+5.1 MB** (model + onnxruntime) |
+| noise reduction (stationary noise, dB) | 19.3 dB | 60.6 dB | **+41.3 dB** |
 | streaming latency | — | 20 ms | — |
 
-Note on the streaming latency / earlier probe: the online denoiser emits output
-in 16 ms (256 @ 16 kHz) bursts (256,256,256,512 per 4 frames), not 320 per
-20 ms call. An earlier `while`-drain + `truncate` to force 960 samples DROPPED a
-full 20 ms frame every 4 and silence-padded the next — heard as the mic
-cutting in/out while talking. `GtcrnDenoiser::process` now emits at most one
-20 ms chunk per call and carries excess forward (lossless, buffer bounded at
-~320 @ 16 kHz), which also cut the measured streaming latency to 20 ms.
+De-stacking halved the shipped chain's CPU: before it was RTF 0.268 (three
+denoisers stacked); GTCRN-only is RTF 0.143 (2.85 ms / 20 ms frame) — ~5 % of a
+core on a ~3× faster per-core machine (vs ~9 % before), close to Discord's
+Krisp cost. It costs ~5 MB of RSS (the model is 535 KB; the rest is the
+onnxruntime session/activations). On stationary noise GTCRN gates it almost
+entirely (60.6 dB ≈ −1070×, vs 19.3 dB ≈ −9× for the fallback), and speech in a
++10 dB-SNR mix survives (out RMS 1423 vs 4.4 noise-only — a ~51 dB separation
+that is also how the GTCRN path detects speech: post-denoise energy implies
+voice, no separate neural VAD needed). Bandwidth is capped at ~8 kHz because the
+GTCRN model is 16 kHz (a known quality tradeoff of strong neural denoisers).
 
-Reads: GTCRN more than doubles the send-path CPU (2.58 → 6.07 ms/frame) but
-stays at RTF 0.30 — 3.3× real-time headroom on this 2014 quad-core, i.e. ~17.5 %
-of one core's 20 ms budget while streaming. It costs ~5 MB of RSS (the model is
-535 KB; the rest is the onnxruntime session/activations). On pure stationary
-background noise the neural stage essentially gates it entirely (71.5 dB ≈ −3700×,
-vs 19.3 dB ≈ −9× for the classic chain), and speech in a +10 dB-SNR mix survives
-unscathed (out RMS 461 vs 1.24 for noise-only) — the denoiser removes the noise
-without gating the voice. These are the tradeoff numbers for "quality > Discord"
-vs the pre-GTCRN fallback; the probe asserts them as gates (full RTF < 1.0,
-GTCRN RTF < 0.5, latency ≤ 80 ms, reduction delta > 0, speech preserved).
+Note on streaming latency / the earlier drop bug: the online denoiser emits
+output in 16 ms (256 @ 16 kHz) bursts (256,256,256,512 per 4 frames), not 320
+per 20 ms call. An earlier `while`-drain + `truncate` to force 960 samples
+DROPPED a full 20 ms frame every 4 and silence-padded the next — heard as the
+mic cutting in/out while talking. `GtcrnDenoiser::process` now emits at most
+one 20 ms chunk per call and carries excess forward (lossless, buffer bounded
+at ~320 @ 16 kHz), which also cut the measured streaming latency to 20 ms.
