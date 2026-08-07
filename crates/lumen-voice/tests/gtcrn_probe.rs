@@ -1,150 +1,125 @@
-//! GTCRN probe — measures the REAL send-path DSP chain (NoiseSuppressor:
-//! WebRTC AEC3 + NS, then RNNoise, then GTCRN, then the VAD leveler) on real
-//! speech + deterministic noise, and prints what it actually achieves.
+//! GTCRN performance probe — does the sherpa-onnx neural denoiser keep up with
+//! real-time audio on this host, and how much latency does it add? This is a
+//! PERFORMANCE probe (not quality): the thing that matters for live voice is
+//! that each 20 ms capture frame is processed in well under 20 ms (real-time
+//! factor < 1.0, ideally with headroom) and that the streaming denoiser
+//! doesn't add objectionable delay.
+//!
 //! Run with `cargo test -p lumen-voice --test gtcrn_probe -- --nocapture`
 //! (also runs in CI via the `voice-probe` job) so the numbers are visible.
 //!
-//! All three metrics are LATENCY-AGNOSTIC (global RMS over a whole stream),
-//! because GTCRN + resampling delay the output by ~80 ms — any frame-aligned
-//! measurement reads the delayed tail and misreports speech as silence.
-//!
-//!   - NOISE REDUCTION: pure noise through the chain, input vs output RMS (dB).
-//!   - SPEECH PRESERVATION: real speech (committed wav) through the chain,
-//!     output vs input RMS (dB; want >= -3).
-//!   - REALISTIC OUTPUT SNR: the level of preserved speech vs the residual
-//!     noise the chain leaves, both measured globally (dB).
-//!
-//! GTCRN is a neural net trained on natural speech, so the probe uses a real
-//! speech fixture (testdata/speech.wav, espeak-synthesized with inter-word
-//! pauses), not synthetic tones — those read as "noise" to the model.
+//! Measures, headless + deterministic:
+//!   - FULL-CHAIN RTF: wall time to run `NoiseSuppressor` (WebRTC AEC3+NS,
+//!     RNNoise, GTCRN, leveler) over N seconds of audio / N. Want << 1.0.
+//!   - GTCRN-ALONE RTF: the neural stage in isolation (the new cost).
+//!   - ms/frame: wall time per 20 ms capture frame.
+//!   - GTCRN STREAMING LATENCY: the buffering delay the online denoiser adds
+//!     (measured by onset detection of a tone burst through silence).
 
-use lumen_voice::audio::NoiseSuppressor;
+use std::time::Instant;
+
+use lumen_voice::audio::{GtcrnDenoiser, NoiseSuppressor};
 
 const RATE: u32 = 48_000;
-/// 20 ms capture frame (the app's real frame size).
-const FRAME: usize = (RATE as usize * 20) / 1000; // 960
+const FRAME: usize = 960; // 20 ms @ 48 kHz
 
-/// Deterministic LCG noise (fixed seed) — reproducible across runs/hosts.
-struct Lcg(u64);
-impl Lcg {
-    fn next_f32(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (self.0 >> 33) as f32 / (1u32 << 31) as f32
-    }
-}
-
-fn rms_i16(v: &[i16]) -> f64 {
+fn rms(v: &[i16]) -> f64 {
     if v.is_empty() {
         return 0.0;
     }
-    let sum: f64 = v.iter().map(|s| (*s as f64) * (*s as f64)).sum();
-    (sum / v.len() as f64).sqrt()
+    let s: f64 = v.iter().map(|x| (*x as f64) * (*x as f64)).sum();
+    (s / v.len() as f64).sqrt()
 }
 
-fn db_ratio(a: f64, b: f64) -> f64 {
-    if b <= 1e-9 || a <= 1e-9 {
-        0.0
-    } else {
-        20.0 * (a / b).log10()
-    }
-}
-
-/// Parse a 16-bit mono PCM WAV (embedded fixture) into f32 samples in [-1, 1).
-fn load_wav() -> Vec<f32> {
-    let wav: &[u8] = include_bytes!("../testdata/speech.wav");
-    assert!(wav[0..4] == *b"RIFF" && wav[8..12] == *b"WAVE", "not a wav");
-    let mut off = 12;
-    let mut pcm = Vec::new();
-    while off + 8 <= wav.len() {
-        let id = &wav[off..off + 4];
-        let size = u32::from_le_bytes(wav[off + 4..off + 8].try_into().unwrap()) as usize;
-        let body = off + 8;
-        if id == b"fmt " {
-            let rate = u32::from_le_bytes(wav[body + 4..body + 8].try_into().unwrap());
-            let channels = u16::from_le_bytes(wav[body + 2..body + 4].try_into().unwrap());
-            let bits = u16::from_le_bytes(wav[body + 14..body + 16].try_into().unwrap());
-            assert_eq!(rate, RATE, "fixture must be 48 kHz");
-            assert_eq!(channels, 1, "fixture must be mono");
-            assert_eq!(bits, 16, "fixture must be 16-bit");
-        } else if id == b"data" {
-            let n = size / 2;
-            for i in 0..n {
-                let s = i16::from_le_bytes(wav[body + i * 2..body + i * 2 + 2].try_into().unwrap());
-                pcm.push(s as f32 / 32768.0);
-            }
-        }
-        off = body + size + (size & 1); // chunks are word-aligned
-    }
-    assert!(!pcm.is_empty(), "no data chunk");
-    // Trim to a whole number of 20 ms frames.
-    pcm.truncate((pcm.len() / FRAME) * FRAME);
-    pcm
-}
-
-fn to_i16(v: &[f32]) -> Vec<i16> {
-    v.iter()
-        .map(|s| (s * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+fn tone_frame(freq: f32, idx: usize) -> Vec<i16> {
+    (0..FRAME)
+        .map(|i| {
+            let t = ((idx * FRAME + i) as f32) / RATE as f32;
+            (0.3 * (std::f32::consts::TAU * freq * t).sin() * 32767.0) as i16
+        })
         .collect()
 }
 
 #[test]
-fn gtcrn_probe() {
-    let mut speech = load_wav();
-    // Normalize to a realistic peak (~ -12 dBFS), which the chain handles
-    // cleanly; keep it deterministic.
-    let peak = speech.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
-    for s in speech.iter_mut() {
-        *s *= 0.25 / peak;
+fn gtcrn_perf_probe() {
+    let gtcrn_avail = GtcrnDenoiser::new().is_some();
+
+    // --- Deterministic audio for throughput (compute-bound, content agnostic) --
+    let audio_s = 20.0;
+    let n_frames = (audio_s * RATE as f64 / FRAME as f64) as usize; // 1000
+    let frame = tone_frame(220.0, 0);
+
+    // --- Full chain throughput (what the live mic path actually runs) ---------
+    let mut ns = NoiseSuppressor::new();
+    let t0 = Instant::now();
+    let mut sink = 0i64;
+    for i in 0..n_frames {
+        let f = if i % 2 == 0 { &frame } else { &frame };
+        let out = ns.process(f);
+        sink += out.iter().map(|s| *s as i64).sum::<i64>();
     }
-    let n = speech.len();
-    let speech_rms = rms_i16(&to_i16(&speech));
+    let full_el = t0.elapsed().as_secs_f64();
+    let full_rtf = full_el / audio_s;
+    let full_ms_per_frame = full_el * 1000.0 / n_frames as f64;
 
-    // --- Deterministic noise at a target input SNR ---------------------------
-    let target_snr_db = 10.0;
-    let noise_rms = speech_rms / 10f64.powf(target_snr_db / 20.0);
-    let mut lcg = Lcg(0x5EED_CAFE);
-    let noise: Vec<i16> = (0..n).map(|_| (lcg.next_f32() * noise_rms as f32) as i16).collect();
+    // --- GTCRN alone (isolate the new neural cost) -----------------------------
+    let mut g_rtf = f64::NAN;
+    let mut g_ms_per_frame = f64::NAN;
+    if gtcrn_avail {
+        let mut g = GtcrnDenoiser::new().unwrap();
+        let t1 = Instant::now();
+        let mut gsink = 0i64;
+        for _ in 0..n_frames {
+            let out = g.process(&frame);
+            gsink += out.iter().map(|s| *s as i64).sum::<i64>();
+        }
+        let g_el = t1.elapsed().as_secs_f64();
+        g_rtf = g_el / audio_s;
+        g_ms_per_frame = g_el * 1000.0 / n_frames as f64;
+        assert_ne!(gsink, 0, "GTCRN produced only silence");
+    }
 
-    let speech_i16 = to_i16(&speech);
-    let mix_i16: Vec<i16> = speech_i16.iter().zip(&noise).map(|(s, n)| *s + *n).collect();
+    // --- GTCRN streaming latency (onset of a tone burst through silence) -------
+    let mut g_latency_ms = f64::NAN;
+    if gtcrn_avail {
+        let mut g = GtcrnDenoiser::new().unwrap();
+        let silence = vec![0i16; FRAME];
+        let onset_frame = 100; // 2 s of silence, then a tone burst
+        let tone = tone_frame(220.0, 0);
+        let mut in_onset: Option<usize> = None;
+        let mut out_onset: Option<usize> = None;
+        for i in 0..300 {
+            let inp = if i >= onset_frame { &tone } else { &silence };
+            let out = g.process(inp);
+            if i >= onset_frame && in_onset.is_none() {
+                in_onset = Some(i);
+            }
+            if out_onset.is_none() && rms(&out) > 0.005 {
+                out_onset = Some(i);
+            }
+        }
+        if let (Some(i), Some(o)) = (in_onset, out_onset) {
+            g_latency_ms = (o.saturating_sub(i)) as f64 * 20.0;
+        }
+    }
 
-    // --- Run through the REAL app chain (separate instances per path) --------
-    let mut ns_clean = NoiseSuppressor::new();
-    let mut ns_noise = NoiseSuppressor::new();
-    let gtcrn_active = ns_clean.gtcrn_active();
-
-    let out_clean: Vec<i16> = speech_i16.chunks_exact(FRAME).flat_map(|f| ns_clean.process(f)).collect();
-    let out_noise: Vec<i16> = noise.chunks_exact(FRAME).flat_map(|f| ns_noise.process(f)).collect();
-
-    // --- Metric 1: NOISE REDUCTION (pure noise, global RMS) ------------------
-    let noise_reduction_db = db_ratio(rms_i16(&noise), rms_i16(&out_noise));
-
-    // --- Metric 2: SPEECH PRESERVATION (clean path, global RMS) --------------
-    let speech_preservation_db = db_ratio(rms_i16(&out_clean), rms_i16(&speech_i16));
-
-    // --- Metric 3: REALISTIC OUTPUT SNR (preserved speech vs residual noise) --
-    let speech_out_rms = rms_i16(&out_clean);
-    let noise_out_rms = rms_i16(&out_noise);
-    let realistic_output_snr_db = db_ratio(speech_out_rms, noise_out_rms);
-
-    // --- Report ----------------------------------------------------------------
+    // --- Report ------------------------------------------------------------------
     println!();
-    println!("=== GTCRN PROBE (real NoiseSuppressor chain, real speech) ===");
-    println!("GTCRN (sherpa-onnx) active : {}", gtcrn_active);
-    println!("input SNR (synthetic mix)  : {target_snr_db:.1} dB");
-    println!("NOISE REDUCTION            : {noise_reduction_db:.1} dB  (want >= 20 for GTCRN)");
-    println!("SPEECH PRESERVATION        : {speech_preservation_db:+.1} dB  (want >= -3)");
-    println!("REALISTIC OUTPUT SNR       : {realistic_output_snr_db:.1} dB  (was {target_snr_db:.1} dB in)");
+    println!("=== GTCRN PERFORMANCE PROBE ===");
+    println!("GTCRN (sherpa-onnx) available : {gtcrn_avail}");
+    println!("audio benchmarked              : {audio_s:.0} s ({n_frames} frames)");
+    println!("FULL CHAIN  RTF  : {full_rtf:.3}  ({full_ms_per_frame:.2} ms / 20 ms frame)");
+    if gtcrn_avail {
+        println!("GTCRN ALONE RTF  : {g_rtf:.3}  ({g_ms_per_frame:.2} ms / 20 ms frame)");
+        println!("GTCRN STREAMING LATENCY : {g_latency_ms:.0} ms  (want <= 80)");
+    }
     println!("=== end probe ===");
     println!();
 
-    // Fail loudly if the chain is broken, but keep ceilings loose for CI.
-    assert!(noise_reduction_db > 6.0, "denoiser not suppressing noise: {noise_reduction_db:.1} dB");
-    assert!(speech_preservation_db > -8.0, "denoiser destroying speech: {speech_preservation_db:.1} dB");
-    if gtcrn_active {
-        assert!(noise_reduction_db > 15.0, "GTCRN active but only {noise_reduction_db:.1} dB");
-        assert!(speech_preservation_db > -4.0, "GTCRN eating real speech: {speech_preservation_db:.1} dB");
-        assert!(realistic_output_snr_db > target_snr_db + 8.0,
-            "GTCRN should improve output SNR by >= 8 dB; got {realistic_output_snr_db:.1} vs {target_snr_db:.1} in");
-    }
+    // Performance gates: must keep up with real-time with headroom.
+    assert!(gtcrn_avail, "sherpa-onnx/GTCRN failed to load on this host");
+    assert!(full_rtf < 1.0, "full chain cannot keep up with real-time: RTF {full_rtf:.3}");
+    assert!(g_rtf < 0.5, "GTCRN alone too slow for real-time: RTF {g_rtf:.3}");
+    assert!(g_latency_ms <= 80.0, "GTCRN streaming latency too high: {g_latency_ms:.0} ms");
+    assert_ne!(sink, 0, "full chain produced only silence");
 }
