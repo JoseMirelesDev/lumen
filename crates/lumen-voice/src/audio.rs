@@ -677,6 +677,9 @@ pub struct NoiseSuppressor {
     /// the old GTCRN. `None` means the model failed to load and we fall back
     /// to RNNoise.
     neural: Option<DeepFilterDenoiser>,
+    /// VAD-gated AGC (Discord-style): boosts quiet speech after denoising,
+    /// decays to unity on silence so the denoiser's residual stays un-boosted.
+    leveler: SpeechLeveler,
     /// Whether the last processed frame contained speech (post-denoise energy
     /// in the neural path, RNNoise VAD in the fallback).
     speech_detected: bool,
@@ -711,6 +714,7 @@ impl NoiseSuppressor {
             processor,
             rnnoise: Some(nnnoiseless::DenoiseState::new()),
             neural,
+            leveler: SpeechLeveler::new(),
             speech_detected: false,
         }
     }
@@ -764,12 +768,15 @@ impl NoiseSuppressor {
         // Denoise with the active tier and derive the speech signal.
         let mut result: Vec<i16>;
         let vad: f32;
+        let rms: f32;
         if let Some(n) = self.neural.as_mut() {
             // DeepFilterNet: the primary denoiser. It silences noise to ~0
             // (measured ~163 dB on white noise), so the post-denoise energy IS
             // the speech detector — no extra VAD, no extra CPU.
             result = n.process(&out);
-            vad = (rms_level(&result) / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
+            let r = rms_level(&result);
+            vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
+            rms = r;
         } else {
             // Light fallback: RNNoise denoising and its VAD — full-band.
             result = vec![0i16; out.len()];
@@ -793,11 +800,16 @@ impl NoiseSuppressor {
                 }
                 None => result.copy_from_slice(&out),
             }
+            let r = rms_level(&result);
             vad = max_vad;
+            rms = r;
         };
-        // Speech detection for the UI speaking-meter: post-denoise energy
-        // above the VAD threshold means someone is talking.
-        self.speech_detected = vad >= VAD_ON;
+        // Discord-style AGC: the leveler applies gain only when the VAD (from
+        // post-denoise energy) detects speech, chasing a target RMS. On
+        // silence the gain decays to unity, so the denoiser's residual noise
+        // is never amplified — the order (denoise first, then gain) is what
+        // keeps amplification clean.
+        self.speech_detected = self.leveler.process(vad, rms, &mut result);
         result
     }
 
@@ -936,7 +948,8 @@ unsafe impl Send for DeepFilterDenoiser {}
 pub struct SpeechLeveler {
     /// Target RMS for speech after gain (~ -18 dBFS).
     target_rms: f32,
-    /// Max gain factor (+24 dB).
+    /// Max gain factor (+12 dB). Discord-style AGC is moderate: too much gain
+    /// (the old 16x) made the denoiser's residual noise audible in gaps.
     max_gain: f32,
     /// Current smoothed gain factor.
     gain: f32,
@@ -966,8 +979,8 @@ const SPEECH_ENERGY_REF: f32 = 0.03;
 impl SpeechLeveler {
     pub fn new() -> Self {
         Self {
-            target_rms: 0.12,
-            max_gain: 16.0,
+            target_rms: 0.10,
+            max_gain: 4.0,
             gain: 1.0,
             vad_smooth: 0.0,
             speech_rms: 0.001,
@@ -1455,7 +1468,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, speech_detected: false };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
