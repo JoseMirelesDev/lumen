@@ -327,7 +327,9 @@ mod wasapi_raw {
 
     fn parse_format(mix: *const WAVEFORMATEX) -> anyhow::Result<(u32, usize, Fmt)> {
         unsafe {
-            let f = &*mix;
+            // WAVEFORMATEX is `packed(1)`, so copy it out rather than reading
+            // fields through a reference (E0793: unaligned packed field).
+            let f: WAVEFORMATEX = std::ptr::read_unaligned(mix);
             let rate = f.nSamplesPerSec;
             let channels = f.nChannels as usize;
             if channels == 0 || rate == 0 {
@@ -338,7 +340,8 @@ mod wasapi_raw {
             } else if f.wFormatTag == WAVE_FORMAT_PCM && f.wBitsPerSample == 16 {
                 Fmt::I16
             } else if f.wFormatTag == WAVE_FORMAT_EXTENSIBLE {
-                let ext = &*(mix as *const WAVEFORMATEXTENSIBLE);
+                let ext: WAVEFORMATEXTENSIBLE =
+                    std::ptr::read_unaligned(mix as *const WAVEFORMATEXTENSIBLE);
                 if ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
                     Fmt::F32
                 } else if ext.SubFormat == KSDATAFORMAT_SUBTYPE_PCM && f.wBitsPerSample == 16 {
