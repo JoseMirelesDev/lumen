@@ -174,7 +174,7 @@ struct VoiceSession {
     events: mpsc::UnboundedSender<VoiceEvent>,
     peers: Arc<Mutex<HashMap<String, Peer>>>,
     output: AudioOutput,
-    _mic_stream: cpal::Stream,
+    _mic_stream: crate::audio::MicStream,
     _out_stream: cpal::Stream,
     muted: Arc<AtomicBool>,
     deafened: Arc<AtomicBool>,
@@ -208,6 +208,7 @@ impl VoiceSession {
 
         let (mic_tx, mut mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
         let mic_stream = crate::audio::start_capture(mic_tx).context("mic capture")?;
+        let _ = &mic_stream; // held alive (Raw keeps the WASAPI client + thread; cpal keeps the stream)
         let mut output = AudioOutput::new();
         // AEC reference: the send path drains this and feeds it to AEC3.
         let render_tap: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(48_000)));

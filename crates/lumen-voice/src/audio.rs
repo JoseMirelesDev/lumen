@@ -23,10 +23,44 @@ pub const CLOCK_RATE: u32 = 48_000;
 // Mic capture
 // ---------------------------------------------------------------------------
 
+/// Handle to the running mic capture (cpal, or the Windows WASAPI raw path).
+/// Dropping it stops the mic.
+pub enum MicStream {
+    Cpal(cpal::Stream),
+    #[cfg(target_os = "windows")]
+    Raw(wasapi_raw::RawMicCapture),
+}
+
 /// Starts the capture stream. Frames of exactly [`FRAME_SAMPLES`] mono i16
-/// samples at 48 kHz arrive on `frames_tx` (20 ms cadence). Drop the returned
-/// stream to stop the mic.
+/// samples at 48 kHz arrive on `frames_tx` (20 ms cadence).
+///
+/// On Windows this first tries the WASAPI **raw** capture (bypasses the
+/// system APOs — the Discord "Bypass System Audio Input Processing" equivalent),
+/// because the OS/driver mic processing (gain boost, enhancements) can amplify
+/// the noise floor. Falls back to cpal (shared mode, APOs applied) on any
+/// error or when `LUMEN_NO_RAW_MIC` is set.
 pub fn start_capture(
+    frames_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
+) -> anyhow::Result<MicStream> {
+    #[cfg(target_os = "windows")]
+    {
+        if std::env::var("LUMEN_NO_RAW_MIC").is_err() {
+            match wasapi_raw::RawMicCapture::start(frames_tx.clone()) {
+                Ok(raw) => {
+                    eprintln!("lumen voice: using WASAPI raw mic capture (APO bypass)");
+                    return Ok(MicStream::Raw(raw));
+                }
+                Err(e) => {
+                    eprintln!("lumen voice: raw mic capture failed, falling back to cpal: {e}");
+                }
+            }
+        }
+    }
+    Ok(MicStream::Cpal(cpal_capture(frames_tx)?))
+}
+
+/// cpal-based capture (WASAPI shared mode on Windows — APOs are applied).
+fn cpal_capture(
     frames_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
 ) -> anyhow::Result<cpal::Stream> {
     let host = cpal::default_host();
@@ -90,6 +124,256 @@ fn feed(
     while acc.len() >= FRAME_SAMPLES {
         let frame: Vec<i16> = acc.drain(..FRAME_SAMPLES).collect();
         let _ = frames_tx.send(frame);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WASAPI raw-mode mic capture (Windows only) — the "Bypass System Audio Input
+// Processing" equivalent. Windows/driver APOs (gain boost, enhancements) run
+// on the mic signal in WASAPI shared mode; opening the stream with
+// AUDCLNT_STREAMFLAGS_SYSTEM_MODE_RAW bypasses them, giving the denoiser the
+// raw signal (which can otherwise arrive noise-boosted). Falls back to cpal.
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "windows")]
+mod wasapi_raw {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc::UnboundedSender;
+    use windows::core::GUID;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::Media::Audio::*;
+    use windows::Win32::System::Com::*;
+    use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+
+    /// Raw-mode stream flag — not exposed by windows 0.62.2 (0x400).
+    const AUDCLNT_STREAMFLAGS_SYSTEM_MODE_RAW: u32 = 0x0000_0400;
+    const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+    const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+    const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
+
+    const CLSID_MMDEVICE_ENUMERATOR: GUID = GUID {
+        data1: 0xBCDE0395,
+        data2: 0xE52F,
+        data3: 0x467C,
+        data4: [0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E],
+    };
+    const KSDATAFORMAT_SUBTYPE_PCM: GUID = GUID {
+        data1: 0x00000001,
+        data2: 0x0000,
+        data3: 0x0010,
+        data4: [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71],
+    };
+    const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID = GUID {
+        data1: 0x00000003,
+        data2: 0x0000,
+        data3: 0x0010,
+        data4: [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71],
+    };
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fmt {
+        I16,
+        F32,
+    }
+
+    /// Handle to the running raw WASAPI capture. Dropping it stops the thread.
+    pub struct RawMicCapture {
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl RawMicCapture {
+        /// Start the raw capture and push frames into `frames_tx`. Blocks until
+        /// the WASAPI stream is running or fails.
+        pub fn start(frames_tx: UnboundedSender<Vec<i16>>) -> anyhow::Result<Self> {
+            let stop = Arc::new(AtomicBool::new(false));
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            let stop2 = stop.clone();
+            let frames_tx2 = frames_tx.clone();
+            let thread = std::thread::Builder::new()
+                .name("lumen-raw-mic".into())
+                .spawn(move || run_raw_capture(frames_tx2, stop2, ready_tx))
+                .map_err(|e| anyhow::anyhow!("spawn raw mic thread: {e}"))?;
+            match ready_rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Ok(())) => Ok(Self { stop, thread: Some(thread) }),
+                Ok(Err(e)) => {
+                    stop.store(true, Ordering::SeqCst);
+                    let _ = thread.join();
+                    anyhow::bail!("raw mic init failed: {e}")
+                }
+                Err(_) => {
+                    stop.store(true, Ordering::SeqCst);
+                    let _ = thread.join();
+                    anyhow::bail!("raw mic init timed out")
+                }
+            }
+        }
+    }
+
+    impl Drop for RawMicCapture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(h) = self.thread.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    /// Map a `windows::core::Result` to `anyhow::Result` (avoids depending on
+    /// whether the error type implements `std::error::Error`).
+    fn werr<T>(r: windows::core::Result<T>) -> anyhow::Result<T> {
+        r.map_err(|e| anyhow::anyhow!("wasapi: {e}"))
+    }
+
+    fn run_raw_capture(
+        frames_tx: UnboundedSender<Vec<i16>>,
+        stop: Arc<AtomicBool>,
+        ready_tx: std::sync::mpsc::Sender<Result<(), String>>,
+    ) {
+        let result = setup_and_loop(&frames_tx, &stop, &ready_tx);
+        let _ = ready_tx.send(result.map_err(|e| e.to_string()));
+    }
+
+    fn setup_and_loop(
+        frames_tx: &UnboundedSender<Vec<i16>>,
+        stop: &Arc<AtomicBool>,
+        ready_tx: &std::sync::mpsc::Sender<Result<(), String>>,
+    ) -> anyhow::Result<()> {
+        unsafe {
+            // COM (MTA) for WASAPI on this thread. A fresh thread inits cleanly;
+            // if it somehow fails, the WASAPI calls below fail -> cpal fallback.
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+            let enumerator: IMMDeviceEnumerator = werr(CoCreateInstance(
+                &CLSID_MMDEVICE_ENUMERATOR,
+                None,
+                CLSCTX_ALL,
+            ))?;
+            let device = werr(enumerator.GetDefaultAudioEndpoint(eCapture, eConsole))?;
+            let client: IAudioClient = werr(device.Activate(CLSCTX_ALL, None))?;
+
+            let mix_ptr = werr(client.GetMixFormat())?;
+            let (rate, channels, fmt) = parse_format(mix_ptr)?;
+
+            let event: HANDLE = werr(CreateEventW(None, false, false, None))?;
+            werr(client.SetEventHandle(event))?;
+
+            let flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_SYSTEM_MODE_RAW;
+            let hns_buffer = 200_000i64; // 20 ms
+            werr(client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                flags,
+                hns_buffer,
+                0,
+                mix_ptr,
+                None,
+            ))?;
+            CoTaskMemFree(Some(mix_ptr as *const core::ffi::c_void));
+
+            let capture: IAudioCaptureClient = werr(client.GetService())?;
+            werr(client.Start())?;
+
+            // Signal ready (the capture loop is about to run).
+            let _ = ready_tx.send(Ok(()));
+
+            let mut resampler = LinearResampler::new(rate, CLOCK_RATE);
+            let mut acc: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES);
+            loop {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                if WaitForSingleObject(event, 50) != WAIT_OBJECT_0 {
+                    continue; // timeout — keep polling the stop flag
+                }
+                // Drain all available buffers.
+                loop {
+                    let mut data: *mut u8 = std::ptr::null_mut();
+                    let mut frames: u32 = 0;
+                    let mut flags: u32 = 0;
+                    if capture
+                        .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+                        .is_err()
+                    {
+                        break; // no more buffers ready
+                    }
+                    if frames > 0 {
+                        if flags & AUDCLNT_BUFFERFLAGS_SILENT != 0 {
+                            let zero = vec![0i16; frames as usize * channels];
+                            feed(&mut resampler, &zero, channels, &mut acc, frames_tx);
+                        } else if !data.is_null() {
+                            feed_wasapi(
+                                &mut resampler,
+                                data,
+                                frames as usize,
+                                channels,
+                                fmt,
+                                &mut acc,
+                                frames_tx,
+                            );
+                        }
+                    }
+                    let _ = capture.ReleaseBuffer(frames);
+                }
+            }
+            let _ = client.Stop();
+            let _ = CloseHandle(event);
+            Ok(())
+        }
+    }
+
+    fn parse_format(mix: *const WAVEFORMATEX) -> anyhow::Result<(u32, usize, Fmt)> {
+        unsafe {
+            let f = &*mix;
+            let rate = f.nSamplesPerSec;
+            let channels = f.nChannels as usize;
+            if channels == 0 || rate == 0 {
+                anyhow::bail!("bad mix format: rate={rate} ch={channels}");
+            }
+            let fmt = if f.wFormatTag == WAVE_FORMAT_IEEE_FLOAT {
+                Fmt::F32
+            } else if f.wFormatTag == WAVE_FORMAT_PCM && f.wBitsPerSample == 16 {
+                Fmt::I16
+            } else if f.wFormatTag == WAVE_FORMAT_EXTENSIBLE {
+                let ext = &*(mix as *const WAVEFORMATEXTENSIBLE);
+                if ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+                    Fmt::F32
+                } else if ext.SubFormat == KSDATAFORMAT_SUBTYPE_PCM && f.wBitsPerSample == 16 {
+                    Fmt::I16
+                } else {
+                    anyhow::bail!("unsupported extensible mic format ({})", f.wBitsPerSample);
+                }
+            } else {
+                anyhow::bail!("unsupported mic format tag {}", f.wFormatTag);
+            };
+            Ok((rate, channels, fmt))
+        }
+    }
+
+    fn feed_wasapi(
+        resampler: &mut LinearResampler,
+        data: *mut u8,
+        frames: usize,
+        channels: usize,
+        fmt: Fmt,
+        acc: &mut Vec<i16>,
+        frames_tx: &UnboundedSender<Vec<i16>>,
+    ) {
+        match fmt {
+            Fmt::I16 => {
+                let samples = std::slice::from_raw_parts(data as *const i16, frames * channels);
+                feed(resampler, samples, channels, acc, frames_tx);
+            }
+            Fmt::F32 => {
+                let samples = std::slice::from_raw_parts(data as *const f32, frames * channels);
+                let mut s16: Vec<i16> = Vec::with_capacity(samples.len());
+                for &v in samples {
+                    s16.push((v * 32767.0) as i16);
+                }
+                feed(resampler, &s16, channels, acc, frames_tx);
+            }
+        }
     }
 }
 

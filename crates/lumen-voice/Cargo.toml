@@ -54,5 +54,13 @@ reqwest.workspace = true
 # `windows-core 0.62`, which breaks compilation). Pin both to 0.62.2 so the
 # whole graph shares one matched pair.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = "=0.62.2"
+# Features for the WASAPI raw-mode mic capture (APO bypass — the Discord
+# "Bypass System Audio Input Processing" equivalent).
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage", # PROPVARIANT (IMMDevice::Activate signature)
+  "Win32_System_Threading",
+] }
 windows-core = "=0.62.2"
