@@ -677,8 +677,6 @@ pub struct NoiseSuppressor {
     /// the old GTCRN. `None` means the model failed to load and we fall back
     /// to RNNoise.
     neural: Option<DeepFilterDenoiser>,
-    /// VAD-gated adaptive gain (boosts quiet speech, gates silence).
-    leveler: SpeechLeveler,
     /// Whether the last processed frame contained speech (post-denoise energy
     /// in the neural path, RNNoise VAD in the fallback).
     speech_detected: bool,
@@ -694,16 +692,16 @@ impl NoiseSuppressor {
     }
 
     /// Construct the send-path DSP in LIGHT mode only (WebRTC AEC3/NS +
-    /// RNNoise + leveler, no DeepFilterNet). Used by probes/tests.
+    /// RNNoise, no DeepFilterNet). Used by probes/tests.
     pub fn new_light() -> Self {
         Self::chain(None)
     }
 
-    /// Shared construction: WebRTC APM (AEC3 + HPF) + leveler, plus the
-    /// optional DeepFilterNet denoiser. Classic WebRTC NS is ON only in the
-    /// light (RNNoise) path: DeepFilterNet is the denoiser, and running NS
-    /// before it double-colors the speech. AGC is OFF in both (measured: the
-    /// fixed-digital AGC amplified background noise before NS removed it).
+    /// Shared construction: WebRTC APM (AEC3 + HPF) plus the optional
+    /// DeepFilterNet denoiser. Classic WebRTC NS is ON only in the light
+    /// (RNNoise) path: DeepFilterNet is the denoiser, and running NS before
+    /// it double-colors the speech. AGC is OFF (measured: the fixed-digital
+    /// AGC amplified background noise before NS removed it).
     fn chain(neural: Option<DeepFilterDenoiser>) -> Self {
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
             processor.set_config(apm_config(neural.is_some()));
@@ -713,7 +711,6 @@ impl NoiseSuppressor {
             processor,
             rnnoise: Some(nnnoiseless::DenoiseState::new()),
             neural,
-            leveler: SpeechLeveler::new(),
             speech_detected: false,
         }
     }
@@ -767,16 +764,12 @@ impl NoiseSuppressor {
         // Denoise with the active tier and derive the speech signal.
         let mut result: Vec<i16>;
         let vad: f32;
-        let rms: f32;
         if let Some(n) = self.neural.as_mut() {
             // DeepFilterNet: the primary denoiser. It silences noise to ~0
             // (measured ~163 dB on white noise), so the post-denoise energy IS
-            // the speech detector — no extra VAD, no extra CPU. Map it to a
-            // VAD probability for the leveler.
+            // the speech detector — no extra VAD, no extra CPU.
             result = n.process(&out);
-            let r = rms_level(&result);
-            vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
-            rms = r;
+            vad = (rms_level(&result) / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
         } else {
             // Light fallback: RNNoise denoising and its VAD — full-band.
             result = vec![0i16; out.len()];
@@ -800,13 +793,11 @@ impl NoiseSuppressor {
                 }
                 None => result.copy_from_slice(&out),
             }
-            let r = rms_level(&result);
             vad = max_vad;
-            rms = r;
         };
-        // VAD-gated adaptive gain: boost quiet speech to an audible level
-        // without amplifying the (already suppressed) noise floor.
-        self.speech_detected = self.leveler.process(vad, rms, &mut result);
+        // Speech detection for the UI speaking-meter: post-denoise energy
+        // above the VAD threshold means someone is talking.
+        self.speech_detected = vad >= VAD_ON;
         result
     }
 
@@ -1464,7 +1455,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, speech_detected: false };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
