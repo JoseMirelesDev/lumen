@@ -682,6 +682,10 @@ pub struct NoiseSuppressor {
     /// Whether the last processed frame contained speech (post-denoise energy
     /// in the neural path, RNNoise VAD in the fallback).
     speech_detected: bool,
+    /// Post-denoise RMS (0..1, pre-gain) of the most recently processed frame.
+    /// The send gate uses this — not the raw pre-denoise level — to decide
+    /// whether to transmit, since the denoiser strips the mic's noise floor.
+    post_denoise_rms: f32,
     /// Frames remaining in the `process_gated` hangover — the chain stays
     /// open this many frames after the last voiced frame so speech tails /
     /// quiet endings aren't clipped at word and utterance boundaries.
@@ -719,6 +723,7 @@ impl NoiseSuppressor {
             neural,
             leveler: SpeechLeveler::new(),
             speech_detected: false,
+            post_denoise_rms: 0.0,
             gate_hangover: 0,
         }
     }
@@ -812,6 +817,7 @@ impl NoiseSuppressor {
         };
         // VAD-gated adaptive gain: boost quiet speech to an audible level
         // without amplifying the (already suppressed) noise floor.
+        self.post_denoise_rms = rms; // pre-gain denoised level for the send gate
         self.speech_detected = self.leveler.process(vad, rms, &mut result);
         result
     }
@@ -840,13 +846,21 @@ impl NoiseSuppressor {
         // cheap (~4% of a core), so always processing costs little.
         let cleaned = self.process(frame);
 
-        // The energy gate now only decides whether to TRANSMIT, not whether to
+        // The gate now only decides whether to TRANSMIT, not whether to
         // denoise: quiet frames (past the hangover) are denoised but not sent.
         // The far side hears silence, and the denoiser stays coherent across
         // speech re-entry. The hangover keeps transmitting speech tails so
         // word endings aren't clipped.
-        let level = rms_level(frame);
-        if level >= VOICE_ENERGY_FLOOR {
+        //
+        // We gate on the POST-DENOISE (pre-gain) energy rather than the raw
+        // pre-denoise level: a mic's raw noise floor (room fan / AC / hum)
+        // sits above any raw threshold and never drops, which used to keep the
+        // gate open 24/7 and transmit the leveler-boosted residual noise.
+        // DeepFilterNet strips that noise to ~0, so the denoised level is the
+        // reliable speech signal. (We use the raw denoised level, not the
+        // leveler-smoothed `speech_detected`, so the leveler's own hangover
+        // doesn't double-extend this gate.)
+        if self.post_denoise_rms >= GATE_SPEECH_FLOOR {
             self.gate_hangover = GATE_HANGOVER_FRAMES;
         } else if self.gate_hangover > 0 {
             self.gate_hangover -= 1;
@@ -996,25 +1010,28 @@ const VAD_ON: f32 = 0.5;
 /// ~100 ms of hold at 20 ms frames.
 const HANGOVER_FRAMES: u32 = 5;
 
-/// Energy floor (normalized RMS) for the `process_gated` send gate. Frames
-/// below this are treated as quiet and skip the whole send chain (AEC3 +
-/// denoise + Opus + transmit). A normal speaking voice is ~RMS 0.1 (well above);
-/// a quiet room is ~RMS 0.005-0.02 (well below). A noisy room (fan/AC above
-/// the floor) keeps the gate open — no CPU saved, but no quality lost.
-/// Lower to gate more aggressively (more CPU savings, risks clipping very
-/// quiet speech); raise to be conservative. The `GATE_HANGOVER_FRAMES`
-/// hangover prevents clipping across word-boundary dips.
-const VOICE_ENERGY_FLOOR: f32 = 0.03;
-
 /// Frames the send chain stays open after the last voiced frame (hangover),
 /// so speech tails and quiet word endings aren't clipped. 10 frames = 200 ms.
 const GATE_HANGOVER_FRAMES: u32 = 10;
 
+/// Post-denoise RMS floor for the `process_gated` transmit gate. Frames whose
+/// denoised energy is below this (DeepFilterNet has suppressed the noise to
+/// ~0) are treated as quiet and not transmitted. Normal speech is ~0.05-0.1
+/// post-denoise; residual denoiser output on a noisy mic is ~0.005-0.01, so
+/// this sits between them. Previously the gate used the raw pre-denoise level,
+/// which a real mic's noise floor never drops below — keeping it open 24/7 and
+/// transmitting the leveler-boosted residual noise.
+const GATE_SPEECH_FLOOR: f32 = 0.03;
+
 /// Post-denoise RMS (0..1) that maps to a full VAD probability in the neural
 /// path. The neural denoiser silences noise to ~0 (DPDFNet ~58 dB separation),
-/// so any energy above this is speech; a value this low keeps quiet speech
-/// detectable while leaving the noise floor far below the leveler's VAD_ON.
-const SPEECH_ENERGY_REF: f32 = 0.01;
+/// so any energy above this is speech. Raised from 0.01: the old value let a
+/// post-denoise residual as quiet as RMS 0.005 (vad 0.5, the leveler's VAD_ON)
+/// fire the speech gate, so the leveler amplified leftover room noise up to
+/// 16x ("the mic noise that starts low and rises"). This floor sits above the
+/// residual DeepFilterNet leaves on real mics while staying well under normal
+/// speech (~0.05-0.1 post-denoise).
+const SPEECH_ENERGY_REF: f32 = 0.03;
 
 impl SpeechLeveler {
     pub fn new() -> Self {
@@ -1508,7 +1525,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false, gate_hangover: 0 };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false, post_denoise_rms: 0.0, gate_hangover: 0 };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
@@ -1675,7 +1692,13 @@ mod tests {
         assert!(opened, "speech must open the gate (Some)");
 
         // Hangover: after speech stops, the chain stays open GATE_HANGOVER_FRAMES
-        // more frames, then gates to None (so tails aren't clipped).
+        // more frames, then gates to None (so tails aren't clipped). The gate
+        // tracks the POST-denoise level, and DeepFilterNet emits a short
+        // intrinsic tail (~2 frames of lookahead/windowing) after a loud frame,
+        // which legitimately extends the open window by that much — so the bound
+        // allows the DSP tail on top of the designed hangover. The gate still
+        // closes (the loop runs GATE_HANGOVER_FRAMES+5 frames and it closes well
+        // inside that).
         let mut ns = NoiseSuppressor::new();
         for i in 0..10 {
             let _ = ns.process_gated(&loud_speech(i));
@@ -1687,10 +1710,42 @@ mod tests {
                 open_after_silence += 1;
             }
         }
+        // Bounded DSP tail (DeepFilterNet lookahead) + designed hangover.
+        let max_open = GATE_HANGOVER_FRAMES as usize + 3;
         assert!(
-            open_after_silence > 0 && open_after_silence <= GATE_HANGOVER_FRAMES as usize,
-            "hangover should keep the chain open briefly then close (open {open_after_silence} frames)"
+            open_after_silence > 0 && open_after_silence <= max_open,
+            "hangover should keep the chain open briefly then close (open {open_after_silence}, max {max_open})"
         );
+    }
+
+    #[test]
+    fn noisy_mic_does_not_open_gate() {
+        // A mic whose RAW noise floor sits well above the old raw transmit
+        // threshold (0.03). With the old gate, this kept it open 24/7 and
+        // transmitted the leveler-boosted residual — the "constant noise that
+        // starts low and rises". The gate now measures the POST-denoise
+        // (pre-gain) level, and DeepFilterNet suppresses this noise to ~0, so
+        // it must stay closed.
+        let mut state = 0x1234_5678u32;
+        let noise: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                ((state >> 8) as i16) / 4 // raw RMS ~0.14, >> 0.03
+            })
+            .collect();
+        let raw_rms = rms_level(&noise);
+        assert!(raw_rms >= 0.05, "sanity: raw noise well above the old floor: {raw_rms}");
+
+        let mut ns = NoiseSuppressor::new();
+        let mut opened = false;
+        for _ in 0..30 {
+            if ns.process_gated(&noise).is_some() {
+                opened = true;
+            }
+        }
+        assert!(!opened, "noisy mic must NOT open the transmit gate");
     }
 }
 
