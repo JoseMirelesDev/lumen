@@ -521,21 +521,12 @@ impl NoiseSuppressor {
         result
     }
 
-    /// VAD-gated send-path processing: the CPU-saving entry point used by the
-    /// live mic path. Returns `Some(cleaned_frame)` when speech is present
-    /// (or within the hangover), and `None` when the frame is silence — in
-    /// which case the caller must skip encode + transmit entirely.
-    ///
-    /// This is what makes a voice call cheap: a call is mostly "listening" —
-    /// the local mic is silent while the far end talks. Rather than burn
-    /// AEC3 + the active denoiser + Opus on every silent frame (measured
-    /// ~20% of a core with the neural tier), we run only a cheap energy gate
-    /// and, when there is no speech, skip the whole chain AND the transmit.
-    /// Speech frames still go through the full denoise chain, so quality is
-    /// unchanged; silence simply costs almost nothing. The hangover keeps the
-    /// chain open briefly
-    /// after the last voiced frame so speech tails and quiet endings aren't
-    /// clipped at word/utterance boundaries.
+    /// Send-path entry point used by the live mic path. ALWAYS runs the full
+    /// denoise chain so DeepFilterNet's streaming state stays warm (skipping
+    /// it on silence chops speech at re-entry), and returns `Some(cleaned)`
+    /// when the frame should be transmitted, `None` when it's quiet (past the
+    /// hangover) and the caller should skip encode + transmit. DeepFilterNet
+    /// is cheap enough that always processing costs little.
     ///
     /// ```ignore
     /// while let Some(frame) = mic.recv().await {
@@ -543,38 +534,30 @@ impl NoiseSuppressor {
     ///         let pkt = encode(&cleaned);
     ///         for peer in peers { peer.send(pkt.clone()); }
     ///     }
-    ///     // None => silence: skip encode + transmit (no work).
+    ///     // None => quiet: denoised but not transmitted.
     /// }
     /// ```
     pub fn process_gated(&mut self, frame: &[i16]) -> Option<Vec<i16>> {
-        // Energy gate on the raw frame (before AEC3): a handful of multiply-adds
-        // per sample, ~0.1% of a core — essentially free. When the frame is
-        // quiet (mic silent, or quiet room noise) and the post-speech hangover
-        // has lapsed, we skip the whole send chain (AEC3 + denoise + encode +
-        // transmit) and send nothing — the dominant CPU cost in a call, which
-        // is mostly "listening" with a silent mic.
-        //
-        // This only closes on genuinely quiet frames, so it never hurts: a
-        // normal speaking voice (RMS ~0.1) is far above the floor, and in a
-        // noisy room (fan/AC above the floor) the gate stays open — no CPU
-        // saved there, but no quality lost either. Speech onset is caught by
-        // the frame RMS, and the hangover keeps the chain open across the
-        // brief dips at word boundaries so nothing is clipped.
+        // Always run the full chain (AEC3 + DeepFilterNet) so the streaming
+        // denoiser's lookahead buffers stay warm. Skipping the denoiser on
+        // silence (the old gate) let its state go stale, which chopped speech
+        // at every re-entry (the reported "entrecortada"). DeepFilterNet is
+        // cheap (~4% of a core), so always processing costs little.
+        let cleaned = self.process(frame);
+
+        // The energy gate now only decides whether to TRANSMIT, not whether to
+        // denoise: quiet frames (past the hangover) are denoised but not sent.
+        // The far side hears silence, and the denoiser stays coherent across
+        // speech re-entry. The hangover keeps transmitting speech tails so
+        // word endings aren't clipped.
         let level = rms_level(frame);
         if level >= VOICE_ENERGY_FLOOR {
-            // Speech energy: (re)open the chain and reset the hangover.
             self.gate_hangover = GATE_HANGOVER_FRAMES;
         } else if self.gate_hangover > 0 {
-            // Still within the hangover after speech: keep the chain open.
             self.gate_hangover -= 1;
         } else {
-            // Confirmed quiet: skip the entire chain (no AEC3, no denoise, no
-            // encode, no transmit). The far side just hears silence.
-            self.speech_detected = false;
-            return None;
+            return None; // quiet: denoised but not transmitted
         }
-
-        let cleaned = self.process(frame);
         Some(cleaned)
     }
 
