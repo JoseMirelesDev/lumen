@@ -1011,17 +1011,18 @@ const VAD_ON: f32 = 0.5;
 const HANGOVER_FRAMES: u32 = 5;
 
 /// Frames the send chain stays open after the last voiced frame (hangover),
-/// so speech tails and quiet word endings aren't clipped. 10 frames = 200 ms.
-const GATE_HANGOVER_FRAMES: u32 = 10;
+/// so speech tails and quiet word endings aren't clipped. 15 frames = 300 ms.
+const GATE_HANGOVER_FRAMES: u32 = 15;
 
 /// Post-denoise RMS floor for the `process_gated` transmit gate. Frames whose
 /// denoised energy is below this (DeepFilterNet has suppressed the noise to
 /// ~0) are treated as quiet and not transmitted. Normal speech is ~0.05-0.1
 /// post-denoise; residual denoiser output on a noisy mic is ~0.005-0.01, so
-/// this sits between them. Previously the gate used the raw pre-denoise level,
-/// which a real mic's noise floor never drops below — keeping it open 24/7 and
-/// transmitting the leveler-boosted residual noise.
-const GATE_SPEECH_FLOOR: f32 = 0.03;
+/// this sits between them. Lowered from 0.03: DeepFilterNet's ~30 ms
+/// lookahead attenuates the first frames of speech onset, so 0.03 cut the
+/// first syllable and clipped tails early. 0.015 leaves margin above the
+/// noise residual while catching quiet speech and onsets.
+const GATE_SPEECH_FLOOR: f32 = 0.015;
 
 /// Post-denoise RMS (0..1) that maps to a full VAD probability in the neural
 /// path. The neural denoiser silences noise to ~0 (DPDFNet ~58 dB separation),
