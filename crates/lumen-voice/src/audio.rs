@@ -680,9 +680,12 @@ pub struct NoiseSuppressor {
     /// VAD-gated AGC (Discord-style): boosts quiet speech after denoising,
     /// decays to unity on silence so the denoiser's residual stays un-boosted.
     leveler: SpeechLeveler,
-    /// Whether the last processed frame contained speech (post-denoise energy
+    /// Whether the last processed frame contained speech (DeepFilterNet LSNR
     /// in the neural path, RNNoise VAD in the fallback).
     speech_detected: bool,
+    /// LSNR (dB) of the last processed frame in the neural tier; `None` in the
+    /// light (RNNoise) tier where LSNR is unavailable. For diagnostics/probes.
+    last_lsnr: Option<f32>,
 }
 
 impl NoiseSuppressor {
@@ -716,6 +719,7 @@ impl NoiseSuppressor {
             neural,
             leveler: SpeechLeveler::new(),
             speech_detected: false,
+            last_lsnr: None,
         }
     }
     /// Feed the far-end (playback) audio into AEC3. Call this with the exact
@@ -770,14 +774,19 @@ impl NoiseSuppressor {
         let vad: f32;
         let rms: f32;
         if let Some(n) = self.neural.as_mut() {
-            // DeepFilterNet: the primary denoiser. It silences noise to ~0
-            // (measured ~163 dB on white noise), so the post-denoise energy IS
-            // the speech detector — no extra VAD, no extra CPU.
-            result = n.process(&out);
+            // DeepFilterNet: the primary denoiser. The VAD comes from the
+            // model's own LSNR (local SNR, dB) — computed inside the neural
+            // spectral estimate, so it doesn't confuse a quiet speaker (low
+            // RMS, high LSNR) with silence. LSNR < -10 dB → noise only;
+            // > 30 dB → clean speech; map onto a [0..1] VAD probability.
+            let (denoised, lsnr) = n.process(&out);
+            result = denoised;
+            self.last_lsnr = Some(lsnr);
             let r = rms_level(&result);
-            vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
+            vad = ((lsnr - (-10.0)) / 40.0).clamp(0.0, 1.0);
             rms = r;
         } else {
+            self.last_lsnr = None;
             // Light fallback: RNNoise denoising and its VAD — full-band.
             result = vec![0i16; out.len()];
             let mut max_vad = 0.0f32;
@@ -805,10 +814,10 @@ impl NoiseSuppressor {
             rms = r;
         };
         // Discord-style AGC: the leveler applies gain only when the VAD (from
-        // post-denoise energy) detects speech, chasing a target RMS. On
-        // silence the gain decays to unity, so the denoiser's residual noise
-        // is never amplified — the order (denoise first, then gain) is what
-        // keeps amplification clean.
+        // DeepFilterNet LSNR, or RNNoise VAD in the light tier) detects
+        // speech, chasing a target RMS. On silence the gain decays to unity,
+        // so the denoiser's residual noise is never amplified — the order
+        // (denoise first, then gain) is what keeps amplification clean.
         self.speech_detected = self.leveler.process(vad, rms, &mut result);
         result
     }
@@ -834,6 +843,17 @@ impl NoiseSuppressor {
     /// the model failed to load and the chain uses the RNNoise fallback.
     pub fn neural_available(&self) -> bool {
         self.neural.is_some()
+    }
+
+    /// The current AGC gain factor (1.0 = unity). For diagnostics/probes.
+    pub fn agc_gain(&self) -> f32 {
+        self.leveler.gain()
+    }
+
+    /// LSNR (dB) of the most recently processed frame in the neural tier;
+    /// `None` in the light (RNNoise) tier. For diagnostics/probes.
+    pub fn last_lsnr(&self) -> Option<f32> {
+        self.last_lsnr
     }
 }
 
@@ -885,7 +905,14 @@ impl DeepFilterDenoiser {
     /// (e.g. tract init failed) — the caller then falls back to RNNoise.
     pub fn new() -> Option<Self> {
         use df::tract::{DfParams, DfTract, RuntimeParams};
-        match DfTract::new(DfParams::default(), &RuntimeParams::default()) {
+        // Enable the spectral post-filter (per-bin over-attenuation smoothing,
+        // beta = the crate's own default). It tightens residual suppression in
+        // speech-adjacent bins — the residual the AGC could otherwise amplify —
+        // at a negligible per-frame cost (a multiply/add on ~481 complex bins).
+        match DfTract::new(
+            DfParams::default(),
+            &RuntimeParams::default().with_post_filter(0.02),
+        ) {
             Ok(model) => Some(Self { model }),
             Err(e) => {
                 eprintln!("lumen voice: DeepFilterNet load failed: {e}");
@@ -894,21 +921,31 @@ impl DeepFilterDenoiser {
         }
     }
 
-    /// Denoise a 48 kHz mono frame. DeepFilterNet runs at 48 kHz with a 10 ms
-    /// (480-sample) hop, so a 20 ms (960-sample) frame is fed as two chunks and
-    /// produces 960 samples out. The model is stateful with a ~30 ms
-    /// lookahead delay (inherent to streaming enhancement — the caller's
-    /// jitter buffer absorbs it).
-    pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
+    /// Denoise a 48 kHz mono frame, returning the denoised PCM plus the frame's
+    /// LSNR (local SNR, dB) from the model's internal spectral estimate — a
+    /// robust speech-presence signal computed inside the neural frontend (see
+    /// `DfTract::process`). LSNR < -10 dB is noise-only; > 30 dB is clean
+    /// speech. DeepFilterNet runs with a 10 ms (480-sample) hop, so a 20 ms
+    /// (960-sample) frame is fed as two chunks and produces 960 samples out;
+    /// the returned LSNR is the max over those chunks (speech anywhere in the
+    /// frame). The model is stateful with a ~30 ms lookahead delay (inherent
+    /// to streaming enhancement — the caller's jitter buffer absorbs it).
+    pub fn process(&mut self, frame: &[i16]) -> (Vec<i16>, f32) {
         let hop = self.model.hop_size;
         let mut result = Vec::with_capacity(frame.len());
         let mut in_arr = ndarray::Array2::<f32>::zeros((1, hop));
         let mut out_arr = ndarray::Array2::<f32>::zeros((1, hop));
+        let mut lsnr = LSNR_SILENCE;
         for chunk in frame.chunks_exact(hop) {
             for (i, &s) in chunk.iter().enumerate() {
                 in_arr[[0, i]] = s as f32 / 32768.0;
             }
-            let _ = self.model.process(in_arr.view(), out_arr.view_mut());
+            // On model error, fall back to the model's own silence sentinel.
+            let chunk_lsnr = self
+                .model
+                .process(in_arr.view(), out_arr.view_mut())
+                .unwrap_or(LSNR_SILENCE);
+            lsnr = lsnr.max(chunk_lsnr);
             for i in 0..hop {
                 let v = out_arr[[0, i]];
                 result.push(
@@ -920,9 +957,13 @@ impl DeepFilterDenoiser {
         while result.len() < frame.len() {
             result.push(0);
         }
-        result
+        (result, lsnr)
     }
 }
+
+/// LSNR (dB) `DfTract::process` returns for a silence/zero frame — also the
+/// fallback here when the model errors or a frame is partial-padded.
+const LSNR_SILENCE: f32 = -15.0;
 
 // SAFETY: `DeepFilterDenoiser` holds a `df::tract::DfTract`, which is not
 // `Send` because its STFT frontend keeps an `Arc<dyn RealToComplex>` trait
@@ -941,15 +982,15 @@ unsafe impl Send for DeepFilterDenoiser {}
 ///
 /// WebRTC's adaptive AGC (GainController2) was measured to boost the noise
 /// floor (+15 dB on quiet noise), so we do the gate ourselves: the VAD signal
-/// (post-denoise energy in the DeepFilterNet path, RNNoise VAD in the fallback)
-/// opens the gain, which chases a target RMS and holds through a hangover so
-/// words aren't clipped; on silence the gain decays to unity (no boost),
-/// leaving the already-suppressed noise inaudible.
+/// (DeepFilterNet LSNR in the neural path, RNNoise VAD in the fallback) opens
+/// the gain, which chases a target RMS and holds through a hangover so words
+/// aren't clipped; on silence the gain decays to unity (no boost), leaving
+/// the already-suppressed noise inaudible.
 pub struct SpeechLeveler {
     /// Target RMS for speech after gain (~ -18 dBFS).
     target_rms: f32,
-    /// Max gain factor (+15.6 dB). Enough to bring a quiet mic (RMS 0.02) up
-    /// to the target; higher gains risk making the denoiser's residual audible.
+    /// Max gain factor (+18 dB). Enough to bring a quiet mic (RMS 0.015) up
+    /// to the target. Safe because the LSNR VAD keeps the gate shut on noise.
     max_gain: f32,
     /// Current smoothed gain factor.
     gain: f32,
@@ -962,31 +1003,40 @@ pub struct SpeechLeveler {
 }
 
 const VAD_ON: f32 = 0.5;
-/// ~240 ms of hold at 20 ms frames. Covers typical inter-word pauses so
-/// the gain doesn't drop and re-ramp between words ("volume rollercoaster").
-const HANGOVER_FRAMES: u32 = 12;
+/// ~500 ms of hold at 20 ms frames. Covers inter-sentence pauses so the gain
+/// doesn't decay and re-ramp between sentences ("volume rollercoaster").
+const HANGOVER_FRAMES: u32 = 25;
 
-
-/// Post-denoise RMS (0..1) that maps to a full VAD probability in the neural
-/// path. The neural denoiser silences noise to ~0 (DPDFNet ~58 dB separation),
-/// so any energy above this is speech. Raised from 0.01: the old value let a
-/// post-denoise residual as quiet as RMS 0.005 (vad 0.5, the leveler's VAD_ON)
-/// fire the speech gate, so the leveler amplified leftover room noise up to
-/// 16x ("the mic noise that starts low and rises"). This floor sits above the
-/// residual DeepFilterNet leaves on real mics while staying well under normal
-/// speech (~0.05-0.1 post-denoise).
-const SPEECH_ENERGY_REF: f32 = 0.03;
+/// Max per-frame gain change after IIR smoothing: ±0.3 at 20 ms/frame is
+/// ~15 dB/s slew — fast enough for speech onset, slow enough to suppress
+/// syllable-level pumping (a single loud frame can no longer yank the gain).
+const MAX_GAIN_STEP: f32 = 0.3;
 
 impl SpeechLeveler {
     pub fn new() -> Self {
         Self {
             target_rms: 0.12,
-            max_gain: 6.0,
+            max_gain: 8.0,
             gain: 1.0,
             vad_smooth: 0.0,
             speech_rms: 0.001,
             hold: 0,
         }
+    }
+
+    /// Current smoothed gain factor (1.0 = unity). For diagnostics/probes.
+    pub fn gain(&self) -> f32 {
+        self.gain
+    }
+
+    /// Smoothed pre-gain speech level (0..1). For diagnostics/probes.
+    pub fn speech_rms(&self) -> f32 {
+        self.speech_rms
+    }
+
+    /// Smoothed voice-activity probability (0..1). For diagnostics/probes.
+    pub fn vad_smooth(&self) -> f32 {
+        self.vad_smooth
     }
 
     /// Apply gain to `samples` in place based on the frame's VAD probability
@@ -1009,11 +1059,23 @@ impl SpeechLeveler {
             // Asymmetric gain smoothing: fast reduction (avoid clipping on a
             // sudden loud burst), slow increase (avoid pumping).  Old code
             // used a single 0.85/0.15 filter (τ ≈ 140 ms) — way too reactive.
-            if desired < self.gain {
-                self.gain = self.gain * 0.9 + desired * 0.1; // τ ≈ 200 ms
+            let prev_gain = self.gain;
+            let new_gain = if desired < self.gain {
+                self.gain * 0.9 + desired * 0.1 // τ ≈ 200 ms
             } else {
-                self.gain = self.gain * 0.93 + desired * 0.07; // τ ≈ 300 ms
-            }
+                self.gain * 0.93 + desired * 0.07 // τ ≈ 300 ms
+            };
+            // Rate-limit the per-frame gain CHANGE after the IIR (rate-limiting
+            // `desired` first would starve the IIR). At 20 ms/frame, ±0.3 is
+            // ~15 dB/s — fast enough for speech onset but slow enough that a
+            // single loud syllable can't yank the gain down by 30% in one
+            // frame ("volume rollercoaster").
+            let delta = new_gain - prev_gain;
+            self.gain = if delta.abs() > MAX_GAIN_STEP {
+                prev_gain + MAX_GAIN_STEP.copysign(delta)
+            } else {
+                new_gain
+            };
             self.hold = HANGOVER_FRAMES;
         } else if self.hold > 0 {
             self.hold -= 1;
@@ -1477,7 +1539,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false, last_lsnr: None };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
@@ -1542,7 +1604,7 @@ mod tests {
         let mut total_in = 0f64;
         for i in 0..80 {
             let fr = speech_frame(i);
-            let out = g.process(&fr);
+            let (out, _lsnr) = g.process(&fr);
             assert_eq!(out.len(), FRAME_SAMPLES, "neural denoiser must keep 20 ms alignment");
             if i >= 6 {
                 if rms_level(&out) < 0.003 {
@@ -1562,10 +1624,10 @@ mod tests {
     }
 
     #[test]
-    fn deepfilter_path_speech_detection_by_energy() {
-        // The DeepFilterNet path derives speech detection from post-denoise
-        // energy (no separate neural VAD): the denoiser silences noise to ~0,
-        // so energy implies speech. Noise must not open the gate; speech must.
+    fn deepfilter_path_speech_detection_by_lsnr() {
+        // The DeepFilterNet path derives speech detection from the model's own
+        // LSNR (local SNR, dB) — a spectral speech-presence estimate from the
+        // neural frontend. Noise must not open the gate; speech must.
         if DeepFilterDenoiser::new().is_none() {
             return;
         }

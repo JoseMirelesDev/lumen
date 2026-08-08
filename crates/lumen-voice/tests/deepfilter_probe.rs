@@ -112,7 +112,7 @@ fn deepfilter_perf_probe() {
         let t1 = Instant::now();
         let mut gsink = 0i64;
         for _ in 0..n_frames {
-            gsink += g.process(&frame).iter().map(|s| *s as i64).sum::<i64>();
+            gsink += g.process(&frame).0.iter().map(|s| *s as i64).sum::<i64>();
         }
         g_rtf = t1.elapsed().as_secs_f64() / audio_s;
         assert_ne!(gsink, 0, "DeepFilterNet produced only silence");
@@ -146,7 +146,7 @@ fn deepfilter_perf_probe() {
         let mut out_onset: Option<usize> = None;
         for i in 0..300 {
             let inp = if i >= onset_frame { &tone } else { &silence };
-            let out = g.process(inp);
+            let (out, _lsnr) = g.process(inp);
             if i >= onset_frame && in_onset.is_none() {
                 in_onset = Some(i);
             }

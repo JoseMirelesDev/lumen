@@ -83,7 +83,7 @@ fn neteq_absorbs_jitter_with_our_decoder() {
 
     // Encode all frames up front.
     let mut encoded = Vec::with_capacity(TOTAL_FRAMES as usize);
-    for f in 0..TOTAL_FRAMES {
+    for _f in 0..TOTAL_FRAMES {
         let pcm = make_tone_frame(freq, amp);
         encoded.push(enc.encode(&pcm).unwrap());
     }
