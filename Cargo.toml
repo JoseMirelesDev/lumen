@@ -13,6 +13,22 @@ members = [
 version = "0.1.0"
 edition = "2021"
 
+# tract's "codegen" pass (used by DeepFilterNet to build its model graph)
+# panics on a debug_assert in unoptimized dev builds, silently dropping
+# DeepFilterNet to the RNNoise fallback. Disable debug assertions just for the
+# tract crates in dev so DeepFilterNet loads while the rest of the tree keeps
+# its dev assertions.
+[profile.dev.package.tract-linalg]
+debug-assertions = false
+[profile.dev.package.tract-core]
+debug-assertions = false
+[profile.dev.package.tract-pulse]
+debug-assertions = false
+[profile.dev.package.tract-hir]
+debug-assertions = false
+[profile.dev.package.tract-onnx]
+debug-assertions = false
+
 [workspace.dependencies]
 slint = { version = "1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-winit-software"] }
 slint-build = "1"

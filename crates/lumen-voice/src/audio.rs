@@ -374,17 +374,14 @@ use webrtc_audio_processing::Processor;
 ///   frames (480 samples @ 48 kHz); a 20 ms capture frame is two halves.
 pub struct NoiseSuppressor {
     processor: Option<Processor>,
-    /// RNNoise denoiser — the LIGHT tier. Full-band 48 kHz, ~8% of a core.
-    /// Used by default and as the automatic fallback when the CPU is loaded.
+    /// RNNoise denoiser — the LIGHT fallback (used only if DeepFilterNet can't
+    /// load). Full-band 48 kHz.
     rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
-    /// GTCRN (sherpa-onnx) — the HIGH-SUPPRESSION neural tier. Engaged when
-    /// the adaptive CPU monitor sees headroom; degrades to RNNoise (light)
-    /// under load. NOTE: a full-band (48 kHz) Krisp-like replacement (DPDFNet)
-    /// is blocked by a sherpa-onnx 1.13.4 incompatibility — see [`GtcrnDenoiser`].
-    gtcrn: Option<GtcrnDenoiser>,
-    /// Whether the high-quality neural tier is active (vs the light RNNoise).
-    /// The send task toggles this based on system CPU load.
-    neural_active: bool,
+    /// DeepFilterNet3 (full-band 48 kHz, tract) — the primary denoiser.
+    /// Measured ~4-5% of a core with full bandwidth — cheaper and better than
+    /// the old GTCRN. `None` means the model failed to load and we fall back
+    /// to RNNoise.
+    neural: Option<DeepFilterDenoiser>,
     /// VAD-gated adaptive gain (boosts quiet speech, gates silence).
     leveler: SpeechLeveler,
     /// Whether the last processed frame contained speech (post-denoise energy
@@ -398,63 +395,37 @@ pub struct NoiseSuppressor {
 
 impl NoiseSuppressor {
     pub fn new() -> Self {
-        // High-quality by default: the GTCRN neural tier engaged, with RNNoise
-        // available as the light fallback the adaptive monitor uses. If GTCRN
-        // can't load, the chain is permanently light (RNNoise full-band).
-        Self::chain(GtcrnDenoiser::new(), true)
+        // DeepFilterNet3 by default (full-band, ~4-5% of a core). If the model
+        // fails to load, falls back to the RNNoise light path. No runtime tier
+        // switching: DeepFilterNet is cheaper than RNNoise, so there is no
+        // cheaper tier to degrade to under load.
+        Self::chain(DeepFilterDenoiser::new())
     }
 
     /// Construct the send-path DSP in LIGHT mode only (WebRTC AEC3/NS +
-    /// RNNoise + leveler, no neural tier). Used by probes/tests and as the
-    /// degraded state.
+    /// RNNoise + leveler, no DeepFilterNet). Used by probes/tests.
     pub fn new_light() -> Self {
-        Self::chain(None, false)
+        Self::chain(None)
     }
 
     /// Shared construction: WebRTC APM (AEC3 + HPF) + leveler, plus the
-    /// optional high-suppression neural denoiser (GTCRN). Classic WebRTC NS is
-    /// ON only in the light tier: the neural tier disables it (GTCRN is the
-    /// denoiser; running NS before it double-colors the speech — the original
-    /// reason NS was off with GTCRN). AGC is OFF in both (measured: the
+    /// optional DeepFilterNet denoiser. Classic WebRTC NS is ON only in the
+    /// light (RNNoise) path: DeepFilterNet is the denoiser, and running NS
+    /// before it double-colors the speech. AGC is OFF in both (measured: the
     /// fixed-digital AGC amplified background noise before NS removed it).
-    fn chain(gtcrn: Option<GtcrnDenoiser>, neural_active: bool) -> Self {
+    fn chain(neural: Option<DeepFilterDenoiser>) -> Self {
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
-            processor.set_config(apm_config(neural_active));
+            processor.set_config(apm_config(neural.is_some()));
             processor
         });
         Self {
             processor,
             rnnoise: Some(nnnoiseless::DenoiseState::new()),
-            gtcrn,
-            neural_active,
+            neural,
             leveler: SpeechLeveler::new(),
             speech_detected: false,
             gate_hangover: 0,
         }
-    }
-
-    /// Switch the high-quality neural tier on/off (called by the adaptive CPU
-    /// monitor in the send task). Light mode (RNNoise) is always available;
-    /// turning the neural tier on is a no-op if the model isn't loaded. Also
-    /// toggles WebRTC NS (off on the neural tier, on on the light tier); this
-    /// reinitializes the APM, so AEC3 re-converges — a brief, rare artifact on
-    /// tier switches, acceptable vs. double-NS coloring speech.
-    pub fn set_high_quality(&mut self, high: bool) {
-        if high && self.gtcrn.is_none() {
-            return; // no neural model loaded — stay light
-        }
-        if self.neural_active == high {
-            return; // no change
-        }
-        self.neural_active = high;
-        if let Some(processor) = self.processor.as_mut() {
-            processor.set_config(apm_config(high));
-        }
-    }
-
-    /// Whether the high-quality neural tier is currently active.
-    pub fn high_quality_active(&self) -> bool {
-        self.neural_active
     }
 
     /// Feed the far-end (playback) audio into AEC3. Call this with the exact
@@ -508,26 +479,17 @@ impl NoiseSuppressor {
         let mut result: Vec<i16>;
         let vad: f32;
         let rms: f32;
-        if self.neural_active {
-            if let Some(n) = self.gtcrn.as_mut() {
-                // GTCRN: the high-suppression denoiser. It silences noise to
-                // ~0 (measured ~51 dB separation), so the post-denoise energy
-                // IS the speech detector — no extra VAD, no extra CPU. Map it
-                // to a VAD probability for the leveler.
-                result = n.process(&out);
-                let r = rms_level(&result);
-                vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
-                rms = r;
-            } else {
-                // No neural model loaded — fall through to the light tier.
-                result = vec![0i16; out.len()];
-                let r = rms_level(&out);
-                vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
-                rms = r;
-            }
+        if let Some(n) = self.neural.as_mut() {
+            // DeepFilterNet: the primary denoiser. It silences noise to ~0
+            // (measured ~163 dB on white noise), so the post-denoise energy IS
+            // the speech detector — no extra VAD, no extra CPU. Map it to a
+            // VAD probability for the leveler.
+            result = n.process(&out);
+            let r = rms_level(&result);
+            vad = (r / SPEECH_ENERGY_REF).clamp(0.0, 1.0);
+            rms = r;
         } else {
-            // Light tier: RNNoise denoising and its VAD — the full-band,
-            // low-CPU path.
+            // Light fallback: RNNoise denoising and its VAD — full-band.
             result = vec![0i16; out.len()];
             let mut max_vad = 0.0f32;
             match self.rnnoise.as_mut() {
@@ -588,7 +550,7 @@ impl NoiseSuppressor {
         // Energy gate on the raw frame (before AEC3): a handful of multiply-adds
         // per sample, ~0.1% of a core — essentially free. When the frame is
         // quiet (mic silent, or quiet room noise) and the post-speech hangover
-        // has lapsed, we skip the whole send chain (AEC3 + GTCRN + encode +
+        // has lapsed, we skip the whole send chain (AEC3 + denoise + encode +
         // transmit) and send nothing — the dominant CPU cost in a call, which
         // is mostly "listening" with a silent mic.
         //
@@ -606,7 +568,7 @@ impl NoiseSuppressor {
             // Still within the hangover after speech: keep the chain open.
             self.gate_hangover -= 1;
         } else {
-            // Confirmed quiet: skip the entire chain (no AEC3, no GTCRN, no
+            // Confirmed quiet: skip the entire chain (no AEC3, no denoise, no
             // encode, no transmit). The far side just hears silence.
             self.speech_detected = false;
             return None;
@@ -622,17 +584,16 @@ impl NoiseSuppressor {
         self.speech_detected
     }
 
-    /// Whether the high-quality neural (GTCRN) tier is available (loaded).
-    /// `false` means the model/onnxruntime failed to load and the chain is
-    /// permanently light (RNNoise).
+    /// Whether the DeepFilterNet denoiser is available (loaded). `false` means
+    /// the model failed to load and the chain uses the RNNoise fallback.
     pub fn neural_available(&self) -> bool {
-        self.gtcrn.is_some()
+        self.neural.is_some()
     }
 }
 
 /// Build the WebRTC APM config for a given denoiser tier. AEC3 + high-pass are
 /// always on; WebRTC NS (VeryHigh, ~9x stationary-noise attenuation) is ON in
-/// the light tier (RNNoise needs it) and OFF in the neural tier (GTCRN is the
+/// the light tier (RNNoise needs it) and OFF in the neural tier (DeepFilterNet is the
 /// denoiser; NS before it would double-color the speech). AGC is always OFF
 /// (the fixed-digital AGC amplified background noise before NS removed it).
 fn apm_config(neural: bool) -> Config {
@@ -659,103 +620,71 @@ impl Default for NoiseSuppressor {
 }
 
 // ---------------------------------------------------------------------------
-// GtcrnDenoiser (sherpa-onnx GTCRN) — the high-suppression neural tier
+// DeepFilterDenoiser (DeepFilterNet3, tract) — the primary full-band denoiser
 // ---------------------------------------------------------------------------
 
-/// GTCRN speech-enhancement denoiser — the "high quality" tier used when the
-/// adaptive CPU monitor sees headroom. 32-38 dB noise reduction, 16 kHz model
-/// (band-limited to ~8 kHz), ~23% of a core on a 2014 i5. The mic is 48 kHz,
-/// so sherpa-onnx resamples 48k→16k internally and we resample the 16 kHz
-/// output back to 48 kHz.
-///
-/// NOTE: the ideal Krisp-like replacement here is a full-band 48 kHz model
-/// (sherpa-onnx DPDFNet), but DPDFNet models as of 2026 produce pure silence
-/// with sherpa-onnx 1.13.4 (the latest on crates.io) — an upstream
-/// incompatibility, no newer version available. When sherpa-onnx supports it,
-/// swap the model config in `new()` and drop the resampler (DPDFNet is 48 kHz
-/// native). Until then GTCRN is the working neural tier and the default stays
-/// the full-band RNNoise light tier.
-pub struct GtcrnDenoiser {
-    online: sherpa_onnx::OnlineSpeechDenoiser,
-    /// Accumulated 16 kHz denoised output, resampled to 48 kHz in 20 ms frames.
-    out_buf: Vec<f32>,
-    /// 16 kHz -> 48 kHz for the denoised output.
-    resampler: LinearResampler,
-    /// Cache path where the embedded model was written.
-    _model_path: std::path::PathBuf,
+/// DeepFilterNet3 speech-enhancement denoiser — the Krisp-like full-band
+/// (48 kHz) tier. Runs via `tract` (pure-Rust ONNX, no onnxruntime — no C
+/// symbol collision). Measured ~4-5% of a core (RTF ~0.04) on a 2014 i5 with
+/// full bandwidth — strictly cheaper AND better than the old GTCRN (16 kHz
+/// band-limited to ~8 kHz, ~23% of a core). Stateful streaming with a ~30 ms
+/// lookahead delay. Replaces GTCRN; DPDFNet (the other full-band option) is
+/// blocked by a sherpa-onnx incompatibility, so this is the working choice.
+pub struct DeepFilterDenoiser {
+    model: df::tract::DfTract,
 }
 
-/// Samples per 20 ms frame at 16 kHz.
-const GTCRN_FRAME_16K: usize = 320;
-
-impl GtcrnDenoiser {
-    /// Create from the embedded model. `None` if the model can't be loaded
-    /// (e.g. onnxruntime init failed) — the caller then runs permanently light.
+impl DeepFilterDenoiser {
+    /// Create from the embedded DeepFilterNet3 model. `None` if it can't load
+    /// (e.g. tract init failed) — the caller then falls back to RNNoise.
     pub fn new() -> Option<Self> {
-        use sherpa_onnx::{
-            OfflineSpeechDenoiserGtcrnModelConfig, OfflineSpeechDenoiserModelConfig,
-            OnlineSpeechDenoiserConfig,
-        };
-        let model_path = Self::materialize_model()?;
-        let config = OnlineSpeechDenoiserConfig {
-            model: OfflineSpeechDenoiserModelConfig {
-                gtcrn: OfflineSpeechDenoiserGtcrnModelConfig {
-                    model: Some(model_path.to_string_lossy().into_owned()),
-                },
-                ..Default::default()
-            },
-        };
-        let online = sherpa_onnx::OnlineSpeechDenoiser::create(&config)?;
-        Some(Self {
-            online,
-            out_buf: Vec::with_capacity(GTCRN_FRAME_16K * 2),
-            resampler: LinearResampler::new(16_000, CLOCK_RATE),
-            _model_path: model_path,
-        })
-    }
-
-    /// Write the embedded model to a cache file and return its path.
-    fn materialize_model() -> Option<std::path::PathBuf> {
-        const MODEL: &[u8] = include_bytes!("../models/gtcrn_simple.onnx");
-        let path = std::env::temp_dir().join("lumen-gtcrn_simple.onnx");
-        // Idempotent: only write if missing or different size.
-        if !path.exists() || std::fs::metadata(&path).ok().map(|m| m.len()) != Some(MODEL.len() as u64) {
-            std::fs::write(&path, MODEL).ok()?;
+        use df::tract::{DfParams, DfTract, RuntimeParams};
+        match DfTract::new(DfParams::default(), &RuntimeParams::default()) {
+            Ok(model) => Some(Self { model }),
+            Err(e) => {
+                eprintln!("lumen voice: DeepFilterNet load failed: {e}");
+                None
+            }
         }
-        Some(path)
     }
 
-    /// Denoise a 48 kHz mono frame. Returns exactly `frame.len()` 48 kHz mono
-    /// samples (padded with silence until the streaming path has produced a
-    /// full 20 ms frame), so the pipeline stays 20 ms aligned.
-    ///
-    /// The streaming denoiser does NOT emit a fixed 320 samples per 20 ms
-    /// input chunk: it outputs in 16 ms (256 @ 16 kHz) bursts. So we emit at
-    /// most ONE 20 ms chunk per call and carry excess into the next frame:
-    /// output stays lossless and the buffer stays bounded.
+    /// Denoise a 48 kHz mono frame. DeepFilterNet runs at 48 kHz with a 10 ms
+    /// (480-sample) hop, so a 20 ms (960-sample) frame is fed as two chunks and
+    /// produces 960 samples out. The model is stateful with a ~30 ms
+    /// lookahead delay (inherent to streaming enhancement — the caller's
+    /// jitter buffer absorbs it).
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
-        let mut in_f32 = Vec::with_capacity(frame.len());
-        for &s in frame {
-            in_f32.push(s as f32 / 32768.0);
+        let hop = self.model.hop_size;
+        let mut result = Vec::with_capacity(frame.len());
+        let mut in_arr = ndarray::Array2::<f32>::zeros((1, hop));
+        let mut out_arr = ndarray::Array2::<f32>::zeros((1, hop));
+        for chunk in frame.chunks_exact(hop) {
+            for (i, &s) in chunk.iter().enumerate() {
+                in_arr[[0, i]] = s as f32 / 32768.0;
+            }
+            let _ = self.model.process(in_arr.view(), out_arr.view_mut());
+            for i in 0..hop {
+                let v = out_arr[[0, i]];
+                result.push(
+                    (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16,
+                );
+            }
         }
-        let out = self.online.run(&in_f32, CLOCK_RATE as i32);
-        self.out_buf.extend_from_slice(&out.samples);
-        let mut result: Vec<i16> = Vec::with_capacity(frame.len());
-        if self.out_buf.len() >= GTCRN_FRAME_16K {
-            let chunk: Vec<i16> = self.out_buf
-                .drain(..GTCRN_FRAME_16K)
-                .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
-                .collect();
-            result.extend_from_slice(&self.resampler.resample(&chunk));
-        }
-        if result.len() < frame.len() {
-            result.resize(frame.len(), 0);
-        } else if result.len() > frame.len() {
-            result.truncate(frame.len());
+        // Pad a trailing partial chunk (shouldn't happen at 960/480).
+        while result.len() < frame.len() {
+            result.push(0);
         }
         result
     }
 }
+
+// SAFETY: `DeepFilterDenoiser` holds a `df::tract::DfTract`, which is not
+// `Send` because its STFT frontend keeps an `Arc<dyn RealToComplex>` trait
+// object (realfft doesn't mark the trait `Send`). The denoiser is only ever
+// owned and used by the single send-task thread (it lives inside the
+// `NoiseSuppressor` that the send task creates and never shares), so handing
+// it across the `tokio::spawn` boundary is sound.
+unsafe impl Send for DeepFilterDenoiser {}
 
 // ---------------------------------------------------------------------------
 // Speech leveler: VAD-gated adaptive gain
@@ -766,7 +695,7 @@ impl GtcrnDenoiser {
 ///
 /// WebRTC's adaptive AGC (GainController2) was measured to boost the noise
 /// floor (+15 dB on quiet noise), so we do the gate ourselves: the VAD signal
-/// (post-GTCRN energy in the main path, RNNoise probability in the fallback)
+/// (post-denoise energy in the DeepFilterNet path, RNNoise VAD in the fallback)
 /// opens the gain, which chases a target RMS and holds through a hangover so
 /// words aren't clipped; on silence the gain decays to unity (no boost),
 /// leaving the already-suppressed noise inaudible.
@@ -791,7 +720,7 @@ const HANGOVER_FRAMES: u32 = 5;
 
 /// Energy floor (normalized RMS) for the `process_gated` send gate. Frames
 /// below this are treated as quiet and skip the whole send chain (AEC3 +
-/// GTCRN + Opus + transmit). A normal speaking voice is ~RMS 0.1 (well above);
+/// denoise + Opus + transmit). A normal speaking voice is ~RMS 0.1 (well above);
 /// a quiet room is ~RMS 0.005-0.02 (well below). A noisy room (fan/AC above
 /// the floor) keeps the gate open — no CPU saved, but no quality lost.
 /// Lower to gate more aggressively (more CPU savings, risks clipping very
@@ -1301,7 +1230,7 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, gtcrn: None, neural_active: false, leveler: SpeechLeveler::new(), speech_detected: false, gate_hangover: 0 };
+        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false, gate_hangover: 0 };
         // Warm up the model, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
             ns.process(chunk);
@@ -1343,14 +1272,10 @@ mod tests {
     }
 
     #[test]
-    fn gtcrn_streaming_no_dropped_frames() {
-        // The streaming denoiser outputs in 16 ms (256 @ 16 kHz) bursts, not
-        // 320 per call; we emit at most one 20 ms chunk per call and carry the
-        // excess, so output stays lossless and the buffer bounded. Output must
-        // stay 20 ms aligned with no silence-padded frames once warm, and the
-        // speech energy must survive (not be gated away). Use a speech-like AM
-        // signal: GTCRN preserves speech but legitimately gates a steady tone
-        // (stationary noise).
+    fn deepfilter_streaming_no_dropped_frames() {
+        // The streaming denoiser must keep output 20 ms aligned with no
+        // silence-padded frames once warm, and the speech energy must survive
+        // (not be gated away). Use a speech-like AM signal.
         fn speech_frame(idx: usize) -> Vec<i16> {
             (0..FRAME_SAMPLES)
                 .map(|i| {
@@ -1364,7 +1289,7 @@ mod tests {
                 })
                 .collect()
         }
-        let Some(mut g) = GtcrnDenoiser::new() else { return };
+        let Some(mut g) = DeepFilterDenoiser::new() else { return };
         let mut silent_after_warmup = 0usize;
         let mut total_out = 0f64;
         let mut total_in = 0f64;
@@ -1390,12 +1315,11 @@ mod tests {
     }
 
     #[test]
-    fn gtcrn_path_speech_detection_by_energy() {
-        // The high-quality (GTCRN) path derives speech detection from
-        // post-denoise energy (no separate neural VAD): the denoiser silences
-        // noise to ~0, so energy implies speech. Noise must not open the gate;
-        // speech must.
-        if GtcrnDenoiser::new().is_none() {
+    fn deepfilter_path_speech_detection_by_energy() {
+        // The DeepFilterNet path derives speech detection from post-denoise
+        // energy (no separate neural VAD): the denoiser silences noise to ~0,
+        // so energy implies speech. Noise must not open the gate; speech must.
+        if DeepFilterDenoiser::new().is_none() {
             return;
         }
         fn speech(idx: usize) -> Vec<i16> {
@@ -1430,14 +1354,14 @@ mod tests {
             noise_detected |= ns.speech_detected();
         }
         assert!(!noise_detected, "noise must not open the VAD gate");
-        // Speech: must be detected (post-GTCRN energy above the threshold).
+        // Speech: must be detected (post-denoise energy above the threshold).
         let mut ns = NoiseSuppressor::new();
         let mut speech_detected = false;
         for i in 0..40 {
             ns.process(&speech(i));
             speech_detected |= ns.speech_detected();
         }
-        assert!(speech_detected, "speech must be detected via post-GTCRN energy");
+        assert!(speech_detected, "speech must be detected via post-denoise energy");
     }
 
     #[test]

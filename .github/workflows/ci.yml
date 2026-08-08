@@ -131,7 +131,7 @@ jobs:
             libwayland-dev libxkbcommon-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libxcb1-dev \
             meson ninja-build libclang-dev
-      - name: Build + run GTCRN probe
-        run: cargo test -p lumen-voice --test gtcrn_probe -- --nocapture
+      - name: Build + run DeepFilterNet denoiser probe (release, for real RTF)
+        run: cargo test --release -p lumen-voice --test deepfilter_probe -- --nocapture
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"

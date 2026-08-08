@@ -1,21 +1,21 @@
-//! GTCRN (sherpa-onnx) denoiser probe — high-quality neural tier ON vs the
-//! light RNNoise tier, comparing CPU, RAM, and noise reduction.
+//! DeepFilterNet3 denoiser probe — primary (DeepFilterNet, full-band) vs the
+//! RNNoise light fallback, comparing CPU, RAM, and noise reduction.
 //!
-//! Run with `cargo test -p lumen-voice --test gtcrn_probe -- --nocapture`
+//! Run with `cargo test -p lumen-voice --test deepfilter_probe -- --nocapture`
 //! (also runs in CI via the `voice-probe` job) so the numbers are visible.
 //!
 //! Measures, headless + deterministic:
 //!   - CPU: real-time factor (RTF) and ms / 20 ms frame for the send path in
 //!     LIGHT mode (`NoiseSuppressor::new_light`, RNNoise+WebRTC NS) vs the
-//!     high-quality GTCRN tier (`NoiseSuppressor::new`), plus GTCRN alone.
-//!   - RAM (Linux): resident-set-size (VmRSS) delta for the GTCRN stage.
+//!     primary DeepFilterNet tier (`NoiseSuppressor::new`), plus alone.
+//!   - RAM (Linux): resident-set-size (VmRSS) delta for the DeepFilterNet stage.
 //!   - NOISE REDUCTION: dB attenuation of a stationary-noise probe in both
 //!     tiers, plus a speech-in-noise check.
-//!   - GTCRN STREAMING LATENCY: the buffering delay the online denoiser adds.
+//!   - STREAMING LATENCY: the buffering delay the denoiser adds.
 
 use std::time::Instant;
 
-use lumen_voice::audio::{GtcrnDenoiser, NoiseSuppressor};
+use lumen_voice::audio::{DeepFilterDenoiser, NoiseSuppressor};
 
 const RATE: u32 = 48_000;
 const FRAME: usize = 960; // 20 ms @ 48 kHz
@@ -81,8 +81,8 @@ fn resident_set_bytes() -> Option<u64> {
 }
 
 #[test]
-fn gtcrn_perf_probe() {
-    let gtcrn_avail = GtcrnDenoiser::new().is_some();
+fn deepfilter_perf_probe() {
+    let df_avail = DeepFilterDenoiser::new().is_some();
     let audio_s = 10.0;
     let n_frames = (audio_s * RATE as f64 / FRAME as f64) as usize;
     let frame = tone_frame(220.0, 0);
@@ -96,7 +96,7 @@ fn gtcrn_perf_probe() {
     }
     let light_rtf = tb.elapsed().as_secs_f64() / audio_s;
 
-    // --- CPU: HIGH tier (GTCRN engaged) ---
+    // --- CPU: HIGH tier (DeepFilterNet engaged) ---
     let mut high = NoiseSuppressor::new();
     let t0 = Instant::now();
     let mut hsink = 0i64;
@@ -105,20 +105,20 @@ fn gtcrn_perf_probe() {
     }
     let high_rtf = t0.elapsed().as_secs_f64() / audio_s;
 
-    // --- CPU: GTCRN alone ---
+    // --- CPU: DeepFilterNet alone ---
     let mut g_rtf = f64::NAN;
-    if gtcrn_avail {
-        let mut g = GtcrnDenoiser::new().unwrap();
+    if df_avail {
+        let mut g = DeepFilterDenoiser::new().unwrap();
         let t1 = Instant::now();
         let mut gsink = 0i64;
         for _ in 0..n_frames {
             gsink += g.process(&frame).iter().map(|s| *s as i64).sum::<i64>();
         }
         g_rtf = t1.elapsed().as_secs_f64() / audio_s;
-        assert_ne!(gsink, 0, "GTCRN produced only silence");
+        assert_ne!(gsink, 0, "DeepFilterNet produced only silence");
     }
 
-    // --- RAM: VmRSS delta for the GTCRN stage (Linux) ---
+    // --- RAM: VmRSS delta for the DeepFilterNet stage (Linux) ---
     let mut rss_delta = None;
     if resident_set_bytes().is_some() {
         let mut b = NoiseSuppressor::new_light();
@@ -135,10 +135,10 @@ fn gtcrn_perf_probe() {
         rss_delta = rss_on.zip(rss_base).map(|(on, base)| on.saturating_sub(base));
     }
 
-    // --- GTCRN streaming latency ---
+    // --- DeepFilterNet streaming latency ---
     let mut g_latency_ms = f64::NAN;
-    if gtcrn_avail {
-        let mut g = GtcrnDenoiser::new().unwrap();
+    if df_avail {
+        let mut g = DeepFilterDenoiser::new().unwrap();
         let silence = vec![0i16; FRAME];
         let onset_frame = 100;
         let tone = tone_frame(220.0, 0);
@@ -171,7 +171,7 @@ fn gtcrn_perf_probe() {
     let light_db = db_reduction(probe_rms, rms(&off.process(probe)));
 
     let mut on_db = 0.0;
-    if gtcrn_avail {
+    if df_avail {
         let mut on = NoiseSuppressor::new();
         for c in noise.chunks(FRAME).take(20) {
             on.process(c);
@@ -182,7 +182,7 @@ fn gtcrn_perf_probe() {
     // --- Speech-in-noise survives the high tier ---
     let mut speech_in_noise_out_rms = 0.0;
     let mut noise_only_out_rms = 0.0;
-    if gtcrn_avail {
+    if df_avail {
         let mut sn = NoiseSuppressor::new();
         for i in 0..20 {
             let sp = speech_frame(i);
@@ -205,41 +205,41 @@ fn gtcrn_perf_probe() {
 
     // --- Report ---
     println!();
-    println!("=== GTCRN (sherpa-onnx) PROBE — LIGHT vs HIGH ===");
-    println!("GTCRN (sherpa-onnx) available : {gtcrn_avail}");
+    println!("=== DeepFilterNet PROBE — LIGHT vs HIGH ===");
+    println!("DeepFilterNet available : {df_avail}");
     println!("audio benchmarked              : {audio_s:.0} s ({n_frames} frames)");
     println!();
     println!("-- CPU (RTF = wall s / audio s; 1.0 = real-time) --");
     println!("LIGHT (RNNoise+NS)     RTF : {light_rtf:.3}  ({:.1}% of a core)", light_rtf * 100.0);
-    println!("HIGH  (GTCRN)          RTF : {high_rtf:.3}  ({:.1}% of a core)", high_rtf * 100.0);
-    if gtcrn_avail {
-        println!("GTCRN ALONE            RTF : {g_rtf:.3}");
-        println!("GTCRN STREAMING LATENCY     : {g_latency_ms:.0} ms  (want <= 80)");
+    println!("HIGH  (DeepFilterNet) RTF : {high_rtf:.3}  ({:.1}% of a core)", high_rtf * 100.0);
+    if df_avail {
+        println!("DeepFilterNet ALONE   RTF : {g_rtf:.3}");
+        println!("DeepFilterNet STREAMING LATENCY     : {g_latency_ms:.0} ms  (want <= 80)");
     }
     println!();
     println!("-- RAM (Linux VmRSS, warmed chain) --");
     match rss_delta {
-        Some(b) => println!("GTCRN MARGINAL RSS          : +{:.1} MB", b as f64 / (1024.0 * 1024.0)),
-        None => println!("GTCRN MARGINAL RSS          : n/a (non-Linux host)"),
+        Some(b) => println!("DeepFilterNet MARGINAL RSS          : +{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+        None => println!("DeepFilterNet MARGINAL RSS          : n/a (non-Linux host)"),
     }
     println!();
     println!("-- NOISE REDUCTION (stationary noise, dB) --");
     println!("LIGHT : {light_db:.1} dB");
     println!("HIGH  : {on_db:.1} dB");
-    if gtcrn_avail {
+    if df_avail {
         println!("SPEECH+NOISE out RMS : {speech_in_noise_out_rms:.4} (noise-only out: {noise_only_out_rms:.4})");
     }
     println!("=== end probe ===");
     println!();
 
-    assert!(gtcrn_avail, "sherpa-onnx/GTCRN failed to load on this host");
+    assert!(df_avail, "DeepFilterNet failed to load on this host");
     assert!(light_rtf < 1.0, "light tier cannot keep up with real-time: RTF {light_rtf:.3}");
     assert!(high_rtf < 1.0, "high tier cannot keep up with real-time: RTF {high_rtf:.3}");
-    if gtcrn_avail {
-        assert!(g_rtf < 0.5, "GTCRN alone too slow for real-time: RTF {g_rtf:.3}");
-        assert!(g_latency_ms <= 80.0, "GTCRN streaming latency too high: {g_latency_ms:.0} ms");
-        assert!(on_db > light_db, "GTCRN should reduce noise more than light: {light_db:.1} -> {on_db:.1} dB");
-        assert!(on_db >= 40.0, "GTCRN should deliver strong noise reduction: {on_db:.1} dB");
+    if df_avail {
+        assert!(g_rtf < 0.5, "DeepFilterNet alone too slow for real-time: RTF {g_rtf:.3}");
+        assert!(g_latency_ms <= 80.0, "DeepFilterNet streaming latency too high: {g_latency_ms:.0} ms");
+        assert!(on_db > light_db, "DeepFilterNet should reduce noise more than light: {light_db:.1} -> {on_db:.1} dB");
+        assert!(on_db >= 40.0, "DeepFilterNet should deliver strong noise reduction: {on_db:.1} dB");
         assert!(speech_in_noise_out_rms > noise_only_out_rms, "speech must survive the high tier");
     }
     assert_ne!(lsink, 0, "light tier produced only silence");

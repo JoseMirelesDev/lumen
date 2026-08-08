@@ -25,21 +25,26 @@ webrtc-audio-processing.workspace = true
 # NetEQ-inspired adaptive jitter buffer for the receive path (replaces the
 # hand-rolled JitterBuffer). Core-only: no cpal/axum/tokio/ropus features.
 neteq = { version = "0.9", default-features = false }
-# RNNoise (pure-Rust port) neural noise suppression — the Krisp-style NS that
-# beats the classic WebRTC NS on non-stationary background noise. No C deps.
+# ndarray: DeepFilterNet's DfTract::process takes/returns Array2 views.
+ndarray = "0.15"
+# RNNoise (pure-Rust port) neural noise suppression — the LIGHT fallback (used
+# only if DeepFilterNet can't load). No C deps.
 nnnoiseless = "0.5"
-# GTCRN neural denoiser (sherpa-onnx): 32-38 dB noise reduction, ~10x real-time
-# on this CPU. On Linux/macOS the prebuilt static lib links cleanly; on Windows
-# the prebuilt static lib is built with the MSVC /MT (static) CRT, which clashes
-# with Rust's default /MD and breaks the link with LNK2005 (multiply-defined
-# std symbols). Use the shared (DLL) onnxruntime on Windows instead: it uses
-# /MD like the rest of the build, and sherpa-onnx-sys copies the DLLs next to
-# the exe at build time. Replaces RNNoise as the primary send-path denoiser.
-[target.'cfg(windows)'.dependencies]
-sherpa-onnx = { version = "1.13", default-features = false, features = ["shared"] }
-
-[target.'cfg(not(windows))'.dependencies]
-sherpa-onnx = { version = "1.13", default-features = false, features = ["static"] }
+# DeepFilterNet3 (full-band 48 kHz) — the primary send-path denoiser. This is
+# the Rust core (`libDF`) using `tract` (a pure-Rust ONNX runtime), so there is
+# NO onnxruntime and no C-symbol collision. Measured ~4-5% of a core (RTF
+# ~0.04) on a 2014 i5 with full 48 kHz bandwidth — strictly cheaper AND better
+# than the old GTCRN (16 kHz band-limited, ~23% of a core). The `default-model`
+# feature embeds DeepFilterNet3_onnx.tar.gz. We import it as `df`.
+df = { package = "deep_filter", git = "https://github.com/Rikorose/DeepFilterNet", features = ["tract", "default-model"] }
+# Pin tract to the version libDF was built against (its repo Cargo.lock uses
+# 0.21.4; the latest 0.21.x changed the API and breaks deep_filter), and kstring
+# to 2.0.0 (2.0.4 requires rustc 1.96; our toolchain is 1.94).
+tract-core = "=0.21.4"
+tract-onnx = "=0.21.4"
+tract-pulse = "=0.21.4"
+tract-hir = "=0.21.4"
+kstring = "=2.0.0"
 
 [dev-dependencies]
 reqwest.workspace = true
