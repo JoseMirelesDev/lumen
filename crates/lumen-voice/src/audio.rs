@@ -948,8 +948,8 @@ unsafe impl Send for DeepFilterDenoiser {}
 pub struct SpeechLeveler {
     /// Target RMS for speech after gain (~ -18 dBFS).
     target_rms: f32,
-    /// Max gain factor (+12 dB). Discord-style AGC is moderate: too much gain
-    /// (the old 16x) made the denoiser's residual noise audible in gaps.
+    /// Max gain factor (+15.6 dB). Enough to bring a quiet mic (RMS 0.02) up
+    /// to the target; higher gains risk making the denoiser's residual audible.
     max_gain: f32,
     /// Current smoothed gain factor.
     gain: f32,
@@ -962,8 +962,9 @@ pub struct SpeechLeveler {
 }
 
 const VAD_ON: f32 = 0.5;
-/// ~100 ms of hold at 20 ms frames.
-const HANGOVER_FRAMES: u32 = 5;
+/// ~240 ms of hold at 20 ms frames. Covers typical inter-word pauses so
+/// the gain doesn't drop and re-ramp between words ("volume rollercoaster").
+const HANGOVER_FRAMES: u32 = 12;
 
 
 /// Post-denoise RMS (0..1) that maps to a full VAD probability in the neural
@@ -979,8 +980,8 @@ const SPEECH_ENERGY_REF: f32 = 0.03;
 impl SpeechLeveler {
     pub fn new() -> Self {
         Self {
-            target_rms: 0.10,
-            max_gain: 4.0,
+            target_rms: 0.12,
+            max_gain: 6.0,
             gain: 1.0,
             vad_smooth: 0.0,
             speech_rms: 0.001,
@@ -994,17 +995,25 @@ impl SpeechLeveler {
         self.vad_smooth = self.vad_smooth * 0.8 + vad * 0.2;
         let speech = self.vad_smooth > VAD_ON;
         if speech {
-            // In production `frame_rms` is the fresh pre-gain level (the caller
-            // measures before we apply gain), so track it directly with a fast
-            // attack and slow release.
+            // Track speech level with moderate attack and slow release so
+            // natural syllable-level variation doesn't pump the gain.
+            // Old code used instant attack (speech_rms = frame_rms) which
+            // made gain drop on every loud syllable → "volume rollercoaster".
             if frame_rms > self.speech_rms {
-                self.speech_rms = frame_rms;
+                self.speech_rms = self.speech_rms * 0.7 + frame_rms * 0.3;
             } else {
-                self.speech_rms = self.speech_rms * 0.9 + frame_rms * 0.1;
+                self.speech_rms = self.speech_rms * 0.97 + frame_rms * 0.03;
             }
             let desired =
                 (self.target_rms / self.speech_rms.max(0.0001)).clamp(1.0, self.max_gain);
-            self.gain = self.gain * 0.85 + desired * 0.15;
+            // Asymmetric gain smoothing: fast reduction (avoid clipping on a
+            // sudden loud burst), slow increase (avoid pumping).  Old code
+            // used a single 0.85/0.15 filter (τ ≈ 140 ms) — way too reactive.
+            if desired < self.gain {
+                self.gain = self.gain * 0.9 + desired * 0.1; // τ ≈ 200 ms
+            } else {
+                self.gain = self.gain * 0.93 + desired * 0.07; // τ ≈ 300 ms
+            }
             self.hold = HANGOVER_FRAMES;
         } else if self.hold > 0 {
             self.hold -= 1;
