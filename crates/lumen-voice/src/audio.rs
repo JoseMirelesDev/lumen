@@ -327,30 +327,34 @@ mod wasapi_raw {
 
     fn parse_format(mix: *const WAVEFORMATEX) -> anyhow::Result<(u32, usize, Fmt)> {
         unsafe {
-            // WAVEFORMATEX is `packed(1)`, so copy it out rather than reading
-            // fields through a reference (E0793: unaligned packed field).
-            let f: WAVEFORMATEX = std::ptr::read_unaligned(mix);
-            let rate = f.nSamplesPerSec;
-            let channels = f.nChannels as usize;
+            // WAVEFORMATEX is `packed(1)`, so read each field unaligned via a
+            // raw pointer (`addr_of!` + `read_unaligned`) — referencing a field
+            // of a packed struct is E0793.
+            let rate = std::ptr::addr_of!((*mix).nSamplesPerSec).read_unaligned();
+            let channels = std::ptr::addr_of!((*mix).nChannels).read_unaligned() as usize;
+            let tag = std::ptr::addr_of!((*mix).wFormatTag).read_unaligned();
+            let bits = std::ptr::addr_of!((*mix).wBitsPerSample).read_unaligned();
             if channels == 0 || rate == 0 {
                 anyhow::bail!("bad mix format: rate={rate} ch={channels}");
             }
-            let fmt = if f.wFormatTag == WAVE_FORMAT_IEEE_FLOAT {
+            let fmt = if tag == WAVE_FORMAT_IEEE_FLOAT {
                 Fmt::F32
-            } else if f.wFormatTag == WAVE_FORMAT_PCM && f.wBitsPerSample == 16 {
+            } else if tag == WAVE_FORMAT_PCM && bits == 16 {
                 Fmt::I16
-            } else if f.wFormatTag == WAVE_FORMAT_EXTENSIBLE {
-                let ext: WAVEFORMATEXTENSIBLE =
-                    std::ptr::read_unaligned(mix as *const WAVEFORMATEXTENSIBLE);
-                if ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+            } else if tag == WAVE_FORMAT_EXTENSIBLE {
+                let sub = std::ptr::addr_of!(
+                    (*(mix as *const WAVEFORMATEXTENSIBLE)).SubFormat
+                )
+                .read_unaligned();
+                if sub == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
                     Fmt::F32
-                } else if ext.SubFormat == KSDATAFORMAT_SUBTYPE_PCM && f.wBitsPerSample == 16 {
+                } else if sub == KSDATAFORMAT_SUBTYPE_PCM && bits == 16 {
                     Fmt::I16
                 } else {
-                    anyhow::bail!("unsupported extensible mic format ({})", f.wBitsPerSample);
+                    anyhow::bail!("unsupported extensible mic format ({bits})");
                 }
             } else {
-                anyhow::bail!("unsupported mic format tag {}", f.wFormatTag);
+                anyhow::bail!("unsupported mic format tag {tag}");
             };
             Ok((rate, channels, fmt))
         }
