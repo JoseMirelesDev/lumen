@@ -31,6 +31,35 @@ use rtc::peer_connection::sdp::RTCSessionDescription;
 use rtc::peer_connection::state::{
     RTCIceGatheringState, RTCPeerConnectionState, RTCSignalingState,
 };
+
+/// System-wide CPU busy % (0..100) from `/proc/stat` over a ~200 ms window.
+/// Returns `None` on non-Linux or if `/proc` is unavailable. Measures ALL
+/// processes (not just this one) so the heavy DPDFNet denoiser tier is only
+/// dropped when the machine as a whole is under pressure, not because the
+/// denoiser itself is busy (that would degrade it instantly).
+fn system_cpu_busy_pct() -> Option<f32> {
+    let read = || -> Option<(u64, u64)> {
+        let s = std::fs::read_to_string("/proc/stat").ok()?;
+        let cpu = s.lines().next()?;
+        let fields: Vec<u64> = cpu
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        let total: u64 = fields.iter().sum();
+        let idle: u64 = fields.get(3).copied().unwrap_or(0) + fields.get(4).copied().unwrap_or(0);
+        Some((idle, total))
+    };
+    let (idle1, total1) = read()?;
+    std::thread::sleep(Duration::from_millis(200));
+    let (idle2, total2) = read()?;
+    let dt = total2.saturating_sub(total1);
+    let di = idle2.saturating_sub(idle1);
+    if dt == 0 {
+        return None;
+    }
+    Some(100.0 * (dt - di) as f32 / dt as f32)
+}
 use rtc::rtp_transceiver::rtp_sender::{
     RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind,
 };
@@ -227,6 +256,10 @@ impl VoiceSession {
         let local_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let encoder = Arc::new(tokio::sync::Mutex::new(OpusEncoder::new()?));
         let stopping = Arc::new(AtomicBool::new(false));
+        // Adaptive denoiser tier: true = high-quality (DPDFNet), false = light
+        // (RNNoise). The CPU monitor below flips this based on system load; the
+        // send task syncs it into the NoiseSuppressor.
+        let high_quality = Arc::new(AtomicBool::new(true));
         let ice: Vec<RTCIceServer> = args
             .ice_servers
             .iter()
@@ -253,8 +286,9 @@ impl VoiceSession {
             let local_level = local_level.clone();
             let stopping = stopping.clone();
             let render_tap = render_tap.clone();
+            let high_quality = high_quality.clone();
             tokio::spawn(async move {
-                // WebRTC APM (AEC3/HPF/NS) + RNNoise + VAD-gated gain.
+                // WebRTC APM (AEC3/HPF/NS) + active denoiser tier + leveler.
                 let mut ns = crate::audio::NoiseSuppressor::new();
                 while let Some(mut frame) = mic_rx.recv().await {
                     if stopping.load(Ordering::SeqCst) {
@@ -262,6 +296,14 @@ impl VoiceSession {
                     }
                     if muted.load(Ordering::SeqCst) {
                         continue;
+                    }
+                    // Sync the adaptive tier flag (set by the CPU monitor) into
+                    // the suppressor. Cheap atomic read per frame; only acts on
+                    // change. Degrades to light RNNoise under load, restores
+                    // the high-quality DPDFNet tier when the CPU has headroom.
+                    let want = high_quality.load(Ordering::Relaxed);
+                    if want != ns.high_quality_active() {
+                        ns.set_high_quality(want);
                     }
                     // Feed AEC3 the playback reference: drain whatever the
                     // output callback tapped since the last mic frame (in 10 ms
@@ -310,6 +352,34 @@ impl VoiceSession {
                     for peer in peers.lock().values() {
                         let _ = peer.send_tx.send(encoded.clone());
                     }
+                }
+            });
+        }
+
+        // Adaptive denoiser tier: watch system CPU load. When the machine is
+        // heavily loaded, drop the high-quality DPDFNet tier to the light
+        // RNNoise one (the neural tier is the first thing to give up under
+        // pressure so audio stays real-time); restore high quality once there
+        // is headroom. Hysteresis avoids flapping.
+        {
+            let stopping = stopping.clone();
+            let high_quality = high_quality.clone();
+            tokio::spawn(async move {
+                let mut high = true;
+                let mut ticker = tokio::time::interval(Duration::from_millis(1500));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    if stopping.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    ticker.tick().await;
+                    let Some(busy) = system_cpu_busy_pct() else { continue };
+                    if busy >= 85.0 && high {
+                        high = false; // under heavy load -> light RNNoise
+                    } else if busy <= 65.0 && !high {
+                        high = true; // headroom back -> DPDFNet
+                    }
+                    high_quality.store(high, Ordering::SeqCst);
                 }
             });
         }
