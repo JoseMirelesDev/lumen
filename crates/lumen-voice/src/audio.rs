@@ -151,6 +151,8 @@ mod wasapi_raw {
     const AUDCLNT_STREAMFLAGS_SYSTEM_MODE_RAW: u32 = 0x0000_0400;
     const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
     const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+    // Shadow the crate's u32 WAVE_FORMAT_PCM (wFormatTag is u16).
+    const WAVE_FORMAT_PCM: u16 = 1;
     const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
 
     const CLSID_MMDEVICE_ENUMERATOR: GUID = GUID {
@@ -362,11 +364,13 @@ mod wasapi_raw {
     ) {
         match fmt {
             Fmt::I16 => {
-                let samples = std::slice::from_raw_parts(data as *const i16, frames * channels);
+                let samples =
+                    unsafe { std::slice::from_raw_parts(data as *const i16, frames * channels) };
                 feed(resampler, samples, channels, acc, frames_tx);
             }
             Fmt::F32 => {
-                let samples = std::slice::from_raw_parts(data as *const f32, frames * channels);
+                let samples =
+                    unsafe { std::slice::from_raw_parts(data as *const f32, frames * channels) };
                 let mut s16: Vec<i16> = Vec::with_capacity(samples.len());
                 for &v in samples {
                     s16.push((v * 32767.0) as i16);
