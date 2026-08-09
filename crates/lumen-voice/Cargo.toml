@@ -54,6 +54,12 @@ tract-hir = "=0.21.4"
 kstring = "=2.0.0"
 
 [dev-dependencies]
+# DPDFNet 48k probe: tract already comes via deep_filter (same 0.21.4 in the
+# lock) — rustfft/ndarray are already in the tree via other crates.
+tract-onnx = "0.21.4"
+tract-core = "0.21.4"
+rustfft = "6"
+ndarray = "0.15"
 reqwest.workspace = true
 
 # cpal 0.18.1's WASAPI code requires `windows` + `windows-core` to resolve as a
