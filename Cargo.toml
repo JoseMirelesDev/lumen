@@ -59,3 +59,11 @@ wry = { path = "vendor/wry" }
 # Vendored webrtc-audio-processing-sys patch: drops the GCC-only
 # -Wno-unused-parameter flag that breaks MSVC (cl D8021).
 webrtc-audio-processing-sys = { path = "vendor/webrtc-audio-processing-sys" }
+
+# Disk policy: dev builds keep ONLY line tables (file:line in backtraces), not
+# full debug symbols. Test binaries drop from ~315 MB to ~30-40 MB each and
+# the tract/df rlibs from ~430 MB to a fraction. RUST_BACKTRACE still shows
+# file:line; local variable inspection via a debugger needs a one-off
+# `RUSTFLAGS=-Cdebuginfo=2 cargo build`.
+[profile.dev]
+debug = "line-tables-only"

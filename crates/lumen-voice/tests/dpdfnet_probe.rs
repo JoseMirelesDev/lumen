@@ -193,7 +193,7 @@ fn dpdfnet_probe() {
     }
     let proc_s = t0.elapsed().as_secs_f64();
     let audio_s = capture.len() as f64 / RATE as f64;
-    println!("RTF (debug build): {:.3}  ({} s audio in {:.2} s)",
+    println!("RTF: {:.3}  ({} s audio in {:.2} s)",
         proc_s / audio_s, audio_s, proc_s);
 
     // ---- delay compensation (knf center trim + sherpa shift) ----
