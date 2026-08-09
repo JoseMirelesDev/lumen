@@ -27,6 +27,20 @@ fn mix(a: &[i16], b: &[i16]) -> Vec<i16> {
         .collect()
 }
 
+/// Deterministic pseudo-random white noise (xorshift) — same generator as
+/// the audio_quality_probe.
+fn xorshift_noise(samples: usize, scale: i16) -> Vec<i16> {
+    let mut state = 0x1234_5678u32;
+    (0..samples)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            ((state >> 8) as i16) / scale
+        })
+        .collect()
+}
+
 fn load(path: &str) -> Vec<i16> {
     use std::io::Read;
     let mut file =
@@ -105,6 +119,36 @@ fn prod_chain_preview() {
     write_wav("../../samples/prod_chain_preview.wav", &out);
     println!("output written: samples/prod_chain_preview.wav");
     println!("output RMS {:.4} ({:.1} dBFS), peak {:?} — same scenario as the A/B chains",
+        rms_level(&out), 20.0 * rms_level(&out).log10(),
+        out.iter().map(|s| s.unsigned_abs()).max());
+
+    // ---- Hard scenario: the probe's worst case (quiet mic + noise + echo) ----
+    // Same input as audio_quality_probe scenario A: the sample with its
+    // low-SNR opening skipped, voice x0.5, room noise at RMS 0.01, echo.
+    let mut near = speech.clone();
+    near.drain(..5 * RATE as usize);
+    near.truncate(near.len() - near.len() % FRAME);
+    let quiet = scale(&near, 0.5);
+    let echo_delay = 50 * RATE as usize / 1000;
+    let mut echo = vec![0i16; echo_delay];
+    echo.extend(scale(&render[..render.len() - echo_delay], 0.4));
+    let noise_raw = xorshift_noise(near.len(), 4);
+    let noise = scale(&noise_raw, 0.01 / rms_level(&noise_raw));
+    let mic = mix(&mix(&quiet, &noise), &echo);
+    write_wav("../../samples/prod_chain_hard_input.wav", &mic);
+    println!("hard input written: samples/prod_chain_hard_input.wav");
+    println!("  (quiet voice RMS {:.4}, noise RMS {:.4}, echo RMS {:.4})",
+        rms_level(&quiet), rms_level(&noise), rms_level(&echo));
+
+    let mut ns = NoiseSuppressor::new();
+    let mut out = Vec::with_capacity(mic.len());
+    for (i, frame) in mic.chunks_exact(FRAME).enumerate() {
+        ns.process_render_frame(&render[i * FRAME..(i + 1) * FRAME]);
+        out.extend(ns.process(frame));
+    }
+    write_wav("../../samples/prod_chain_preview_hard.wav", &out);
+    println!("hard output written: samples/prod_chain_preview_hard.wav");
+    println!("output RMS {:.4} ({:.1} dBFS), peak {:?}",
         rms_level(&out), 20.0 * rms_level(&out).log10(),
         out.iter().map(|s| s.unsigned_abs()).max());
 }
