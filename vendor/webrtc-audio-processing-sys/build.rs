@@ -407,10 +407,11 @@ fn main() -> Result<()> {
         .file("src/wrapper.cpp")
         .includes(&include_dirs)
         .flag("-std=c++17")
-        // Vendored patch: `-Wno-unused-parameter` is a GCC/Clang flag that
-        // cc-rs passes verbatim to MSVC's cl.exe, which errors with D8021
-        // ("invalid numeric argument"). It only suppresses a warning; safe to
-        // drop unconditionally.
+        // Vendored patch: silence the header tree's unused-parameter warnings
+        // (they flood every build). `flag_if_supported` probes the flag, so
+        // MSVC (D8021) simply skips it — unlike the previous unconditional
+        // `-Wno-unused-parameter`.
+        .flag_if_supported("-Wno-unused-parameter")
         .out_dir(out_dir());
 
     // Inform wrapper code that headers for internal classes (ResidualEchoDetector) are available.
