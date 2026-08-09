@@ -173,7 +173,10 @@ fn voice_harness() {
         })
         .collect();
 
-    // Capture: original speech (+ optional echo/noise).
+    // Capture: original speech (+ optional echo/noise). HARNESS_VOICE scales
+    // the speech (e.g. 0.5 = the quiet-mic hard case the probes use).
+    let voice_gain = env_f32("HARNESS_VOICE", 1.0);
+    let mut speech = scale(&speech, voice_gain);
     let mut echo = vec![0i16; 2400];
     echo.extend(scale(&render[..render.len() - 2400], 0.4));
     let mut capture = mix(&speech, &echo);
