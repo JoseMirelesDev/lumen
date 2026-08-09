@@ -886,11 +886,11 @@ impl NoiseSuppressor {
     }
 
     /// Suppress noise in a 48 kHz mono frame (length must be a multiple of
-    /// 480, e.g. 960). AEC3 + high-pass + WebRTC NS run first (WebRTC APM);
-    /// then the active denoiser — the high-quality DPDFNet tier when engaged,
-    /// or RNNoise (the light tier) — then VAD-gated adaptive gain. WebRTC NS
-    /// stays on in both tiers (the light tier needs it; on the neural tier it
-    /// is cheap and the neural enhancement dominates).
+    /// 480, e.g. 960). The production chain: AEC3 + high-pass + WebRTC NS +
+    /// GainController2 (all inside the WebRTC APM) + peak limiting. The
+    /// opt-in tiers then replace the APM output with the denoiser's — the
+    /// neural tier (DeepFilterNet, `new_neural`) or the light tier
+    /// (RNNoise, `new_light`); with `new()` the APM output is final.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
         // WebRTC APM: AEC3 + high-pass + NS (always on — see chain()).
         let out: Vec<i16> = match self.processor.as_mut() {
