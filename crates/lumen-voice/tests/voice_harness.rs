@@ -157,6 +157,10 @@ fn voice_harness() {
     }
 
     let mut speech = load("../../samples/real_speech_es_48k.wav");
+    // HARNESS_DRAIN=<s> skips the sample's low-SNR opening (the probes drain
+    // 5 s) so A/B files share the same input as prod_chain_preview.
+    let drain = env_u32("HARNESS_DRAIN", 0) as usize * RATE as usize;
+    speech.drain(..drain.min(speech.len() - speech.len() % FRAME));
     speech.truncate(speech.len() - speech.len() % FRAME);
     let n_frames = speech.len() / FRAME;
 
@@ -176,7 +180,7 @@ fn voice_harness() {
     // Capture: original speech (+ optional echo/noise). HARNESS_VOICE scales
     // the speech (e.g. 0.5 = the quiet-mic hard case the probes use).
     let voice_gain = env_f32("HARNESS_VOICE", 1.0);
-    let mut speech = scale(&speech, voice_gain);
+    let speech = scale(&speech, voice_gain);
     let mut echo = vec![0i16; 2400];
     echo.extend(scale(&render[..render.len() - 2400], 0.4));
     let mut capture = mix(&speech, &echo);
