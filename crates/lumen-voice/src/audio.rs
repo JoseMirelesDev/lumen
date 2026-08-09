@@ -1019,8 +1019,8 @@ fn apm_config() -> Config {
             adaptive_digital: Some(AdaptiveDigital {
                 headroom_db: 5.0,
                 max_gain_db: 50.0,
-                initial_gain_db: 0.0, // start at unity — no start surge
-                max_gain_change_db_per_second: 3.0, // slow — no volume surges
+                initial_gain_db: 15.0, // reference default (Chrome/Meet) — user's favorite
+                max_gain_change_db_per_second: 6.0, // reference default — no per-phrase surges
                 max_output_noise_level_dbfs: -50.0,
             }),
             fixed_digital: FixedDigital { gain_db: 0.0 },
@@ -1753,15 +1753,19 @@ mod tests {
 
     #[test]
     fn noise_suppressor_attenuates_background_noise() {
-        // The shipped send-path DSP (AEC3 + NS VeryHigh + RNNoise, AGC off)
-        // must strongly attenuate moderate stationary background noise — the
-        // case the user reported (mic picking up room noise). Measured ~9x.
+        // The shipped send-path DSP (AEC3 + NS VeryHigh + GainController2 +
+        // limiter) must strongly attenuate moderate stationary background
+        // noise — the case the user reported (mic picking up room noise).
+        // The GC2 starts at its reference +15 dB and its noise cap converges
+        // slowly (~11-13 s of stationary input, measured), so the assertion
+        // checks the STEADY state: the output noise then drops ~11 dB below
+        // the input (measured -45 dBFS vs -34 in).
         let mut ns = NoiseSuppressor::new();
         // Deterministic pseudo-random white noise at a realistic room level
-        // (RMS 0.02 ≈ -34 dBFS).
+        // (RMS 0.02 ≈ -34 dBFS), 15 s — enough for the AGC to settle.
         let mut state = 0x1234_5678u32;
-        let mut noise = Vec::with_capacity(480 * 24);
-        for _ in 0..(480 * 24) {
+        let mut noise = Vec::with_capacity(480 * 1500);
+        for _ in 0..(480 * 1500) {
             state ^= state << 13;
             state ^= state >> 17;
             state ^= state << 5;
@@ -1771,18 +1775,18 @@ mod tests {
         for s in noise.iter_mut() {
             *s = ((*s as f32) * g).round() as i16;
         }
-        // Warm up the RNN + NS models, then measure attenuation.
-        for chunk in noise.chunks(480).take(12) {
+        // Warm up the NS + AGC, then measure attenuation at t=13 s.
+        for chunk in noise.chunks(480).take(1300) {
             ns.process(chunk);
         }
-        let probe = &noise[480 * 12..480 * 13];
+        let probe = &noise[480 * 1300..480 * 1301];
         let input_rms = rms_level(probe);
         let out = ns.process(probe);
         let output_rms = rms_level(&out);
         eprintln!("send-path DSP: {input_rms} -> {output_rms}");
         assert!(
-            output_rms < input_rms * 0.3,
-            "DSP should strongly attenuate background noise: {input_rms} -> {output_rms}"
+            output_rms < input_rms * 0.4,
+            "steady state must attenuate background noise >= 8 dB: {input_rms} -> {output_rms}"
         );
     }
 

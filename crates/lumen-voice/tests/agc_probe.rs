@@ -1,8 +1,8 @@
 //! Send-chain probe — the winning chain (AEC3 + NS VeryHigh + GainController2
-//! + limiter). The GC2 adapts slowly by design (initial gain 0, 3 dB/s — no
-//! per-phrase volume surges), so the probe feeds a LONG input (speech.wav x5
-//! ≈ 20 s) and asserts on the steady state: audible once settled, stable
-//! across windows (no surges).
+//! + limiter). The GC2 uses the reference defaults (initial gain 15 dB,
+//! 6 dB/s — no per-phrase volume surges), so the probe feeds a LONG input
+//! (speech.wav x5 ≈ 20 s) and asserts on the steady state: audible once
+//! settled, stable across windows (no surges).
 //!
 //! Run: `cargo test -p lumen-voice --test agc_probe -- --nocapture`
 
@@ -34,7 +34,7 @@ fn send_chain_levels() {
     let n_frames = speech.len() / FRAME;
 
     println!("=== Send-chain probe (AEC3 + NS + GC2 + limiter) ===");
-    println!("Audio: {:.1} s, {n_frames} frames @ {RATE} Hz (speech.wav x5 — the GC2 needs time)",
+    println!("Audio: {:.1} s, {n_frames} frames @ {RATE} Hz (speech.wav x5 — the GC2 settles quickly)",
         n_frames as f64 * 0.02);
     println!();
 
