@@ -205,6 +205,10 @@ mod webrtc {
         let status = cp.status().context("executing cp")?;
         assert!(status.success(), "Command failed: {:?}", &cp);
 
+        // AEC3 transparent initial state (see the patch header) — always on:
+        // near-end speech must not be swallowed while the AEC converges.
+        apply_patch("aec3-transparent-initial-state.patch")?;
+
         #[cfg(feature = "experimental-unlink-ns")]
         apply_patch("unlink-multichannel-noise-suppression-filters.patch")?;
 
@@ -245,7 +249,6 @@ mod webrtc {
     }
 
     // Patch with `patch`.
-    #[cfg(feature = "experimental-unlink-ns")]
     fn apply_patch(patch_name: &str) -> Result<()> {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let patch = manifest.join("patches").join(patch_name);

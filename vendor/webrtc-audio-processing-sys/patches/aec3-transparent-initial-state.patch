@@ -1,0 +1,39 @@
+diff -r a/webrtc/modules/audio_processing/aec3/echo_remover.cc b/webrtc/modules/audio_processing/aec3/echo_remover.cc
+--- a/webrtc/modules/audio_processing/aec3/echo_remover.cc
++++ b/webrtc/modules/audio_processing/aec3/echo_remover.cc
+@@ -439,6 +439,17 @@
+                               cng_.NoiseSpectrum(), render_signal_analyzer_,
+                               aec_state_, x, clock_drift, &high_bands_gain, &G);
+ 
++    // Transparent initial state: while the AEC has not converged (or right
++    // after an echo-path-change reset), do not apply the nonlinear
++    // suppression gain — pass the linear-filter output so near-end speech is
++    // never swallowed during convergence. The residual echo is audible
++    // briefly, the tradeoff Chrome/Meet make with their transparent AEC3
++    // initial state.
++    if (suppression_gain_.InitialStateActive()) {
++      G.fill(1.f);
++      high_bands_gain = 1.f;
++    }
++
+     suppression_filter_.ApplyGain(comfort_noise, high_band_comfort_noise, G,
+                                   high_bands_gain, Y_fft, y);
+ 
+diff -r a/webrtc/modules/audio_processing/aec3/suppression_gain.h b/webrtc/modules/audio_processing/aec3/suppression_gain.h
+--- a/webrtc/modules/audio_processing/aec3/suppression_gain.h
++++ b/webrtc/modules/audio_processing/aec3/suppression_gain.h
+@@ -64,6 +64,14 @@
+   // Toggles the usage of the initial state.
+   void SetInitialState(bool state);
+ 
++  // Returns whether the initial (not-yet-converged) state is active. While
++  // active, the suppressor runs transparently (see echo_remover.cc): the
++  // linear-filter output is passed without the nonlinear suppression gain, so
++  // near-end speech is never swallowed during convergence or after an
++  // echo-path-change reset — the same tradeoff upstream WebRTC makes with
++  // `aec3.initial_state = kTransparent`.
++  bool InitialStateActive() const { return initial_state_; }
++
+  private:
+   // Computes the gain to apply for the bands beyond the first band.
+   float UpperBandsGain(
