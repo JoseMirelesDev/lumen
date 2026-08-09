@@ -50,12 +50,18 @@ fn write_wav(path: &str, pcm: &[i16]) {
     std::fs::write(path, &buf).unwrap_or_else(|e| panic!("write {path}: {e}"));
 }
 
-/// Vorbis window (Kaldi convention): sin(pi/2 * sin(pi*n/(N-1))^2).
+/// Vorbis window, EXACT sherpa-onnx formula (math.cc MakeVorbisWindow):
+/// w(i) = sin(pi/2 * sin(pi*(i+0.5)/N)^2) — half-sample offset, power-
+/// complementary (w^2(i)+w^2(i+N/2) == 1), so WOLA with hop N/2
+/// reconstructs perfectly. The earlier (N-1)-style window without the
+/// offset modulated the amplitude at the frame rate (~100 Hz) — the
+/// audible hum.
 fn vorbis_window(n: usize) -> Vec<f32> {
+    let half = n as f32 / 2.0;
     (0..n)
         .map(|i| {
-            let a = (std::f32::consts::PI * i as f32 / (n - 1) as f32).sin();
-            (std::f32::consts::FRAC_PI_2 * a * a).sin()
+            let s = (std::f32::consts::FRAC_PI_2 * (i as f32 + 0.5) / half).sin();
+            (std::f32::consts::FRAC_PI_2 * s * s).sin()
         })
         .collect()
 }
@@ -171,13 +177,30 @@ fn dpdfnet_probe() {
             enhanced_istft[start + i] += buf2[i].re * inv * win[i];
         }
     }
+    // WOLA normalization (knf IStft::GetDenominator): divide by the sum of
+    // w^2 per sample over the overlapping frames. With the exact window the
+    // denominator is ~1 everywhere; this keeps the reconstruction exact.
+    let mut denom = vec![0f32; enhanced_istft.len()];
+    for f in 0..n_frames {
+        for i in 0..N_FFT {
+            denom[f * HOP + i] += win[i] * win[i];
+        }
+    }
+    for (o, &d) in enhanced_istft.iter_mut().zip(denom.iter()) {
+        if d > 1e-6 {
+            *o /= d;
+        }
+    }
     let proc_s = t0.elapsed().as_secs_f64();
     let audio_s = capture.len() as f64 / RATE as f64;
     println!("RTF (debug build): {:.3}  ({} s audio in {:.2} s)",
         proc_s / audio_s, audio_s, proc_s);
 
-    // ---- delay compensation: shift by window_length*2, truncate ----
-    let shift = N_FFT * 2;
+    // ---- delay compensation (knf center trim + sherpa shift) ----
+    // knf trims n_fft/2 on each side; sherpa then shifts by window_length*2.
+    // The net content alignment is OLA[480..480+len] (the shift only adds a
+    // 40 ms delay — same sound).
+    let shift = N_FFT / 2;
     let mut out: Vec<i16> = Vec::with_capacity(capture.len());
     for i in shift..shift + capture.len() {
         out.push((enhanced_istft[i] * 32767.0).round().clamp(-32768.0, 32767.0) as i16);
