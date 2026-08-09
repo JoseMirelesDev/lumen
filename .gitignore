@@ -33,3 +33,6 @@ apps/backend/.dev.vars.*
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 dist-artifacts/
+
+# regenerable A/B + probe audio (voice_harness, *_probe)
+samples/

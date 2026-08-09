@@ -10,6 +10,7 @@
 
 use parking_lot::Mutex;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rubato::Resampler as _;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,6 +23,76 @@ pub const CLOCK_RATE: u32 = 48_000;
 // ---------------------------------------------------------------------------
 // Mic capture
 // ---------------------------------------------------------------------------
+
+/// Band-limited device→48 kHz resampler (rubato SincFixedIn). Linear
+/// interpolation aliases badly when a webcam/cheap mic delivers 16 kHz
+/// (3× upsample); sinc resampling is the WebRTC-standard approach.
+///
+/// `None` sinc = passthrough for the common 48 kHz device case (the capture
+/// setup prefers a 48 kHz config below, and WASAPI mix format is 48 kHz in
+/// practice) — no point running a sinc filter at ratio 1.0.
+struct CaptureResampler {
+    sinc: Option<rubato::SincFixedIn<f32>>,
+    /// Pending mono device-rate samples (< the 960-sample input chunk).
+    stage: Vec<i16>,
+}
+
+impl CaptureResampler {
+    fn new(src_rate: u32) -> Self {
+        let sinc = if src_rate == 48_000 {
+            None
+        } else {
+            let ratio = 48_000.0 / src_rate as f64;
+            Some(
+                rubato::SincFixedIn::<f32>::new(
+                    ratio,
+                    10.0, // max relative ratio change
+                    rubato::SincInterpolationParameters {
+                        sinc_len: 128,
+                        f_cutoff: 0.95,
+                        oversampling_factor: 128,
+                        interpolation: rubato::SincInterpolationType::Linear,
+                        window: rubato::WindowFunction::BlackmanHarris2,
+                    },
+                    960, // fixed input chunk (20 ms @ 48 kHz)
+                    1,
+                )
+                .expect("rubato params are valid"),
+            )
+        };
+        Self { sinc, stage: Vec::with_capacity(960) }
+    }
+
+    /// Same call shape as the old `LinearResampler::resample`.
+    fn resample(&mut self, mono: &[i16]) -> Vec<i16> {
+        let Some(sinc) = self.sinc.as_mut() else {
+            return mono.to_vec();
+        };
+        self.stage.extend_from_slice(mono);
+        let mut out = Vec::new();
+        while self.stage.len() >= 960 {
+            let chunk: Vec<f32> = self
+                .stage
+                .drain(..960)
+                .map(|s| s as f32 / 32768.0)
+                .collect();
+            // SincFixedIn consumes exactly the 960-sample input chunk and
+            // produces chunk_size*ratio output frames (channels-first).
+            let channels = sinc.process(&[chunk], None).expect("resample ok");
+            out.extend(
+                channels[0]
+                    .iter()
+                    .map(|v| {
+                        (v * 32767.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        out
+    }
+}
 
 /// Handle to the running mic capture (cpal, or the Windows WASAPI raw path).
 /// Dropping it stops the mic.
@@ -65,9 +136,34 @@ fn cpal_capture(
 ) -> anyhow::Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host.default_input_device().ok_or_else(|| anyhow::anyhow!("no input device"))?;
-    let config = device.default_input_config()?;
+    // Prefer a 48 kHz input config so most devices skip capture resampling
+    // entirely; fall back to the device default otherwise.
+    let config = {
+        let mut best: Option<cpal::SupportedStreamConfig> = None;
+        if let Ok(configs) = device.supported_input_configs() {
+            for c in configs {
+                if let Some(cfg) = c.try_with_sample_rate(48_000) {
+                    let mono = cfg.channels() == 1;
+                    let better = match &best {
+                        None => true,
+                        Some(b) => mono && b.channels() != 1,
+                    };
+                    if better {
+                        best = Some(cfg);
+                        if mono {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        match best {
+            Some(c) => c,
+            None => device.default_input_config()?,
+        }
+    };
     let channels = config.channels() as usize;
-    let mut resampler = LinearResampler::new(config.sample_rate(), CLOCK_RATE);
+    let mut resampler = CaptureResampler::new(config.sample_rate());
     let mut acc: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES);
     let err_fn = |err| eprintln!("lumen voice: input stream error: {err}");
     let stream_config = config.config();
@@ -104,7 +200,7 @@ fn cpal_capture(
 }
 
 fn feed(
-    resampler: &mut LinearResampler,
+    resampler: &mut CaptureResampler,
     data: &[i16],
     channels: usize,
     acc: &mut Vec<i16>,
@@ -280,7 +376,7 @@ mod wasapi_raw {
             // Signal ready (the capture loop is about to run).
             let _ = ready_tx.send(Ok(()));
 
-            let mut resampler = LinearResampler::new(rate, CLOCK_RATE);
+            let mut resampler = CaptureResampler::new(rate);
             let mut acc: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES);
             loop {
                 if stop.load(Ordering::SeqCst) {
@@ -361,7 +457,7 @@ mod wasapi_raw {
     }
 
     fn feed_wasapi(
-        resampler: &mut LinearResampler,
+        resampler: &mut CaptureResampler,
         data: *mut u8,
         frames: usize,
         channels: usize,
@@ -412,6 +508,10 @@ struct OutputState {
     buf: Vec<i16>,
     /// 48 kHz -> device rate, applied to each decoded frame on push.
     resampler: LinearResampler,
+    /// Device rate -> 48 kHz for the AEC render reference (AEC3 runs at
+    /// 48 kHz; feeding device-rate samples pitch-shifts the reference on
+    /// non-48 kHz outputs and breaks echo cancellation).
+    tap_resampler: LinearResampler,
     /// Output device channel count (typically 2 — stereo).
     channels: usize,
     /// Device-rate samples per 20 ms frame (device_rate / 50).
@@ -489,10 +589,13 @@ impl AudioOutput {
         let ch = st.channels.max(1);
         let frames = out.len() / ch;
         let n = st.buf.len().min(frames);
-        // AEC reference: copy what is actually played (mono, device rate)
-        // into the render tap, drained by the send path for AEC3.
+        // AEC reference: copy what is actually played (mono, device rate) —
+        // resampled to 48 kHz, the rate AEC3 expects (feeding device-rate
+        // samples directly would time-stretch the reference on non-48 kHz
+        // outputs and break echo cancellation).
         if n > 0 {
-            self.render_tap.lock().extend_from_slice(&st.buf[..n]);
+            let tap = st.tap_resampler.resample(&st.buf[..n]);
+            self.render_tap.lock().extend_from_slice(&tap);
         }
         for f in 0..n {
             let s = st.buf[f];
@@ -515,6 +618,7 @@ impl AudioOutput {
         *self.state.lock() = Some(OutputState {
             buf: Vec::with_capacity((dev_rate / 2) as usize),
             resampler: LinearResampler::new(CLOCK_RATE, dev_rate),
+            tap_resampler: LinearResampler::new(dev_rate, CLOCK_RATE),
             channels: config.channels() as usize,
             frame_size: ((dev_rate as usize) * FRAME_SAMPLES / CLOCK_RATE as usize).max(1),
             dropped_samples: 0,
@@ -584,6 +688,11 @@ impl OpusEncoder {
         // audio. 32 kbps was fine for the old 8 kHz band-limited GTCRN output;
         // with full-band tiers it was the bottleneck. Encode cost is trivial.
         encoder.set_bitrate(opus::Bitrate::Bits(64_000))?;
+        // DTX: since we transmit every frame, silence becomes ~5-byte packets
+        // — negligible bandwidth/CPU during listening-heavy calls. Inband FEC
+        // stays off (it requires 60 ms frames, +40 ms latency; Discord also
+        // uses 20 ms frames).
+        encoder.set_dtx(true)?;
         Ok(Self { encoder })
     }
 
@@ -647,16 +756,56 @@ impl neteq::codec::AudioDecoder for NetEqOpusDecoder {
 }
 
 // ---------------------------------------------------------------------------
+// RNNoise (voice-transparent denoiser)
+// ---------------------------------------------------------------------------
+
+/// Stateless wrapper over the RNNoise denoiser (the open ancestor of the
+/// Krisp approach — trained with speech preservation as the objective).
+/// Exposed for the harness/probes to A/B against DeepFilterNet and the
+/// WebRTC NS; returns the denoised frame plus the frame's VAD probability.
+pub struct RnnoiseDenoiser {
+    state: Box<nnnoiseless::DenoiseState<'static>>,
+}
+
+impl RnnoiseDenoiser {
+    pub fn new() -> Self {
+        Self { state: nnnoiseless::DenoiseState::new() }
+    }
+
+    /// Denoise a 48 kHz frame (multiple of 480) and return the VAD (0..1).
+    pub fn process(&mut self, frame: &[i16]) -> (Vec<i16>, f32) {
+        let mut out = vec![0i16; frame.len()];
+        let mut input = [0f32; 480];
+        let mut denoised = [0f32; 480];
+        let mut max_vad = 0.0f32;
+        for (chunk, out_chunk) in frame.chunks_exact(480).zip(out.chunks_exact_mut(480)) {
+            for (i, s) in chunk.iter().enumerate() {
+                input[i] = *s as f32 / 32768.0;
+            }
+            let v = self.state.process_frame(&mut denoised, &input);
+            max_vad = max_vad.max(v);
+            for (i, v) in denoised.iter().enumerate() {
+                out_chunk[i] = (v * 32767.0)
+                    .round()
+                    .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            }
+        }
+        (out, max_vad)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Noise suppression (WebRTC AudioProcessing — the module Chrome/Discord use)
 // ---------------------------------------------------------------------------
 
 use webrtc_audio_processing::config::{
-    Config, EchoCanceller, HighPassFilter, NoiseSuppression, NoiseSuppressionLevel,
+    AdaptiveDigital, Config, EchoCanceller, FixedDigital, GainController, GainController2,
+    HighPassFilter, NoiseSuppression, NoiseSuppressionLevel,
 };
 use webrtc_audio_processing::Processor;
 
-/// Send-path DSP: WebRTC AudioProcessing (AEC3 + high-pass + fixed-digital
-/// AGC) followed by RNNoise (neural noise suppression, Krisp-style).
+/// Send-path DSP: WebRTC AudioProcessing (AEC3 + high-pass + limiter)
+/// followed by RNNoise (neural noise suppression, Krisp-style).
 ///
 /// - AEC3 (`EchoCanceller::Full`, auto-delay) cancels the speaker echo picked
 ///   up by the mic — the caller must feed the playback stream into
@@ -677,9 +826,6 @@ pub struct NoiseSuppressor {
     /// the old GTCRN. `None` means the model failed to load and we fall back
     /// to RNNoise.
     neural: Option<DeepFilterDenoiser>,
-    /// VAD-gated AGC (Discord-style): boosts quiet speech after denoising,
-    /// decays to unity on silence so the denoiser's residual stays un-boosted.
-    leveler: SpeechLeveler,
     /// Whether the last processed frame contained speech (DeepFilterNet LSNR
     /// in the neural path, RNNoise VAD in the fallback).
     speech_detected: bool,
@@ -689,35 +835,36 @@ pub struct NoiseSuppressor {
 }
 
 impl NoiseSuppressor {
+    /// The winning send-path chain (harness A/B): WebRTC APM only — AEC3
+    /// (transparent-initial-state patch) + HPF + NS VeryHigh + GainController2,
+    /// then the peak limiter. No external denoiser and no custom leveler.
     pub fn new() -> Self {
-        // DeepFilterNet3 by default (full-band, ~4-5% of a core). If the model
-        // fails to load, falls back to the RNNoise light path. No runtime tier
-        // switching: DeepFilterNet is cheaper than RNNoise, so there is no
-        // cheaper tier to degrade to under load.
-        Self::chain(DeepFilterDenoiser::new())
+        Self::chain(None, false)
     }
 
-    /// Construct the send-path DSP in LIGHT mode only (WebRTC AEC3/NS +
-    /// RNNoise, no DeepFilterNet). Used by probes/tests.
+    /// The DeepFilterNet tier (AEC3 + NS + GC2 + DeepFilterNet) — kept as an
+    /// optional enhancement for very noisy environments; measured to damage
+    /// the voice more than the NS-only chain (see the harness diary).
+    pub fn new_neural() -> Self {
+        Self::chain(DeepFilterDenoiser::new(), false)
+    }
+
+    /// The RNNoise tier (AEC3 + NS + GC2 + RNNoise) — kept for the light
+    /// fallback; RNNoise cuts quiet words (measured p10 -51.8 dB).
     pub fn new_light() -> Self {
-        Self::chain(None)
+        Self::chain(None, true)
     }
 
-    /// Shared construction: WebRTC APM (AEC3 + HPF) plus the optional
-    /// DeepFilterNet denoiser. Classic WebRTC NS is ON only in the light
-    /// (RNNoise) path: DeepFilterNet is the denoiser, and running NS before
-    /// it double-colors the speech. AGC is OFF (measured: the fixed-digital
-    /// AGC amplified background noise before NS removed it).
-    fn chain(neural: Option<DeepFilterDenoiser>) -> Self {
+    /// Shared construction: WebRTC APM plus the optional external denoiser.
+    fn chain(neural: Option<DeepFilterDenoiser>, rnnoise: bool) -> Self {
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
-            processor.set_config(apm_config(neural.is_some()));
+            processor.set_config(apm_config());
             processor
         });
         Self {
             processor,
-            rnnoise: Some(nnnoiseless::DenoiseState::new()),
+            rnnoise: if rnnoise { Some(nnnoiseless::DenoiseState::new()) } else { None },
             neural,
-            leveler: SpeechLeveler::new(),
             speech_detected: false,
             last_lsnr: None,
         }
@@ -771,54 +918,46 @@ impl NoiseSuppressor {
         };
         // Denoise with the active tier and derive the speech signal.
         let mut result: Vec<i16>;
-        let vad: f32;
-        let rms: f32;
         if let Some(n) = self.neural.as_mut() {
-            // DeepFilterNet: the primary denoiser. The VAD comes from the
-            // model's own LSNR (local SNR, dB) — computed inside the neural
-            // spectral estimate, so it doesn't confuse a quiet speaker (low
-            // RMS, high LSNR) with silence. LSNR < -10 dB → noise only;
-            // > 30 dB → clean speech; map onto a [0..1] VAD probability.
+            // DeepFilterNet tier (opt-in): the VAD comes from the model's own
+            // LSNR (local SNR, dB) — mapped onto a [0..1] probability.
             let (denoised, lsnr) = n.process(&out);
             result = denoised;
             self.last_lsnr = Some(lsnr);
-            let r = rms_level(&result);
-            vad = ((lsnr - (-10.0)) / 40.0).clamp(0.0, 1.0);
-            rms = r;
-        } else {
+            let vad = ((lsnr - (-10.0)) / 40.0).clamp(0.0, 1.0);
+            self.speech_detected = vad > 0.5;
+        } else if let Some(rn) = self.rnnoise.as_mut() {
+            // RNNoise tier (opt-in): its own VAD drives the speaking meter.
             self.last_lsnr = None;
-            // Light fallback: RNNoise denoising and its VAD — full-band.
             result = vec![0i16; out.len()];
             let mut max_vad = 0.0f32;
-            match self.rnnoise.as_mut() {
-                Some(rn) => {
-                    let mut input = [0f32; 480];
-                    let mut denoised = [0f32; 480];
-                    for (chunk, out_chunk) in out.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
-                        for (i, s) in chunk.iter().enumerate() {
-                            input[i] = *s as f32 / 32768.0;
-                        }
-                        let v = rn.process_frame(&mut denoised, &input);
-                        max_vad = max_vad.max(v);
-                        for (i, v) in denoised.iter().enumerate() {
-                            out_chunk[i] = (v * 32767.0)
-                                .round()
-                                .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                        }
-                    }
+            let mut input = [0f32; 480];
+            let mut denoised = [0f32; 480];
+            for (chunk, out_chunk) in out.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
+                for (i, s) in chunk.iter().enumerate() {
+                    input[i] = *s as f32 / 32768.0;
                 }
-                None => result.copy_from_slice(&out),
+                let v = rn.process_frame(&mut denoised, &input);
+                max_vad = max_vad.max(v);
+                for (i, v) in denoised.iter().enumerate() {
+                    out_chunk[i] = (v * 32767.0)
+                        .round()
+                        .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                }
             }
-            let r = rms_level(&result);
-            vad = max_vad;
-            rms = r;
-        };
-        // Discord-style AGC: the leveler applies gain only when the VAD (from
-        // DeepFilterNet LSNR, or RNNoise VAD in the light tier) detects
-        // speech, chasing a target RMS. On silence the gain decays to unity,
-        // so the denoiser's residual noise is never amplified — the order
-        // (denoise first, then gain) is what keeps amplification clean.
-        self.speech_detected = self.leveler.process(vad, rms, &mut result);
+            self.speech_detected = max_vad > 0.5;
+        } else {
+            // The default chain: the APM already did AEC3 + NS + GC2 — no
+            // external denoiser, no custom leveler (the GC2's adaptive gain
+            // is the AGC; a per-phrase leveler caused the volume surges).
+            self.last_lsnr = None;
+            result = out;
+            self.speech_detected = rms_level(&result) > 0.01;
+        }
+        // Final safety net: cap the encoded i16 range at -1 dBFS so a hot mic
+        // can never hard-clip after the leveler (clipping = harsh distortion
+        // that Opus then encodes).
+        limit_peaks(&mut result, 1.0);
         result
     }
 
@@ -845,11 +984,6 @@ impl NoiseSuppressor {
         self.neural.is_some()
     }
 
-    /// The current AGC gain factor (1.0 = unity). For diagnostics/probes.
-    pub fn agc_gain(&self) -> f32 {
-        self.leveler.gain()
-    }
-
     /// LSNR (dB) of the most recently processed frame in the neural tier;
     /// `None` in the light (RNNoise) tier. For diagnostics/probes.
     pub fn last_lsnr(&self) -> Option<f32> {
@@ -860,21 +994,37 @@ impl NoiseSuppressor {
 /// Build the WebRTC APM config for a given denoiser tier. AEC3 + high-pass are
 /// always on; WebRTC NS (VeryHigh, ~9x stationary-noise attenuation) is ON in
 /// the light tier (RNNoise needs it) and OFF in the neural tier (DeepFilterNet is the
-/// denoiser; NS before it would double-color the speech). AGC is always OFF
-/// (the fixed-digital AGC amplified background noise before NS removed it).
-fn apm_config(neural: bool) -> Config {
+/// denoiser; NS before it would double-color the speech). The gain controller
+/// runs in limiter-only mode (fixed digital, zero compression gain): it never
+/// boosts (the fixed-digital AGC amplified background noise before NS removed
+/// it) but hard-limits peaks to -1 dBFS so the denoiser never sees full-scale
+/// clips from a hot mic.
+/// Build the WebRTC APM config. The winning chain (harness A/B, measured):
+/// AEC3 (transparent-initial-state patch) + HPF + NS VeryHigh + GainController2
+/// (adaptive digital: starts at unity, adapts at 3 dB/s — no per-phrase gain
+/// ramps / volume surges; noise floor capped at -50 dBFS). No external
+/// denoiser (DeepFilterNet/RNNoise damaged the voice more than they helped:
+/// their aggressive masks attenuated clean speech by 10-50 dB on the worst
+/// frames, and the AGC normalizes the noise floor anyway).
+fn apm_config() -> Config {
     Config {
         echo_canceller: Some(EchoCanceller::Full { stream_delay_ms: None }),
         high_pass_filter: Some(HighPassFilter { apply_in_full_band: true }),
-        noise_suppression: if neural {
-            None
-        } else {
-            Some(NoiseSuppression {
-                level: NoiseSuppressionLevel::VeryHigh,
-                analyze_linear_aec_output: false,
-            })
-        },
-        gain_controller: None,
+        noise_suppression: Some(NoiseSuppression {
+            level: NoiseSuppressionLevel::VeryHigh,
+            analyze_linear_aec_output: false,
+        }),
+        gain_controller: Some(GainController::GainController2(GainController2 {
+            input_volume_controller_enabled: false,
+            adaptive_digital: Some(AdaptiveDigital {
+                headroom_db: 5.0,
+                max_gain_db: 50.0,
+                initial_gain_db: 0.0, // start at unity — no start surge
+                max_gain_change_db_per_second: 3.0, // slow — no volume surges
+                max_output_noise_level_dbfs: -50.0,
+            }),
+            fixed_digital: FixedDigital { gain_db: 0.0 },
+        })),
         ..Config::default()
     }
 }
@@ -909,9 +1059,19 @@ impl DeepFilterDenoiser {
         // beta = the crate's own default). It tightens residual suppression in
         // speech-adjacent bins — the residual the AGC could otherwise amplify —
         // at a negligible per-frame cost (a multiply/add on ~481 complex bins).
+        // Lower min_db_thresh (-10 -> -20): frames whose LSNR sits in
+        // [-20, -10) get the full DNN mask instead of the ZERO mask (the
+        // `lsnr < min_db_thresh` branch outputs silence). Measured on the real
+        // input: the AEC3's residual suppression pushes quiet-speech frames
+        // below -10 dB LSNR, and the zero mask made ~16% of speech frames
+        // disappear entirely ("cortado"). With -20 those frames come out
+        // ~-16 dB attenuated (audible) instead of cut; noise residual stays
+        // -81 dBFS (200x below the leveler's floor).
         match DfTract::new(
             DfParams::default(),
-            &RuntimeParams::default().with_post_filter(0.02),
+            &RuntimeParams::default()
+                .with_post_filter(0.02)
+                .with_thresholds(-20.0, 30.0, 20.0),
         ) {
             Ok(model) => Some(Self { model }),
             Err(e) => {
@@ -977,21 +1137,28 @@ unsafe impl Send for DeepFilterDenoiser {}
 // Speech leveler: VAD-gated adaptive gain
 // ---------------------------------------------------------------------------
 /// VAD-gated adaptive gain (a sidechain compressor): raises quiet speech to a
-/// target level and gates silence, so a cheap/quiet mic is audible WITHOUT
-/// amplifying background noise.
+/// target level and attenuates loud speech down toward it, gating silence, so
+/// a cheap/quiet mic is audible WITHOUT amplifying background noise and a
+/// hot/loud mic is turned down instead of clipping.
 ///
 /// WebRTC's adaptive AGC (GainController2) was measured to boost the noise
 /// floor (+15 dB on quiet noise), so we do the gate ourselves: the VAD signal
 /// (DeepFilterNet LSNR in the neural path, RNNoise VAD in the fallback) opens
 /// the gain, which chases a target RMS and holds through a hangover so words
 /// aren't clipped; on silence the gain decays to unity (no boost), leaving
-/// the already-suppressed noise inaudible.
+/// the already-suppressed noise inaudible. The gate is OR-ed with an absolute
+/// post-denoise level floor ([`SPEECH_RMS_FLOOR`]) so the boost survives the
+/// model's LSNR drift on long streams (the LSNR collapses after ~20 s of
+/// continuous speech; the denoised level is still a reliable speech signal).
 pub struct SpeechLeveler {
     /// Target RMS for speech after gain (~ -18 dBFS).
     target_rms: f32,
     /// Max gain factor (+18 dB). Enough to bring a quiet mic (RMS 0.015) up
     /// to the target. Safe because the LSNR VAD keeps the gate shut on noise.
     max_gain: f32,
+    /// Min gain factor (0.25 = -12 dB) — loud/hot mics are attenuated toward
+    /// the target instead of left at unity to clip.
+    min_gain: f32,
     /// Current smoothed gain factor.
     gain: f32,
     /// Smoothed voice-activity probability (0..1).
@@ -1003,9 +1170,19 @@ pub struct SpeechLeveler {
 }
 
 const VAD_ON: f32 = 0.5;
-/// ~500 ms of hold at 20 ms frames. Covers inter-sentence pauses so the gain
-/// doesn't decay and re-ramp between sentences ("volume rollercoaster").
-const HANGOVER_FRAMES: u32 = 25;
+/// Absolute post-denoise RMS floor (-34 dBFS) that opens the gain gate even
+/// when the model's LSNR VAD has drifted closed on long streams (measured:
+/// the LSNR collapses after ~20 s of continuous speech). After
+/// DeepFilterNet/RNNoise, a frame this loud cannot be residual noise (measured
+/// residual: neural ~0.0000, light worst frame 0.0018 — 11x margin), so it is
+/// safe to treat as speech and boost toward the target. Rescues the quiet-mic
+/// range (input >= -34 dBFS) from the drift.
+const SPEECH_RMS_FLOOR: f32 = 0.02;
+/// ~1 s of hold at 20 ms frames. Covers inter-sentence pauses (typical
+/// 0.2-0.3 s) so the gain doesn't decay and re-ramp between phrases — a
+/// decayed gain recovers slowly, attenuating the first syllables of the next
+/// phrase ("volume rollercoaster" / swallowed phrase starts).
+const HANGOVER_FRAMES: u32 = 50;
 
 /// Max per-frame gain change after IIR smoothing: ±0.3 at 20 ms/frame is
 /// ~15 dB/s slew — fast enough for speech onset, slow enough to suppress
@@ -1017,9 +1194,14 @@ impl SpeechLeveler {
         Self {
             target_rms: 0.12,
             max_gain: 8.0,
+            min_gain: 0.25,
             gain: 1.0,
             vad_smooth: 0.0,
-            speech_rms: 0.001,
+            // Start the level estimate near the target level so `desired`
+            // (~2.4x) is right from the first frame: with 0.001 the gain
+            // clamped to 8x and overshot to ~5x on the first words of a call
+            // before settling ("descalibrado" start).
+            speech_rms: 0.05,
             hold: 0,
         }
     }
@@ -1043,28 +1225,31 @@ impl SpeechLeveler {
     /// and RMS. Returns true if speech was detected this frame.
     pub fn process(&mut self, vad: f32, frame_rms: f32, samples: &mut [i16]) -> bool {
         self.vad_smooth = self.vad_smooth * 0.8 + vad * 0.2;
-        let speech = self.vad_smooth > VAD_ON;
+        // Gate: the model's VAD (LSNR) OR an absolute post-denoise level floor.
+        // The floor covers the LSNR drift on long streams: after the denoiser,
+        // a frame at -34 dBFS RMS or louder is speech (residual noise is far
+        // below), so we keep boosting even when the model stops flagging it.
+        let speech = self.vad_smooth > VAD_ON || frame_rms > SPEECH_RMS_FLOOR;
         if speech {
-            // Track speech level with moderate attack and slow release so
-            // natural syllable-level variation doesn't pump the gain.
-            // Old code used instant attack (speech_rms = frame_rms) which
-            // made gain drop on every loud syllable → "volume rollercoaster".
+            // Track the speaker's AVERAGE level with a slow estimator (attack
+            // τ ~400 ms, release ~1 s) so syllable-level dynamics do NOT move
+            // the gain — only sustained loudness changes do. Old code used a
+            // 0.3/frame attack (τ ~67 ms): a single loud syllable yanked
+            // speech_rms up, dropped the gain, and the following quieter
+            // syllables came out attenuated.
             if frame_rms > self.speech_rms {
-                self.speech_rms = self.speech_rms * 0.7 + frame_rms * 0.3;
+                self.speech_rms = self.speech_rms * 0.95 + frame_rms * 0.05;
             } else {
-                self.speech_rms = self.speech_rms * 0.97 + frame_rms * 0.03;
+                self.speech_rms = self.speech_rms * 0.98 + frame_rms * 0.02;
             }
             let desired =
-                (self.target_rms / self.speech_rms.max(0.0001)).clamp(1.0, self.max_gain);
-            // Asymmetric gain smoothing: fast reduction (avoid clipping on a
-            // sudden loud burst), slow increase (avoid pumping).  Old code
-            // used a single 0.85/0.15 filter (τ ≈ 140 ms) — way too reactive.
+                (self.target_rms / self.speech_rms.max(0.0001)).clamp(self.min_gain, self.max_gain);
+            // Gain smoothing: fast reduction (avoid clipping on a sudden loud
+            // burst) and fast-ish increase (recover the boost within ~200 ms
+            // at phrase starts). With the slow speech_rms estimator, `desired`
+            // is stable, so the increase speed cannot pump.
             let prev_gain = self.gain;
-            let new_gain = if desired < self.gain {
-                self.gain * 0.9 + desired * 0.1 // τ ≈ 200 ms
-            } else {
-                self.gain * 0.93 + desired * 0.07 // τ ≈ 300 ms
-            };
+            let new_gain = self.gain * 0.9 + desired * 0.1; // τ ≈ 200 ms
             // Rate-limit the per-frame gain CHANGE after the IIR (rate-limiting
             // `desired` first would starve the IIR). At 20 ms/frame, ±0.3 is
             // ~15 dB/s — fast enough for speech onset but slow enough that a
@@ -1083,7 +1268,7 @@ impl SpeechLeveler {
             // Silence: decay the boost toward unity so noise stays un-boosted.
             self.gain = (self.gain - 1.0) * 0.85 + 1.0;
         }
-        if self.gain > 1.0001 {
+        if (self.gain - 1.0).abs() > 0.0001 {
             for s in samples.iter_mut() {
                 *s = ((*s as f32) * self.gain)
                     .round()
@@ -1237,6 +1422,21 @@ pub fn rms_level(pcm: &[i16]) -> f32 {
     (sum / pcm.len() as f64).sqrt() as f32
 }
 
+/// Brickwall limiter: if the frame's peak exceeds `ceiling_db` dBFS, scale
+/// the whole frame down so the peak lands exactly at the ceiling; no-op
+/// otherwise. ceiling_db 1.0 = -1 dBFS. Used on send (after the leveler)
+/// and on the receive mix.
+pub fn limit_peaks(samples: &mut [i16], ceiling_db: f32) {
+    let ceiling = 10f32.powf(-ceiling_db / 20.0) * 32767.0;
+    let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0) as f32;
+    if peak > ceiling {
+        let gain = ceiling / peak;
+        for s in samples.iter_mut() {
+            *s = ((*s as f32) * gain).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,6 +1482,7 @@ mod tests {
         *output.state.lock() = Some(OutputState {
             buf: Vec::new(),
             resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
+            tap_resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
             channels: 2,
             frame_size: FRAME_SAMPLES,
             dropped_samples: 0,
@@ -1475,7 +1676,7 @@ mod tests {
         assert!(gain_after_speech > 1.0, "gain should open on speech");
         // Silence for longer than the hangover -> gain decays back toward 1.
         let silence = vec![400i16; FRAME_SAMPLES];
-        for _ in 0..(HANGOVER_FRAMES + 10) {
+        for _ in 0..(HANGOVER_FRAMES + 40) {
             let mut frame = silence.clone();
             lvl.process(0.05, rms_level(&frame), &mut frame);
         }
@@ -1488,13 +1689,65 @@ mod tests {
     }
 
     #[test]
+    fn speech_leveler_holds_gain_through_phrase_pause() {
+        // Phrase-start regression: typical inter-phrase pauses (0.2-0.6 s,
+        // measured on the real input) must NOT decay the boost — a decayed
+        // gain re-ramps and the first syllables of the next phrase come out
+        // attenuated. HANGOVER_FRAMES covers pauses up to ~1 s.
+        let mut lvl = SpeechLeveler::new();
+        let base: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| {
+                (((i as f32 / CLOCK_RATE as f32) * 2.0 * std::f32::consts::PI * 200.0).sin()
+                    * 600.0) as i16
+            })
+            .collect();
+        for _ in 0..15 {
+            let mut frame = base.clone();
+            lvl.process(0.9, rms_level(&frame), &mut frame);
+        }
+        let pre_pause = lvl.gain;
+        assert!(pre_pause > 2.0, "gain should open above unity: {pre_pause}");
+        // A 0.6 s pause (30 frames): typical between sentences.
+        let silence = vec![0i16; FRAME_SAMPLES];
+        for _ in 0..30 {
+            let mut frame = silence.clone();
+            lvl.process(0.0, 0.0, &mut frame);
+        }
+        assert!(
+            lvl.gain >= pre_pause * 0.95,
+            "gain must hold through a 0.6 s pause: {:.2} vs {pre_pause:.2}",
+            lvl.gain
+        );
+        // A longer pause (>1 s) DOES decay the gain; recovery is rate-limited
+        // (~15 dB/s) by design and the boost is back within a few frames.
+        for _ in 0..(HANGOVER_FRAMES + 10) {
+            let mut frame = silence.clone();
+            lvl.process(0.0, 0.0, &mut frame);
+        }
+        assert!(
+            lvl.gain < pre_pause * 0.5,
+            "gain must decay during a long pause: {:.2} vs {pre_pause:.2}",
+            lvl.gain
+        );
+        for _ in 0..8 {
+            let mut frame = base.clone();
+            lvl.process(0.9, rms_level(&frame), &mut frame);
+        }
+        assert!(
+            lvl.gain > 1.5,
+            "gain must recover after a long pause: {:.2}",
+            lvl.gain
+        );
+    }
+
+    #[test]
     fn noise_suppressor_attenuates_background_noise() {
         // The shipped send-path DSP (AEC3 + NS VeryHigh + RNNoise, AGC off)
         // must strongly attenuate moderate stationary background noise — the
         // case the user reported (mic picking up room noise). Measured ~9x.
         let mut ns = NoiseSuppressor::new();
-        // Deterministic pseudo-random white noise at moderate level (RMS ~0.07,
-        // like a room fan / AC in the background).
+        // Deterministic pseudo-random white noise at a realistic room level
+        // (RMS 0.02 ≈ -34 dBFS).
         let mut state = 0x1234_5678u32;
         let mut noise = Vec::with_capacity(480 * 24);
         for _ in 0..(480 * 24) {
@@ -1502,6 +1755,10 @@ mod tests {
             state ^= state >> 17;
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 8);
+        }
+        let g = 0.02 / rms_level(&noise);
+        for s in noise.iter_mut() {
+            *s = ((*s as f32) * g).round() as i16;
         }
         // Warm up the RNN + NS models, then measure attenuation.
         for chunk in noise.chunks(480).take(12) {
@@ -1522,6 +1779,10 @@ mod tests {
     fn webrtc_ns_attenuates_white_noise() {
         use webrtc_audio_processing::config::{NoiseSuppression, NoiseSuppressionLevel};
         // NS-only processor (no AGC, which would re-amplify quiet noise).
+        // Driven directly (not through NoiseSuppressor) so the leveler —
+        // which now boosts ANY post-denoise signal above its absolute floor,
+        // including loud NS residuals in this synthetic NS-only config that
+        // production never uses — cannot mask the NS module's own contract.
         let processor = Processor::new(CLOCK_RATE).expect("APM init");
         processor.set_config(Config {
             noise_suppression: Some(NoiseSuppression {
@@ -1539,15 +1800,22 @@ mod tests {
             state ^= state << 5;
             noise.push(((state >> 8) as i16) / 4);
         }
-        let mut ns = NoiseSuppressor { processor: Some(processor), rnnoise: None, neural: None, leveler: SpeechLeveler::new(), speech_detected: false, last_lsnr: None };
-        // Warm up the model, then measure attenuation.
-        for chunk in noise.chunks(480).take(12) {
-            ns.process(chunk);
+        // Warm up the model, then measure attenuation on the 13th frame.
+        let mut output_rms = 0f32;
+        for (k, chunk) in noise.chunks(480).enumerate().take(13) {
+            let mut buf = [0f32; 480];
+            for (i, s) in chunk.iter().enumerate() {
+                buf[i] = *s as f32 / 32768.0;
+            }
+            processor.process_capture_frame([&mut buf]).ok();
+            if k == 12 {
+                output_rms = rms_level(
+                    &buf.iter().map(|v| (v * 32767.0).round() as i16).collect::<Vec<_>>(),
+                );
+            }
         }
         let probe = &noise[480 * 12..480 * 13];
         let input_rms = rms_level(probe);
-        let out = ns.process(probe);
-        let output_rms = rms_level(&out);
         assert!(
             output_rms < input_rms * 0.5,
             "NS should strongly attenuate white noise: {input_rms} -> {output_rms}"
@@ -1564,6 +1832,7 @@ mod tests {
         *output.state.lock() = Some(OutputState {
             buf: Vec::new(),
             resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
+            tap_resampler: LinearResampler::new(CLOCK_RATE, CLOCK_RATE),
             channels: 1,
             frame_size: FRAME_SAMPLES,
             dropped_samples: 0,
@@ -1645,18 +1914,26 @@ mod tests {
                 .collect()
         }
         let noise: Vec<i16> = {
+            // Realistic room level (RMS 0.02 ≈ -34 dBFS) — loud enough to
+            // matter, quiet enough not to trip the near-end rescue (which
+            // only fires on clear speech, >= -32 dBFS).
             let mut state = 0x1234_5678u32;
-            (0..FRAME_SAMPLES)
+            let mut n: Vec<i16> = (0..FRAME_SAMPLES)
                 .map(|_| {
                     state ^= state << 13;
                     state ^= state >> 17;
                     state ^= state << 5;
                     ((state >> 8) as i16) / 4
                 })
-                .collect()
+                .collect();
+            let g = 0.02 / rms_level(&n);
+            for s in n.iter_mut() {
+                *s = ((*s as f32) * g).round() as i16;
+            }
+            n
         };
         // Noise: must NOT be detected as speech over many frames.
-        let mut ns = NoiseSuppressor::new();
+        let mut ns = NoiseSuppressor::new_neural();
         let mut noise_detected = false;
         for _ in 0..30 {
             ns.process(&noise);
@@ -1664,7 +1941,7 @@ mod tests {
         }
         assert!(!noise_detected, "noise must not open the VAD gate");
         // Speech: must be detected (post-denoise energy above the threshold).
-        let mut ns = NoiseSuppressor::new();
+        let mut ns = NoiseSuppressor::new_neural();
         let mut speech_detected = false;
         for i in 0..40 {
             ns.process(&speech(i));
@@ -1703,6 +1980,123 @@ mod tests {
                 "process_gated must always return Some even on noise"
             );
         }
+    }
+
+    #[test]
+    fn speech_leveler_attenuates_loud_speech() {
+        // Hot-mic regression: the leveler must TURN DOWN loud speech toward
+        // the target (symmetric gain) instead of clamping at unity and letting
+        // the signal clip.
+        let mut lvl = SpeechLeveler::new();
+        // Loud speech-like signal: sine amplitude 14000, RMS ≈ 0.30.
+        let loud: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| {
+                (((i as f32 / CLOCK_RATE as f32) * 2.0 * std::f32::consts::PI * 200.0).sin()
+                    * 14000.0) as i16
+            })
+            .collect();
+        let before = rms_level(&loud);
+        let mut out = loud.clone();
+        for _ in 0..40 {
+            let mut frame = loud.clone();
+            lvl.process(1.0, rms_level(&frame), &mut frame);
+            out = frame;
+        }
+        let after = rms_level(&out);
+        eprintln!("speech leveler: loud {before:.4} -> {after:.4}, gain {}", lvl.gain());
+        assert!(lvl.gain() < 0.6, "loud speech should be attenuated, gain {}", lvl.gain());
+        assert!(after < before, "loud speech must not pass through at unity: {before} -> {after}");
+    }
+
+    #[test]
+    fn peak_limiter_caps_loud_peaks() {
+        let ceiling = 10f32.powf(-1.0 / 20.0) * 32767.0; // -1 dBFS
+        // Full-scale square frame (alternating ±32767).
+        let mut frame: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| if i % 2 == 0 { i16::MAX } else { -i16::MAX })
+            .collect();
+        limit_peaks(&mut frame, 1.0);
+        assert!(
+            frame.iter().all(|&s| (s.unsigned_abs() as f32) <= ceiling + 1.0),
+            "limiter left samples above -1 dBFS"
+        );
+        // Input already below the ceiling passes through bit-exact.
+        let quiet: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| ((i as f64 * 0.1).sin() * 5000.0) as i16)
+            .collect();
+        let mut copy = quiet.clone();
+        limit_peaks(&mut copy, 1.0);
+        assert_eq!(copy, quiet, "sub-ceiling input must pass through unchanged");
+    }
+
+    #[test]
+    fn webrtc_limiter_caps_fullscale() {
+        use webrtc_audio_processing::config::{GainController, GainController1, GainControllerMode};
+        // Limiter-only APM gain controller — the Step-2 config: fixed digital,
+        // zero compression gain (no boost), hard ceiling at -1 dBFS.
+        let processor = Processor::new(CLOCK_RATE).expect("APM init");
+        processor.set_config(Config {
+            gain_controller: Some(GainController::GainController1(GainController1 {
+                mode: GainControllerMode::FixedDigital,
+                target_level_dbfs: 1,
+                compression_gain_db: 0,
+                enable_limiter: true,
+                analog_gain_controller: None,
+            })),
+            ..Config::default()
+        });
+        // Full-scale sine capture frames (amplitude 32767).
+        let mut sine = Vec::with_capacity(480 * 24);
+        for i in 0..(480 * 24) {
+            let t = i as f64 / CLOCK_RATE as f64;
+            sine.push(((2.0 * std::f64::consts::PI * 200.0 * t).sin() * 32767.0) as i16);
+        }
+        let ceiling = 10f32.powf(-1.0 / 20.0) * 32767.0;
+        let mut peak = 0f32;
+        for chunk in sine.chunks_exact(480) {
+            let mut buf = [0f32; 480];
+            for (i, s) in chunk.iter().enumerate() {
+                buf[i] = *s as f32 / 32768.0;
+            }
+            processor.process_capture_frame([&mut buf]).expect("10 ms block");
+            for &v in &buf {
+                peak = peak.max(v.abs() * 32767.0);
+            }
+        }
+        eprintln!("APM limiter: full-scale sine peak -> {peak:.1} (ceiling {ceiling:.1})");
+        assert!(
+            peak <= ceiling + 1.0,
+            "APM limiter failed to cap full-scale input: peak {peak} > ceiling {ceiling}"
+        );
+    }
+
+    #[test]
+    fn aec_tap_is_resampled_to_48k() {
+        // Bug A regression: the AEC3 render reference must be 48 kHz even on a
+        // non-48 kHz output device (44.1 kHz here) — feeding device-rate
+        // samples to AEC3 time-stretches the echo reference (~8.8 %) and
+        // breaks echo cancellation.
+        let mut output = AudioOutput::new();
+        let tap = Arc::new(Mutex::new(Vec::new()));
+        output.set_render_tap(tap.clone());
+        *output.state.lock() = Some(OutputState {
+            buf: Vec::new(),
+            resampler: LinearResampler::new(CLOCK_RATE, 44_100),
+            tap_resampler: LinearResampler::new(44_100, CLOCK_RATE),
+            channels: 1,
+            frame_size: 882,
+            dropped_samples: 0,
+        });
+        let frame: Vec<i16> = (0..FRAME_SAMPLES)
+            .map(|i| ((i as f64 * 0.05).sin() * 2000.0) as i16)
+            .collect();
+        output.push(&frame); // 960 @ 48 kHz -> 882 @ 44.1 kHz
+        let mut out = vec![0i16; 882]; // 10 ms @ 44.1 kHz
+        output.drain_into(&mut out);
+        // The tap holds exactly what was played, resampled back to 48 kHz:
+        // 882 device-rate samples -> 960 (10 ms @ 48 kHz).
+        let tap_len = tap.lock().len();
+        assert_eq!(tap_len, 960, "AEC tap must be 48 kHz (10 ms), got {tap_len}");
     }
 }
 

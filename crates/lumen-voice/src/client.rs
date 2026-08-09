@@ -292,16 +292,19 @@ impl VoiceSession {
                         frame = f;
                     }
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
-                    // CPU-saving VAD gate: when there is no speech (and the
-                    // hangover has lapsed) `process_gated` returns None and we
-                    // skip AEC3 + GTCRN + Opus + transmit entirely — a call is
-                    // mostly "listening", so silence costs almost nothing. When
-                    // speech is present (or within the hangover) we run the full
-                    // chain and transmit. `Always` mode still runs the gate
-                    // (no benefit to denoising+encoding silence); `VoiceActivated`
-                    // additionally relies on `speech_detected` for the meter.
+                    // Always-transmit (Discord/Krisp-style): `process_gated`
+                    // runs the full chain (AEC3 + denoiser + leveler + limiter)
+                    // and ALWAYS returns `Some(cleaned)` — every denoised frame
+                    // is encoded and sent. DeepFilterNet strips noise
+                    // spectrally (its output on a quiet room is near-zero), so
+                    // transmitting silence costs nothing audible; a binary
+                    // gate caused hard cuts at speech edges. Opus DTX makes
+                    // the silence frames ~5-byte packets, so listening-heavy
+                    // calls cost negligible bandwidth/CPU. `speech_detected`
+                    // still drives the speaking meter.
                     let Some(cleaned) = ns.process_gated(&frame) else {
-                        // Silence: nothing to encode or send.
+                        // Unreachable today (process_gated always returns
+                        // Some); kept as a defensive no-op.
                         continue;
                     };
                     let encoded = match encoder.lock().await.encode(&cleaned) {
@@ -407,6 +410,11 @@ impl VoiceSession {
                         for (i, a) in acc.iter().enumerate() {
                             mixed[i] = (*a).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                         }
+                        // Several loud peers at once can push the sum past full
+                        // scale; brickwall-limit the mix so it can't distort
+                        // (clipping distortion is what Opus would otherwise
+                        // re-encode on the send side, too).
+                        crate::audio::limit_peaks(&mut mixed, 1.0);
                         output.push(&mixed);
                     }
                 }

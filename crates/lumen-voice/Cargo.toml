@@ -14,6 +14,11 @@ futures-util.workspace = true
 opus.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
+# Band-limited device→48 kHz capture resampling (rubato SincFixedIn).
+# Pure-Rust polyphase/sinc resampler — no C deps. Replaces linear
+# interpolation on the capture path, which aliases badly on 16 kHz webcam
+# mics (3× upsample).
+rubato = "0.14"
 rtc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -21,7 +26,9 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 url.workspace = true
 webrtc.workspace = true
-webrtc-audio-processing.workspace = true
+# experimental-aec3-config: tune the AEC3 (e.g. initial_state_seconds — the
+# transparent window's duration, set by the transparent-initial-state patch).
+webrtc-audio-processing = { workspace = true, features = ["experimental-aec3-config"] }
 # NetEQ-inspired adaptive jitter buffer for the receive path (replaces the
 # hand-rolled JitterBuffer). Core-only: no cpal/axum/tokio/ropus features.
 neteq = { version = "0.9", default-features = false }

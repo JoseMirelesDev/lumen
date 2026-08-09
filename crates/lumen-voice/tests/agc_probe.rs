@@ -1,9 +1,8 @@
-//! AGC diagnostic probe — measures signal levels and gain through the full
-//! send-path chain (AEC3 + DeepFilterNet + SpeechLeveler) on real speech.
-//!
-//! Verifies the stabilized AGC: quiet speech gets boosted to an audible level
-//! while the gain stays stable within contiguous speech (no syllable-level
-//! pumping).
+//! Send-chain probe — the winning chain (AEC3 + NS VeryHigh + GainController2
+//! + limiter). The GC2 adapts slowly by design (initial gain 0, 3 dB/s — no
+//! per-phrase volume surges), so the probe feeds a LONG input (speech.wav x5
+//! ≈ 20 s) and asserts on the steady state: audible once settled, stable
+//! across windows (no surges).
 //!
 //! Run: `cargo test -p lumen-voice --test agc_probe -- --nocapture`
 
@@ -22,7 +21,6 @@ fn load_speech() -> Vec<i16> {
     .expect("testdata/speech.wav not found — run from crates/lumen-voice/");
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).unwrap();
-    // Skip 44-byte WAV header, read i16 LE samples.
     buf[44..]
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
@@ -30,169 +28,78 @@ fn load_speech() -> Vec<i16> {
 }
 
 #[test]
-fn agc_chain_levels() {
-    let speech = load_speech();
+fn send_chain_levels() {
+    let base = load_speech();
+    let speech: Vec<i16> = base.iter().copied().cycle().take(base.len() * 5).collect();
     let n_frames = speech.len() / FRAME;
-    let audio_s = n_frames as f64 * 0.02;
 
-    println!("=== AGC chain probe ===");
-    println!("Audio: {audio_s:.1} s, {n_frames} frames @ {RATE} Hz");
+    println!("=== Send-chain probe (AEC3 + NS + GC2 + limiter) ===");
+    println!("Audio: {:.1} s, {n_frames} frames @ {RATE} Hz (speech.wav x5 — the GC2 needs time)",
+        n_frames as f64 * 0.02);
     println!();
 
-    // ONE suppressor, processed sequentially — the leveler's state (gain,
-    // speech_rms, hangover) carries across frames exactly like production.
     let mut ns = NoiseSuppressor::new();
-
-    println!(
-        "{:>5}  {:>8} {:>7} {:>8} {:>7}  {:>5}",
-        "frame", "raw_rms", "lsnr", "agc_rms", "gain", "speak"
-    );
-    println!(
-        "{:-<5}  {:-<8} {:-<7} {:-<8} {:-<7}  {:-<5}",
-        "", "", "", "", "", ""
-    );
-
-    // ---- accumulators ----
-    let mut raw_rms_sum = 0.0f64;
-    let mut agc_rms_sum = 0.0f64;
-    let mut agc_rms_speech_sum = 0.0f64;
-    let mut gain_speech_sum = 0.0f64;
+    let mut window_rms: Vec<f32> = Vec::new(); // per 0.5 s speech windows
+    let mut in_window_rms: Vec<f32> = Vec::new();
+    let mut cur: Vec<f32> = Vec::new();
+    let mut in_cur: Vec<f32> = Vec::new();
     let mut speech_frames = 0u32;
-    let mut min_agc_rms = f32::MAX;
-    let mut max_agc_rms = 0.0f32;
-    let mut min_gain_speech = f32::MAX;
-    let mut max_gain_speech = 0.0f32;
-    let mut lsnr_min = f32::MAX;
-    let mut lsnr_max = f32::MIN;
+    let mut out_peak = 0i16;
 
-    // ---- contiguous-speech window tracking (the stability check) ----
-    // The FIRST speech window is the one-time attack ramp (unity → target at
-    // ~15 dB/s) — expected, not pumping. All later windows must hold the gain
-    // within 6 dB (max_gain / min_gain < 2.0).
-    let mut first_window = true;
-    let mut run_len = 0u32;
-    let mut run_min_gain = f32::MAX;
-    let mut run_max_gain = 0.0f32;
-    let mut worst_gain_ratio = 1.0f32;
-
-    for (i, chunk) in speech.chunks_exact(FRAME).enumerate() {
-        let raw_rms = rms_level(chunk);
-        let cleaned = ns.process(chunk);
-        let agc_rms = rms_level(&cleaned);
-        let gain = ns.agc_gain();
-        let speak = ns.speech_detected();
-        let lsnr = ns.last_lsnr().unwrap_or(f32::NAN);
-
-        if i % 25 == 0 || i < 3 {
-            println!(
-                "{:>5}  {:>8.4} {:>7.1} {:>8.4} {:>7.2}  {:>5}",
-                i,
-                raw_rms,
-                lsnr,
-                agc_rms,
-                gain,
-                if speak { "YES" } else { "no" }
-            );
-        }
-
-        raw_rms_sum += raw_rms as f64;
-        agc_rms_sum += agc_rms as f64;
-        if let Some(l) = ns.last_lsnr() {
-            lsnr_min = lsnr_min.min(l);
-            lsnr_max = lsnr_max.max(l);
-        }
-        if speak {
+    for chunk in speech.chunks_exact(FRAME) {
+        let out = ns.process(chunk);
+        out_peak = out_peak.max(out.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0).min(32767) as i16);
+        if ns.speech_detected() {
             speech_frames += 1;
-            agc_rms_speech_sum += agc_rms as f64;
-            gain_speech_sum += gain as f64;
-            min_agc_rms = min_agc_rms.min(agc_rms);
-            max_agc_rms = max_agc_rms.max(agc_rms);
-            min_gain_speech = min_gain_speech.min(gain);
-            max_gain_speech = max_gain_speech.max(gain);
-            run_len += 1;
-            run_min_gain = run_min_gain.min(gain);
-            run_max_gain = run_max_gain.max(gain);
-        } else {
-            close_window(
-                run_len,
-                run_min_gain,
-                run_max_gain,
-                &mut first_window,
-                &mut worst_gain_ratio,
-            );
-            run_len = 0;
-            run_min_gain = f32::MAX;
-            run_max_gain = 0.0;
+        }
+        cur.push(rms_level(&out));
+        in_cur.push(rms_level(chunk));
+        if cur.len() >= 25 {
+            let avg = cur.iter().sum::<f32>() / cur.len() as f32;
+            let in_avg = in_cur.iter().sum::<f32>() / in_cur.len() as f32;
+            if avg > 0.02 {
+                window_rms.push(avg);
+            }
+            if in_avg > 0.02 {
+                in_window_rms.push(in_avg);
+            }
+            cur.clear();
+            in_cur.clear();
         }
     }
-    close_window(
-        run_len,
-        run_min_gain,
-        run_max_gain,
-        &mut first_window,
-        &mut worst_gain_ratio,
-    );
 
-    println!();
-    println!("=== Summary ===");
-    println!("Frames total    : {n_frames}");
-    println!("Frames w/ speech: {speech_frames}");
-    println!("Avg raw RMS     : {:.4}", raw_rms_sum / n_frames as f64);
-    println!("Avg output RMS  : {:.4}", agc_rms_sum / n_frames as f64);
-    println!("LSNR range      : {:.1} .. {:.1} dB", lsnr_min, lsnr_max);
-    if speech_frames > 0 {
-        let avg_speech_out = agc_rms_speech_sum / speech_frames as f64;
-        let avg_gain = gain_speech_sum / speech_frames as f64;
-        println!("Avg output RMS (speech): {avg_speech_out:.4}");
-        println!("Avg gain (speech): {avg_gain:.2}× ({:.1} dB)", 20.0 * avg_gain.log10());
-        println!("Speech output    : min {min_agc_rms:.4}, max {max_agc_rms:.4}");
-        println!(
-            "Gain range (speech): {min_gain_speech:.2}× .. {max_gain_speech:.2}× ({:.1} dB)",
-            20.0 * (max_gain_speech / min_gain_speech.max(0.0001)).log10()
-        );
-        println!(
-            "Worst speech-window gain ratio (< 2.0 required): {worst_gain_ratio:.2}"
-        );
-    } else {
-        println!("No speech frames detected by the LSNR VAD!");
-    }
+    let half = window_rms.len() / 2;
+    let steady = &window_rms[half..];
+    let mn = steady.iter().cloned().fold(f32::MAX, f32::min);
+    let mx = steady.iter().cloned().fold(0.0f32, f32::max);
+    let avg_steady = steady.iter().sum::<f32>() / steady.len().max(1) as f32;
+    let in_mn = in_window_rms.iter().cloned().fold(f32::MAX, f32::min);
+    let in_mx = in_window_rms.iter().cloned().fold(0.0f32, f32::max);
+    let in_ratio = in_mx / in_mn.max(0.0001);
+    println!("speech frames detected : {speech_frames}/{n_frames} ({:.0}%)",
+        100.0 * speech_frames as f32 / n_frames as f32);
+    println!("peak output            : {out_peak} ({:.1} dBFS — limiter ceiling -1)",
+        20.0 * (out_peak as f32 / 32767.0).log10());
+    println!("steady-state windows   : {} (avg {avg_steady:.4}, min {mn:.4}, max {mx:.4}, ratio {:.2})",
+        steady.len(), mx / mn.max(0.0001));
+
+    // Audible once the AGC settles: the steady-state windows at a normal
+    // speech level (the input is at ~0.044 RMS; the NS takes ~9 dB, the GC2
+    // compensates — expect >= 0.03).
+    assert!(
+        avg_steady >= 0.03,
+        "steady-state output too quiet: {avg_steady:.4} ({:.1} dBFS)",
+        20.0 * avg_steady.log10()
+    );
+    // Stable: the chain must not ADD level variance — the steady-state
+    // window ratio stays within 1.5x of the input's own dynamics (the GC2
+    // tracks the long-term level; per-phrase surges are gone with the
+    // custom leveler).
+    let out_ratio = mx / mn.max(0.0001);
+    println!("input dynamics ratio   : {in_ratio:.2} (min {in_mn:.4}, max {in_mx:.4})");
+    assert!(
+        steady.len() >= 5 && out_ratio < in_ratio * 1.5,
+        "chain adds level variance: output ratio {out_ratio:.2} vs input {in_ratio:.2}"
+    );
     println!("=== end probe ===");
-
-    // ---- NEW behavior checks ----
-    assert!(
-        speech_frames >= 5,
-        "probe needs speech on the LSNR VAD to validate the AGC: {speech_frames} frames"
-    );
-    // Volume: quiet speech must reach an audible level (~ -28 dBFS).
-    let avg_speech_out = agc_rms_speech_sum / speech_frames as f64;
-    assert!(
-        avg_speech_out >= 0.04,
-        "avg output RMS during speech too low: {avg_speech_out:.4} (< 0.04)"
-    );
-    // Stability: within any contiguous speech window (after the attack ramp),
-    // gain must not vary more than 2× (6 dB) — the rate limiter's job.
-    assert!(
-        worst_gain_ratio < 2.0,
-        "gain varies more than 6 dB within a speech window: ratio {worst_gain_ratio:.2}"
-    );
-}
-
-/// Record a finished contiguous-speech window (skipping the first — the
-/// one-time attack ramp) and fold its gain ratio into the worst seen.
-fn close_window(
-    run_len: u32,
-    run_min_gain: f32,
-    run_max_gain: f32,
-    first_window: &mut bool,
-    worst_gain_ratio: &mut f32,
-) {
-    if run_len < 5 {
-        return;
-    }
-    if *first_window {
-        *first_window = false;
-        return;
-    }
-    let ratio = run_max_gain / run_min_gain.max(0.0001);
-    *worst_gain_ratio = (*worst_gain_ratio).max(ratio);
 }
