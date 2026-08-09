@@ -1054,6 +1054,16 @@ impl DeepFilterDenoiser {
     /// Create from the embedded DeepFilterNet3 model. `None` if it can't load
     /// (e.g. tract init failed) — the caller then falls back to RNNoise.
     pub fn new() -> Option<Self> {
+        Self::with_atten_lim(100.0) // default: no attenuation limit
+    }
+
+    /// As [`new`](Self::new), with an explicit mask attenuation limit in dB.
+    /// The default is 100 dB (unbounded — the mask can cut a frame to
+    /// silence). A tighter limit (e.g. 20-30 dB) bounds the mask's depth,
+    /// which caps the frame-to-frame level pumping on quiet speech (the
+    /// "oscillation" complaint) at the cost of less noise suppression on the
+    /// deepest-noise frames.
+    pub fn with_atten_lim(atten_lim_db: f32) -> Option<Self> {
         use df::tract::{DfParams, DfTract, RuntimeParams};
         // Enable the spectral post-filter (per-bin over-attenuation smoothing,
         // beta = the crate's own default). It tightens residual suppression in
@@ -1071,7 +1081,8 @@ impl DeepFilterDenoiser {
             DfParams::default(),
             &RuntimeParams::default()
                 .with_post_filter(0.02)
-                .with_thresholds(-20.0, 30.0, 20.0),
+                .with_thresholds(-20.0, 30.0, 20.0)
+                .with_atten_lim(atten_lim_db),
         ) {
             Ok(model) => Some(Self { model }),
             Err(e) => {

@@ -321,7 +321,12 @@ fn voice_harness() {
             lsnrs.push(30.0); // RNNoise VAD is its own signal; use clean VAD
         }
     } else {
-        let mut model = DeepFilterDenoiser::new().expect("model");
+        let atten_lim = env_f32("HARNESS_DF_ATTEN_LIM", 100.0);
+        let mut model = if atten_lim >= 99.0 {
+            DeepFilterDenoiser::new().expect("model")
+        } else {
+            DeepFilterDenoiser::with_atten_lim(atten_lim).expect("model")
+        };
         for f in stage1.chunks_exact(FRAME) {
             let (denoised, lsnr) = model.process(f);
             stage2.extend_from_slice(&denoised);
