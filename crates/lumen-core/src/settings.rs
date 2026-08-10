@@ -21,6 +21,11 @@ pub struct SettingsData {
     /// depend on lumen-voice). `None` = the client's default.
     #[serde(default)]
     pub suppressor_model: Option<String>,
+    /// Feed the playback reference into AEC3 (echo cancellation). Speakers
+    /// users need it; headphones users should leave it off (this webrtc build
+    /// corrupts the send when render is fed). `None` = the client's default.
+    #[serde(default)]
+    pub aec_enabled: Option<bool>,
 }
 
 pub struct Settings {
@@ -82,6 +87,15 @@ impl Settings {
 
     pub fn set_suppressor_model(&self, model: String) {
         self.data.write().suppressor_model = Some(model);
+        self.persist();
+    }
+
+    pub fn aec_enabled(&self) -> Option<bool> {
+        self.data.read().aec_enabled
+    }
+
+    pub fn set_aec_enabled(&self, enabled: bool) {
+        self.data.write().aec_enabled = Some(enabled);
         self.persist();
     }
 }

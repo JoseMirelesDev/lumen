@@ -149,6 +149,14 @@ impl UiController {
                 });
             }
         });
+        let this = self.clone();
+        ui.on_voice_aec_enabled_changed(move |enabled| {
+            this.voice.set_aec_enabled(enabled);
+            let weak = this.weak();
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                ui.set_voice_aec_enabled(enabled);
+            });
+        });
     }
 
     // -- helpers -----------------------------------------------------------
@@ -459,5 +467,6 @@ impl UiController {
         // Non-silent fallback: tell the UI whether this CPU can run the
         // FastEnhancer-M engine, so a degraded-to-NS selection is surfaced.
         ui.set_voice_suppressor_model_available(lumen_voice::audio::FastEnhancerDenoiser::available());
+        ui.set_voice_aec_enabled(self.voice.current_aec_enabled());
     }
 }

@@ -111,6 +111,13 @@ impl VoiceController {
                 this.client.set_suppressor_model(m);
             }
         }
+        // AEC (echo cancellation): persisted per user — speakers on, headphones off.
+        if let Some(enabled) = this.settings.aec_enabled() {
+            let c = this.client.clone();
+            this.rt.spawn(async move {
+                c.set_aec_enabled(enabled).await;
+            });
+        }
         this
     }
 
@@ -123,6 +130,22 @@ impl VoiceController {
 
     pub fn current_suppressor_model(&self) -> lumen_voice::audio::SuppressorModel {
         self.client.suppressor_model()
+    }
+
+    pub fn current_aec_enabled(&self) -> bool {
+        self.client.aec_enabled()
+    }
+
+    /// Toggle AEC3 (echo cancellation). Speakers users need it; headphones
+    /// users should keep it off (this webrtc build corrupts the send when the
+    /// render reference is fed).
+    pub fn set_aec_enabled(&self, enabled: bool) {
+        let client = self.client.clone();
+        let settings = self.settings.clone();
+        self.rt.spawn(async move {
+            client.set_aec_enabled(enabled).await;
+            settings.set_aec_enabled(enabled);
+        });
     }
 
     /// Install the window handle and start the UI-thread model sync timer.

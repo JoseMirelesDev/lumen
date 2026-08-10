@@ -88,11 +88,13 @@ export component AppWindow inherits Window {
     in-out property <[PeerTile]> voice-peers;
     in-out property <string> voice-suppressor-model;
     in-out property <bool> voice-suppressor-model-available;
+    in-out property <bool> voice-aec-enabled;
     callback voice-join();
     callback voice-leave();
     callback voice-toggle-mute();
     callback voice-toggle-deafen();
     callback voice-suppressor-model-changed(string);
+    callback voice-aec-enabled-changed(bool);
 
     // --- modals (window level, internal) ---
     property <bool> modal-create-server;
@@ -160,11 +162,13 @@ export component AppWindow inherits Window {
             peers: root.voice-peers;
             suppressor-model: root.voice-suppressor-model;
             suppressor-model-available: root.voice-suppressor-model-available;
+            aec-enabled: root.voice-aec-enabled;
             join => { root.voice-join(); }
             leave => { root.voice-leave(); }
             toggle-mute => { root.voice-toggle-mute(); }
             toggle-deafen => { root.voice-toggle-deafen(); }
             suppressor-model-changed(m) => { root.voice-suppressor-model-changed(m); }
+            aec-enabled-changed(v) => { root.voice-aec-enabled-changed(v); }
         }
         if !root.voice-visible : ChatView {
             title: root.chat-title;

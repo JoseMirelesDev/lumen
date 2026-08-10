@@ -98,6 +98,10 @@ pub struct VoiceClient {
     session: tokio::sync::Mutex<Option<Arc<VoiceSession>>>,
     /// Noise-suppression model for the next join (read at `VoiceSession::start`).
     suppressor_model: Arc<parking_lot::RwLock<crate::audio::SuppressorModel>>,
+    /// AEC3 (echo cancellation) for the next join. Default true (speakers);
+    /// headphones users disable it — this webrtc build corrupts the send when
+    /// the render reference is fed.
+    aec_enabled: Arc<AtomicBool>,
 }
 
 impl VoiceClient {
@@ -115,6 +119,7 @@ impl VoiceClient {
                 suppressor_model: Arc::new(parking_lot::RwLock::new(
                     crate::audio::SuppressorModel::FastEnhancerM,
                 )),
+                aec_enabled: Arc::new(AtomicBool::new(true)),
             },
             rx,
         )
@@ -152,7 +157,8 @@ impl VoiceClient {
             return Err("already in a voice channel".into());
         }
         let model = *self.suppressor_model.read();
-        let session = VoiceSession::start(self.events.clone(), args, model)
+        let aec = self.aec_enabled.load(Ordering::SeqCst);
+        let session = VoiceSession::start(self.events.clone(), args, model, aec)
             .await
             .map_err(|e| e.to_string())?;
         *guard = Some(session);
@@ -185,6 +191,24 @@ impl VoiceClient {
         }
     }
 
+    /// Toggle feeding the playback (far-end) reference into AEC3.
+    ///
+    /// Default true (preserves echo cancellation for speaker users). This
+    /// webrtc-audio-processing build corrupts the send when any render is fed
+    /// (measured: near-end correlation 0.34-0.85 vs 1.0 with no render), so
+    /// headphones users should disable it for a clean send. Applies to the
+    /// live session and to the next join.
+    pub async fn set_aec_enabled(&self, enabled: bool) {
+        self.aec_enabled.store(enabled, Ordering::SeqCst);
+        if let Some(s) = self.session.lock().await.as_ref() {
+            s.aec_enabled.store(enabled, Ordering::SeqCst);
+        }
+    }
+
+    pub fn aec_enabled(&self) -> bool {
+        self.aec_enabled.load(Ordering::SeqCst)
+    }
+
     /// TEMP DIAG: (playout buffer occupancy in frames, total shed samples).
     pub async fn output_stats(&self) -> Option<(usize, u64)> {
         self.session.lock().await.as_ref().map(|s| s.output.stats())
@@ -205,6 +229,9 @@ struct VoiceSession {
     deafened: Arc<AtomicBool>,
     /// `TransmitMode` as u8 (0 = Always, 1 = VoiceActivated).
     transmit_mode: Arc<AtomicU8>,
+    /// Whether the playback reference is fed into AEC3 (speakers: true,
+    /// headphones: false — see `set_aec_enabled`).
+    aec_enabled: Arc<AtomicBool>,
     _encoder: Arc<tokio::sync::Mutex<OpusEncoder>>,
     ice: Vec<RTCIceServer>,
     /// The outbound signaling handle. Dropping it closes the WS → loop exits.
@@ -220,6 +247,7 @@ impl VoiceSession {
         events: mpsc::UnboundedSender<VoiceEvent>,
         args: VoiceJoinArgs,
         suppressor_model: crate::audio::SuppressorModel,
+        aec_enabled: bool,
     ) -> Result<Arc<Self>> {
         let ws_base = args.backend_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
         let ws_url = format!("{ws_base}/api/ws/{}", args.channel_id);
@@ -247,6 +275,8 @@ impl VoiceSession {
         let peers = Arc::new(Mutex::new(HashMap::<String, Peer>::new()));
         let muted = Arc::new(AtomicBool::new(false));
         let deafened = Arc::new(AtomicBool::new(false));
+        // AEC on/off for this session (see `set_aec_enabled`).
+        let aec_enabled = Arc::new(AtomicBool::new(aec_enabled));
         // Default to Always transmit: the RNNoise VAD gate (VoiceActivated) is
         // not reliable enough yet — it cuts real speech frames, so the remote
         // hears nothing while the local meter still shows "speaking". The
@@ -283,6 +313,7 @@ impl VoiceSession {
             let local_level = local_level.clone();
             let stopping = stopping.clone();
             let render_tap = render_tap.clone();
+            let aec_enabled = aec_enabled.clone();
             tokio::spawn(async move {
                 // WebRTC APM (AEC3/HPF/NS) + the selected denoiser tier
                 // (FastEnhancer by default, auto-degrading to NS-only).
@@ -294,17 +325,14 @@ impl VoiceSession {
                     if muted.load(Ordering::SeqCst) {
                         continue;
                     }
-                    // AEC3 render reference: DISABLED. Feeding the playback
-                    // (far-end) reference activates AEC3, which over-cancels
-                    // the near-end voice in this setup — measured: the send
-                    // audio correlation drops to ~0.6-0.8 with ANY render
-                    // (worse, ~0.1, with the jittery tap feed), i.e. the
-                    // remote heard "super mal" while the no-render probe was
-                    // perfect. Headphones-first app: no acoustic echo to
-                    // cancel. The tap is still drained (bounded) so it can't
-                    // grow unbounded; re-enable the feed once AEC3's delay/
-                    // feeding is made robust for speaker users.
-                    let _render: Vec<i16> = {
+                    // AEC3 render reference: fed only when enabled (speakers).
+                    // This webrtc-audio-processing build corrupts the send
+                    // when any render is fed (measured: near-end correlation
+                    // drops to ~0.34-0.85 vs 1.0 with no render — the remote
+                    // heard "super mal" while the no-render probe was
+                    // perfect), so headphones users keep AEC off. The tap is
+                    // always drained (bounded) so it can't grow unbounded.
+                    let render: Vec<i16> = {
                         let mut tap = render_tap.lock();
                         const RENDER_CAP: usize = 48_000 / 2; // 500 ms
                         let excess = tap.len().saturating_sub(RENDER_CAP);
@@ -313,7 +341,11 @@ impl VoiceSession {
                         }
                         std::mem::take(&mut *tap)
                     };
-                    // (render discarded — AEC3 bypassed, see above)
+                    if aec_enabled.load(Ordering::SeqCst) {
+                        for chunk in render.chunks(480) {
+                            ns.process_render_frame(chunk);
+                        }
+                    }
                     // Stay at the live edge: if processing (encode + NS) fell
                     // behind the mic and frames piled up while we encoded the
                     // previous one, shed them and keep the newest. In steady
@@ -463,6 +495,7 @@ impl VoiceSession {
             muted,
             deafened,
             transmit_mode,
+            aec_enabled,
             _encoder: encoder,
             ice,
             signal_tx: Mutex::new(Some(signal_tx)),

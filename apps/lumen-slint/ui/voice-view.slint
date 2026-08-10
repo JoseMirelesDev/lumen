@@ -5,7 +5,7 @@
 // (speaking glow, level bar) stay continuous instead of resetting every frame.
 
 import { AppTheme } from "theme.slint";
-import { Button, ComboBox, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
 import { PeerTile } from "types.slint";
 import { DangerButton } from "base.slint";
 
@@ -109,11 +109,16 @@ export component VoiceView inherits Rectangle {
     // Noise-suppression model: "fastenhancer" | "ns-only" (see
     // lumen_voice::audio::SuppressorModel::as_str). Applied on the next join.
     in property <string> suppressor-model;
-    // Whether this CPU can run the FastEnhancer-M model (AVX2+FMA3+F16C).
+    // Whether this CPU can run the FastEnhancer-M engine (AVX2+FMA3+F16C).
     // When false and "fastenhancer" is selected, the model still runs as the
     // user asked but the engine degrades to WebRTC NS — surfaced as a warning,
     // never silent.
     in property <bool> suppressor-model-available;
+    // AEC3 (echo cancellation). Speakers users need it on; headphones users
+    // should leave it off (this webrtc build corrupts the send when the
+    // render reference is fed).
+    in property <bool> aec-enabled;
+    callback aec-enabled-changed(bool);
     callback join();
     callback leave();
     callback toggle-mute();
@@ -170,6 +175,13 @@ export component VoiceView inherits Rectangle {
                 current-index: root.suppressor-model == "fastenhancer" ? 0 : 1;
                 selected(idx) => {
                     root.suppressor-model-changed(idx == 0 ? "fastenhancer" : "ns-only");
+                }
+            }
+            CheckBox {
+                text: "Eco (AEC)";
+                checked: root.aec-enabled;
+                toggled => {
+                    root.aec-enabled-changed(self.checked);
                 }
             }
             if root.suppressor-model == "fastenhancer" && !root.suppressor-model-available : Text {
