@@ -360,6 +360,7 @@ impl VoiceSession {
                 // WebRTC APM (AEC3/HPF/NS) + the selected denoiser tier
                 // (FastEnhancer by default, auto-degrading to NS-only).
                 let mut ns = crate::audio::NoiseSuppressor::with_model(suppressor_model);
+                let mut frame_idx = 0u64;
                 while let Some(mut frame) = mic_rx.recv().await {
                     if stopping.load(Ordering::SeqCst) {
                         break;
@@ -414,6 +415,19 @@ impl VoiceSession {
                         // Some); kept as a defensive no-op.
                         continue;
                     };
+                    if diag::enabled() && frame_idx % 25 == 0 {
+                        diag::log(
+                            "proc",
+                            &serde_json::json!({
+                                "in_rms": rms_level(&frame),
+                                "out_rms": rms_level(&cleaned),
+                                "model": suppressor_model.as_str(),
+                                "fe": ns.neural_available(),
+                                "aec": aec_enabled.load(Ordering::SeqCst),
+                            }),
+                        );
+                    }
+                    frame_idx += 1;
                     let encoded = match encoder.lock().await.encode(&cleaned) {
                         Ok(e) => e,
                         Err(_) => continue,

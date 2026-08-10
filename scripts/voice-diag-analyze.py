@@ -40,7 +40,19 @@ def analyze(path):
     send = [r for r in rows if r["ev"] == "send"]
     recv = [r for r in rows if r["ev"] == "recv"]
     mix = [r for r in rows if r["ev"] == "mix"]
-    print(f"=== {path} ({len(send)} send, {len(recv)} recv, {len(mix)} mix ticks) ===")
+    proc = [r for r in rows if r["ev"] == "proc"]
+    print(f"=== {path} ({len(send)} send, {len(recv)} recv, {len(mix)} mix, {len(proc)} proc) ===")
+
+    if proc:
+        models = sorted(set(r["model"] for r in proc))
+        fe = sorted(set(r["fe"] for r in proc))
+        ratios = [r["out_rms"] / max(r["in_rms"], 1e-6) for r in proc if r["in_rms"] > 0.001]
+        # passthrough check: out_rms essentially equal to in_rms on voice frames
+        passthrough = sum(1 for r in proc if r["in_rms"] > 0.005 and abs(r["out_rms"] - r["in_rms"]) < 0.0005 * max(r["in_rms"], 1e-9))
+        voice_frames = sum(1 for r in proc if r["in_rms"] > 0.005)
+        print(f"  PROC: models={models} fe_loaded={fe}; "
+              f"out/in ratio med {q(ratios,50):.2f}; "
+              f"{passthrough}/{voice_frames} voice frames are bit-identical (PASSTHROUGH={passthrough == voice_frames and voice_frames > 0})")
 
     if send:
         since = [r["since_ms"] for r in send[1:]]
