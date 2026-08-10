@@ -22,6 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Per-object Rust compile cache (sccache, GH-cache backed): survives
+      # partial/evicted cargo target caches so re-runs don't full-rebuild.
+      - uses: mozilla-actions/sccache-action@v0.0.11
       # Incremental builds across release runs: cache the cargo registry + the
       # whole target dir (keyed on Cargo.lock, with a restore fallback) so a
       # small change recompiles only the affected crates instead of the heavy
@@ -61,6 +64,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Per-object Rust compile cache (sccache, GH-cache backed): survives
+      # partial/evicted cargo target caches so re-runs don't full-rebuild.
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - name: Cache cargo registry + target
         uses: actions/cache@v4
         with:
@@ -110,6 +116,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Per-object Rust compile cache (sccache, GH-cache backed): survives
+      # partial/evicted cargo target caches so re-runs don't full-rebuild.
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - name: Cache cargo registry + target
         uses: actions/cache@v4
         with:

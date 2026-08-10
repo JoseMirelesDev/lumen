@@ -52,6 +52,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Per-object Rust compile cache (sccache, backed by the GH cache).
+      # Survives partial/evicted cargo target caches — the previous pain: a
+      # RUSTFLAGS change or an oversized/evicted target meant a full rebuild.
+      # The action sets RUSTC_WRAPPER=sccache and SCCACHE_GHA_CACHE=1.
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - name: Cache cargo registry + target
         uses: actions/cache@v4
         with:
