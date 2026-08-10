@@ -142,6 +142,15 @@ fn cpal_capture(
         let mut best: Option<cpal::SupportedStreamConfig> = None;
         if let Ok(configs) = device.supported_input_configs() {
             for c in configs {
+                // The stream build only feeds i16/f32 — skip u8/u16/i24/i32
+                // (pipewire-alsa advertises u8 for the default device, which
+                // used to win the "first 48 kHz mono" pick and then failed).
+                if !matches!(
+                    c.sample_format(),
+                    cpal::SampleFormat::I16 | cpal::SampleFormat::F32
+                ) {
+                    continue;
+                }
                 if let Some(cfg) = c.try_with_sample_rate(48_000) {
                     let mono = cfg.channels() == 1;
                     let better = match &best {
