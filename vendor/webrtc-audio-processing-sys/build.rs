@@ -414,6 +414,20 @@ fn main() -> Result<()> {
         .flag_if_supported("-Wno-unused-parameter")
         .out_dir(out_dir());
 
+    // VENDORED FIX: the wrapper must see the same platform macros as the
+    // meson-built library. Without -DWEBRTC_WIN, rtc_base/platform_thread_types.h
+    // takes the POSIX branch and includes <pthread.h>, which MSVC lacks — a
+    // fresh Windows build fails (the GH Actions cache used to mask this by
+    // restoring a pre-built target).
+    if env::var("CARGO_CFG_TARGET_OS").map(|o| o == "windows").unwrap_or(false) {
+        cc_build
+            .define("WEBRTC_WIN", None)
+            .define("_WIN32", None)
+            .define("NOMINMAX", None)
+            .define("_USE_MATH_DEFINES", None)
+            .define("__STDC_FORMAT_MACROS", None);
+    }
+
     // Inform wrapper code that headers for internal classes (ResidualEchoDetector) are available.
     #[cfg(feature = "bundled")]
     cc_build.define("WEBRTC_HAS_INTERNAL_HEADERS", None);
