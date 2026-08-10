@@ -294,12 +294,17 @@ impl VoiceSession {
                     if muted.load(Ordering::SeqCst) {
                         continue;
                     }
-                    // Feed AEC3 the playback reference: drain whatever the
-                    // output callback tapped since the last mic frame (in 10 ms
-                    // chunks) so the echo canceller sees the far-end stream.
-                    // AEC3 auto-estimates the delay, so a little skew is fine;
-                    // cap the backlog so a stalled send task can't stall us.
-                    let render: Vec<i16> = {
+                    // AEC3 render reference: DISABLED. Feeding the playback
+                    // (far-end) reference activates AEC3, which over-cancels
+                    // the near-end voice in this setup — measured: the send
+                    // audio correlation drops to ~0.6-0.8 with ANY render
+                    // (worse, ~0.1, with the jittery tap feed), i.e. the
+                    // remote heard "super mal" while the no-render probe was
+                    // perfect. Headphones-first app: no acoustic echo to
+                    // cancel. The tap is still drained (bounded) so it can't
+                    // grow unbounded; re-enable the feed once AEC3's delay/
+                    // feeding is made robust for speaker users.
+                    let _render: Vec<i16> = {
                         let mut tap = render_tap.lock();
                         const RENDER_CAP: usize = 48_000 / 2; // 500 ms
                         let excess = tap.len().saturating_sub(RENDER_CAP);
@@ -308,9 +313,7 @@ impl VoiceSession {
                         }
                         std::mem::take(&mut *tap)
                     };
-                    for chunk in render.chunks(480) {
-                        ns.process_render_frame(chunk);
-                    }
+                    // (render discarded — AEC3 bypassed, see above)
                     // Stay at the live edge: if processing (encode + NS) fell
                     // behind the mic and frames piled up while we encoded the
                     // previous one, shed them and keep the newest. In steady
