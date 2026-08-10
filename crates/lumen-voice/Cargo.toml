@@ -14,6 +14,7 @@ futures-util.workspace = true
 opus.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 # Band-limited device→48 kHz capture resampling (rubato SincFixedIn).
 # Pure-Rust polyphase/sinc resampler — no C deps. Replaces linear
 # interpolation on the capture path, which aliases badly on 16 kHz webcam
@@ -60,7 +61,6 @@ tract-onnx = "0.21.4"
 tract-core = "0.21.4"
 rustfft = "6"
 ndarray = "0.15"
-reqwest.workspace = true
 
 # cpal 0.18.1's WASAPI code requires `windows` + `windows-core` to resolve as a
 # *matched* pair (its range `>=0.61,<=0.62` lets cargo pair `windows 0.61` with

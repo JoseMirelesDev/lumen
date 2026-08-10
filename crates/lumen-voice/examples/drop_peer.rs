@@ -45,6 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             user_id,
             username: "drop_peer".to_string(),
             ice_servers: vec![],
+            open_mic: true,
+            input_wav: None,
+            open_output: true,
         })
         .await
         .map_err(|e| format!("join failed: {e}"))?;

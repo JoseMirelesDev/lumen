@@ -77,6 +77,27 @@ pub struct VoiceJoinArgs {
     pub username: String,
     #[serde(default)]
     pub ice_servers: Vec<IceServer>,
+    /// Open the local mic and send our audio. Set false for a receive-only
+    /// participant (e.g. a distant peer in a netns latency test) so it does
+    /// not fight a local sender for the same input device.
+    #[serde(default = "default_true")]
+    pub open_mic: bool,
+    /// Feed a WAV file instead of the live mic (real recorded speech, looped).
+    /// When set, the mic capture device is NOT opened; frames are read from
+    /// this 48 kHz mono i16 WAV and pushed through the send path, so transport
+    /// quality can be verified against real intelligible audio.
+    #[serde(default)]
+    pub input_wav: Option<String>,
+    /// Open the audio output device (playback). Set false for a headless
+    /// peer (e.g. inside a network namespace with no audio device): NetEQ
+    /// still decodes and the diag still measures loss/jitter, but nothing is
+    /// played.
+    #[serde(default = "default_true")]
+    pub open_output: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Diagnostics: `LUMEN_VOICE_DIAG=1` appends a JSONL trace (send RTP, recv RTP,
@@ -138,7 +159,8 @@ pub enum TransmitMode {
 pub struct VoiceClient {
     events: mpsc::UnboundedSender<VoiceEvent>,
     session: tokio::sync::Mutex<Option<Arc<VoiceSession>>>,
-    /// Noise-suppression model for the next join (read at `VoiceSession::start`).
+    /// Noise-suppression model: the initial model for a join AND the live
+    /// model watched by the send task (mid-call switches apply immediately).
     suppressor_model: Arc<parking_lot::RwLock<crate::audio::SuppressorModel>>,
     /// AEC3 (echo cancellation) for the next join. Default true (speakers);
     /// headphones users disable it — this webrtc build corrupts the send when
@@ -167,9 +189,10 @@ impl VoiceClient {
         )
     }
 
-    /// Select the noise-suppression model used on the next join. The active
-    /// session keeps its current model (the suppressor holds streaming state
-    /// and can't be swapped mid-call) — the new model applies on re-join.
+    /// Select the noise-suppression model. Applies live: the active session's
+    /// send task swaps its suppressor on the next frame (streaming state
+    /// resets, reconverging in a few hundred ms); a future join uses it as
+    /// the initial model.
     pub fn set_suppressor_model(&self, model: crate::audio::SuppressorModel) {
         *self.suppressor_model.write() = model;
     }
@@ -198,9 +221,8 @@ impl VoiceClient {
         if guard.is_some() {
             return Err("already in a voice channel".into());
         }
-        let model = *self.suppressor_model.read();
         let aec = self.aec_enabled.load(Ordering::SeqCst);
-        let session = VoiceSession::start(self.events.clone(), args, model, aec)
+        let session = VoiceSession::start(self.events.clone(), args, self.suppressor_model.clone(), aec)
             .await
             .map_err(|e| e.to_string())?;
         *guard = Some(session);
@@ -247,6 +269,13 @@ impl VoiceClient {
         }
     }
 
+    /// Store the AEC flag synchronously (startup: applies the persisted
+    /// setting before any session exists, so the first join and the UI both
+    /// see it). Live toggles still go through `set_aec_enabled`.
+    pub fn set_aec_enabled_now(&self, enabled: bool) {
+        self.aec_enabled.store(enabled, Ordering::SeqCst);
+    }
+
     pub fn aec_enabled(&self) -> bool {
         self.aec_enabled.load(Ordering::SeqCst)
     }
@@ -266,7 +295,7 @@ struct VoiceSession {
     peers: Arc<Mutex<HashMap<String, Peer>>>,
     output: AudioOutput,
     _mic_stream: crate::audio::MicStream,
-    _out_stream: cpal::Stream,
+    _out_stream: Option<cpal::Stream>,
     muted: Arc<AtomicBool>,
     deafened: Arc<AtomicBool>,
     /// `TransmitMode` as u8 (0 = Always, 1 = VoiceActivated).
@@ -288,7 +317,7 @@ impl VoiceSession {
     async fn start(
         events: mpsc::UnboundedSender<VoiceEvent>,
         args: VoiceJoinArgs,
-        suppressor_model: crate::audio::SuppressorModel,
+        suppressor_model: Arc<parking_lot::RwLock<crate::audio::SuppressorModel>>,
         aec_enabled: bool,
     ) -> Result<Arc<Self>> {
         let ws_base = args.backend_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
@@ -306,13 +335,54 @@ impl VoiceSession {
         let signal_tx = signal.tx.clone();
 
         let (mic_tx, mut mic_rx) = mpsc::unbounded_channel::<Vec<i16>>();
-        let mic_stream = crate::audio::start_capture(mic_tx).context("mic capture")?;
+        // Precedence: input_wav (real recorded speech, looped) > open_mic.
+        // Receive-only participant (open_mic=false): skip capture so it does
+        // not open the local input device (a netns latency-test peer, or a
+        // second session that would fight a local sender for the mic).
+        let mic_stream = if let Some(wav) = &args.input_wav {
+            let path = wav.clone();
+            let frames = crate::audio::load_wav_pcm(&path)?;
+            eprintln!("lumen voice: feeding {} ({} frames) instead of mic", path, frames.len());
+            tokio::spawn(async move {
+                let mut i = 0usize;
+                let mut last = std::time::Instant::now();
+                while mic_tx.send(
+                    frames[i * crate::audio::FRAME_SAMPLES..(i + 1) * crate::audio::FRAME_SAMPLES].to_vec(),
+                ).is_ok() {
+                    // pace at 20 ms cadence
+                    let target = last + std::time::Duration::from_millis(20);
+                    let now = std::time::Instant::now();
+                    if now < target {
+                        tokio::time::sleep(target - now).await;
+                    }
+                    last = std::time::Instant::now();
+                    i += 1;
+                    if (i + 1) * crate::audio::FRAME_SAMPLES > frames.len() {
+                        i = 0; // loop
+                    }
+                }
+            });
+            crate::audio::MicStream::Inactive
+        } else if args.open_mic {
+            crate::audio::start_capture(mic_tx).context("mic capture")?
+        } else {
+            crate::audio::MicStream::Inactive
+        };
         let _ = &mic_stream; // held alive (Raw keeps the WASAPI client + thread; cpal keeps the stream)
         let mut output = AudioOutput::new();
         // AEC reference: the send path drains this and feeds it to AEC3.
         let render_tap: Arc<Mutex<Vec<i16>>> = Arc::new(Mutex::new(Vec::with_capacity(48_000)));
         output.set_render_tap(render_tap.clone());
-        let out_stream = output.start().context("audio output")?;
+        // Headless peer (open_output=false, e.g. in a netns with no audio
+        // device): keep the mixer running for diag (NetEQ loss/jitter stats)
+        // but skip opening the playback device. AudioOutput::push is a no-op
+        // without a started stream.
+        let out_stream = if args.open_output {
+            Some(output.start().context("audio output")?)
+        } else {
+            eprintln!("lumen voice: headless (no audio output)");
+            None
+        };
 
         let peers = Arc::new(Mutex::new(HashMap::<String, Peer>::new()));
         let muted = Arc::new(AtomicBool::new(false));
@@ -358,23 +428,39 @@ impl VoiceSession {
             let aec_enabled = aec_enabled.clone();
             tokio::spawn(async move {
                 // WebRTC APM (AEC3/HPF/NS) + the selected denoiser tier
-                // (FastEnhancer by default, auto-degrading to NS-only).
-                let mut ns = crate::audio::NoiseSuppressor::with_model(suppressor_model);
+                // (FastEnhancer by default, auto-degrading to NS-only). The
+                // model is watched so the UI ComboBox applies live, not on
+                // re-join (see the per-frame check below).
+                let mut current_model = *suppressor_model.read();
+                let mut ns = crate::audio::NoiseSuppressor::with_model(current_model);
                 let mut frame_idx = 0u64;
+                let mut loop_exit = None;
                 while let Some(mut frame) = mic_rx.recv().await {
+                    // Live model switch: applies immediately, not on re-join.
+                    // Recreating the suppressor resets its streaming state
+                    // (AEC3/FE reconverge in a few hundred ms — an acceptable
+                    // blip on a user-initiated toggle). Drop-then-create on
+                    // this single thread is safe for the FastEnhancer C global
+                    // engine (fe_free then fe_init).
+                    let m = *suppressor_model.read();
+                    if m != current_model {
+                        ns = crate::audio::NoiseSuppressor::with_model(m);
+                        current_model = m;
+                    }
                     if stopping.load(Ordering::SeqCst) {
+                        loop_exit = Some("stopping");
                         break;
                     }
                     if muted.load(Ordering::SeqCst) {
                         continue;
                     }
-                    // AEC3 render reference: fed only when enabled (speakers).
-                    // This webrtc-audio-processing build corrupts the send
-                    // when any render is fed (measured: near-end correlation
-                    // drops to ~0.34-0.85 vs 1.0 with no render — the remote
-                    // heard "super mal" while the no-render probe was
-                    // perfect), so headphones users keep AEC off. The tap is
-                    // always drained (bounded) so it can't grow unbounded.
+                    // AEC3 render reference: fed when the user wants echo
+                    // cancellation (speakers: ON; headphones: OFF). The
+                    // earlier "render corrupts send" measurement (corr
+                    // 0.34-0.85) that motivated the AEC-off default was
+                    // contaminated by the frame-shed bug — now fixed by the
+                    // threshold-gated shed below — so feeding render is safe.
+                    // The tap is drained bounded so it can't grow unbounded.
                     let render: Vec<i16> = {
                         let mut tap = render_tap.lock();
                         const RENDER_CAP: usize = 48_000 / 2; // 500 ms
@@ -389,15 +475,21 @@ impl VoiceSession {
                             ns.process_render_frame(chunk);
                         }
                     }
-                    // Stay at the live edge: if processing (encode + NS) fell
-                    // behind the mic and frames piled up while we encoded the
-                    // previous one, shed them and keep the newest. In steady
-                    // state the channel holds 0-1 frames, so this is a no-op —
-                    // no frames are dropped and the voice is never cut. It
-                    // only kicks in when genuinely overloaded, bounding the
-                    // backlog so delay can't re-accumulate.
-                    while let Ok(f) = mic_rx.try_recv() {
-                        frame = f;
+                    // Shed only on genuine overload: >4 queued frames (>80 ms
+                    // backlog). USB capture delivers 40 ms bursts — two
+                    // 960-sample frames per ALSA callback, pushed back-to-back
+                    // by `feed()` (audio.rs); an unconditional drain pops the
+                    // second frame and overwrites the first unsent, halving
+                    // the send rate to ~24 pkt/s in production and making the
+                    // remote hear robotic audio (NetEQ 96.7% concealment). In
+                    // steady state the channel holds 0-1 frames, so this is a
+                    // no-op; it only sheds when processing genuinely falls
+                    // behind, bounding the backlog at ~100 ms.
+                    while mic_rx.len() > 4 {
+                        match mic_rx.try_recv() {
+                            Ok(f) => frame = f,
+                            Err(_) => break,
+                        }
                     }
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
                     // Always-transmit (Discord/Krisp-style): `process_gated`
@@ -421,7 +513,7 @@ impl VoiceSession {
                             &serde_json::json!({
                                 "in_rms": rms_level(&frame),
                                 "out_rms": rms_level(&cleaned),
-                                "model": suppressor_model.as_str(),
+                                "model": current_model.as_str(),
                                 "fe": ns.neural_available(),
                                 "aec": aec_enabled.load(Ordering::SeqCst),
                             }),
@@ -436,6 +528,14 @@ impl VoiceSession {
                         let _ = peer.send_tx.send(encoded.clone());
                     }
                 }
+                // If we get here, the mic channel closed OR stopping was set.
+                diag::log(
+                    "send_exit",
+                    &serde_json::json!({
+                        "reason": loop_exit.unwrap_or("mic_rx_closed"),
+                        "frames": frame_idx,
+                    }),
+                );
             });
         }
 
@@ -648,6 +748,7 @@ impl VoiceSession {
                     let peer = match self.create_peer(&p.peer_id, &p.user_id, &signal_tx).await {
                         Ok(peer) => peer,
                         Err(err) => {
+                            diag::log("peer_err", &serde_json::json!({"where": "create_peer", "err": err.to_string()}));
                             let _ = self.events.send(VoiceEvent::Error {
                                 code: None,
                                 message: err.to_string(),
@@ -659,6 +760,7 @@ impl VoiceSession {
                     let offer = match peer.pc.create_offer(None).await {
                         Ok(o) => o,
                         Err(err) => {
+                            diag::log("peer_err", &serde_json::json!({"where": "create_offer", "err": err.to_string()}));
                             let _ = self.events.send(VoiceEvent::Error {
                                 code: None,
                                 message: err.to_string(),
@@ -667,10 +769,13 @@ impl VoiceSession {
                         }
                     };
                     if peer.pc.set_local_description(offer.clone()).await.is_ok() {
+                        diag::log("offer_sent", &serde_json::json!({"to": p.peer_id}));
                         let _ = signal_tx.send(SignalOut::Offer {
                             to: p.peer_id.clone(),
                             sdp: offer.sdp,
                         });
+                    } else {
+                        diag::log("peer_err", &serde_json::json!({"where": "set_local(offer)", "to": p.peer_id}));
                     }
                     self.peers.lock().insert(p.peer_id.clone(), peer);
                 }
@@ -748,6 +853,17 @@ impl VoiceSession {
         });
 
         let runtime = webrtc::runtime::default_runtime().expect("runtime-tokio feature");
+        // Bind the peer's UDP socket to a specific interface IP when set
+        // (LUMEN_BIND_ADDR, e.g. "10.77.0.2" inside the netns latency test).
+        // Default 0.0.0.0:0 generates a host candidate of 0.0.0.0, which is
+        // NOT connectable across a veth/netns — the peers only ever saw the
+        // identical srflx (same public NAT) and ICE failed. Binding to the
+        // real interface IP makes the host candidate reachable.
+        let bind = std::env::var("LUMEN_BIND_ADDR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|ip| format!("{ip}:0"))
+            .unwrap_or_else(|| "0.0.0.0:0".to_string());
         let pc: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::new()
                 .with_configuration(config)
@@ -755,7 +871,7 @@ impl VoiceSession {
                 .with_interceptor_registry(registry)
                 .with_handler(handler)
                 .with_runtime(runtime)
-                .with_udp_addrs(vec!["0.0.0.0:0".to_string()])
+                .with_udp_addrs(vec![bind])
                 .build()
                 .await?,
         );
@@ -797,15 +913,26 @@ impl VoiceSession {
                 }
             }
         }
-        let Some(peer) = self.peers.lock().get(from).cloned() else { return };
-        let Ok(desc) = RTCSessionDescription::offer(sdp) else { return };
+        let Some(peer) = self.peers.lock().get(from).cloned() else {
+            diag::log("peer_err", &serde_json::json!({"where": "handle_offer no-peer", "from": from}));
+            return;
+        };
+        diag::log("offer_recv", &serde_json::json!({"from": from}));
+        let Ok(desc) = RTCSessionDescription::offer(sdp) else {
+            diag::log("peer_err", &serde_json::json!({"where": "parse offer", "from": from}));
+            return;
+        };
         if peer.pc.set_remote_description(desc).await.is_err() {
+            diag::log("peer_err", &serde_json::json!({"where": "set_remote(offer)", "from": from}));
             return;
         }
         match peer.pc.create_answer(None).await {
             Ok(answer) => {
                 if peer.pc.set_local_description(answer.clone()).await.is_ok() {
+                    diag::log("answer_sent", &serde_json::json!({"to": from}));
                     let _ = signal_tx.send(SignalOut::Answer { to: from.to_string(), sdp: answer.sdp });
+                } else {
+                    diag::log("peer_err", &serde_json::json!({"where": "set_local(answer)", "to": from}));
                 }
             }
             Err(err) => {
@@ -825,14 +952,20 @@ impl VoiceSession {
             });
             return;
         };
-        let Ok(desc) = RTCSessionDescription::answer(sdp) else { return };
+        diag::log("answer_recv", &serde_json::json!({"from": from}));
+        let Ok(desc) = RTCSessionDescription::answer(sdp) else {
+            diag::log("peer_err", &serde_json::json!({"where": "parse answer", "from": from}));
+            return;
+        };
         let _ = peer.pc.set_remote_description(desc).await;
     }
 
     async fn handle_ice(&self, from: &str, candidate: serde_json::Value) {
         let Some(peer) = self.peers.lock().get(from).cloned() else {
+            diag::log("ice_dropped", &serde_json::json!({"from": from, "reason": "no-peer-yet"}));
             return; // ICE may precede SDP in trickle mode; peer is created on offer.
         };
+        diag::log("ice_recv", &serde_json::json!({"from": from}));
         // JS peers send RTCIceCandidate.toJSON(). candidate + sdpMLineIndex parse;
         // sdpMid/usernameFragment degrade to None, which ICE accepts.
         match serde_json::from_value::<webrtc::peer_connection::RTCIceCandidateInit>(candidate) {
@@ -1012,6 +1145,9 @@ impl From<RTCPeerConnectionState> for PeerState {
 #[async_trait]
 impl PeerConnectionEventHandler for PeerHandler {
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        diag::log("ice_local", &serde_json::json!({
+            "candidate": event.candidate.to_string(),
+        }));
         if let Ok(init) = event.candidate.to_json() {
             // Match the JS RTCIceCandidate.toJSON() shape so JS peers parse it.
             let _ = self.signal.send(SignalOut::IceCandidate {
@@ -1036,6 +1172,7 @@ impl PeerConnectionEventHandler for PeerHandler {
     }
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        diag::log("conn_state", &serde_json::json!({"peer": self.peer_id, "state": format!("{state:?}")}));
         let _ = self.events.send(VoiceEvent::State {
             peer_id: self.peer_id.clone(),
             state: PeerState::from(state),

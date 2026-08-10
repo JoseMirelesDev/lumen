@@ -36,3 +36,4 @@ dist-artifacts/
 
 # regenerable A/B + probe audio (voice_harness, *_probe)
 samples/
+scripts/.token2

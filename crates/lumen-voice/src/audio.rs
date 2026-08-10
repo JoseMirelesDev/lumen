@@ -94,9 +94,61 @@ impl CaptureResampler {
     }
 }
 
+/// Load a 48 kHz mono PCM-i16 WAV file (RIFF) into a flat sample buffer.
+/// Used to feed real recorded speech through the transport (`input_wav`).
+/// Multi-channel files are down-mixed to mono (first channel).
+pub fn load_wav_pcm(path: &str) -> anyhow::Result<Vec<i16>> {
+    let data = std::fs::read(path)?;
+    if &data[0..4] != b"RIFF" {
+        anyhow::bail!("not a RIFF/WAV file");
+    }
+    let mut off = 12usize;
+    let mut pcm: Vec<i16> = Vec::new();
+    let mut channels: u16 = 1;
+    let mut bits: u16 = 16;
+    while off + 8 <= data.len() {
+        let id = &data[off..off + 4];
+        let sz = u32::from_le_bytes(data[off + 4..off + 8].try_into()?) as usize;
+        let body = off + 8;
+        match id {
+            b"fmt " if body + 16 <= data.len() => {
+                let _audio_format = u16::from_le_bytes(data[body..body + 2].try_into()?);
+                channels = u16::from_le_bytes(data[body + 2..body + 4].try_into()?);
+                bits = u16::from_le_bytes(data[body + 14..body + 16].try_into()?);
+            }
+            b"data" => {
+                for chunk in data[body..body + sz].chunks_exact(2) {
+                    if bits == 16 {
+                        pcm.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+                    }
+                }
+                if bits != 16 {
+                    // fall back to re-parsing as u8 if we couldn't
+                    pcm.clear();
+                }
+            }
+            _ => {}
+        }
+        off = body + sz + (sz & 1);
+        if id == b"data" {
+            break;
+        }
+    }
+    if pcm.is_empty() {
+        anyhow::bail!("no PCM data found in {path} (need 16-bit)");
+    }
+    if channels > 1 {
+        // down-mix to mono: take first channel (assumes interleaved)
+        pcm = pcm.iter().step_by(channels as usize).copied().collect();
+    }
+    Ok(pcm)
+}
+
 /// Handle to the running mic capture (cpal, or the Windows WASAPI raw path).
 /// Dropping it stops the mic.
 pub enum MicStream {
+    /// No capture device (receive-only participant; `open_mic=false`).
+    Inactive,
     Cpal(cpal::Stream),
     #[cfg(target_os = "windows")]
     Raw(wasapi_raw::RawMicCapture),

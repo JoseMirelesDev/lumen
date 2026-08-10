@@ -112,17 +112,17 @@ impl VoiceController {
             }
         }
         // AEC (echo cancellation): persisted per user — speakers on, headphones off.
+        // Applied synchronously so the first `push_shell` (and the first join)
+        // see the persisted value. The old rt.spawn raced the UI shell: the
+        // checkbox could read the default `true` before the async task ran.
         if let Some(enabled) = this.settings.aec_enabled() {
-            let c = this.client.clone();
-            this.rt.spawn(async move {
-                c.set_aec_enabled(enabled).await;
-            });
+            this.client.set_aec_enabled_now(enabled);
         }
         this
     }
 
-    /// Persist + apply the chosen suppressor model (takes effect on the next
-    /// join; the active session keeps its current model).
+    /// Persist + apply the chosen suppressor model. Applies live: the active
+    /// session's send path switches on the next frame (no re-join needed).
     pub fn set_suppressor_model(&self, model: lumen_voice::audio::SuppressorModel) {
         self.client.set_suppressor_model(model);
         self.settings.set_suppressor_model(model.as_str().to_string());
@@ -222,6 +222,9 @@ impl VoiceController {
             user_id,
             username,
             ice_servers: ice,
+            open_mic: true,
+            input_wav: None,
+            open_output: true,
         };
         *self.channel_name.write() = Some(channel_name);
         self.peers.lock().clear();
