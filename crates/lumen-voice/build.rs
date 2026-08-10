@@ -32,8 +32,23 @@ fn main() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     // Windows-MSVC: the app links with MSVC (webrtc-audio-processing requires
-    // it), so fe is cross-compiled with MinGW gcc + Ninja here.
+    // it), so fe is cross-compiled with MinGW gcc + Ninja here. fe produces a
+    // GNU-format .a, which link.exe cannot read — only lld-link can consume
+    // it alongside the MSVC .lib files. Without lld-link in the linker flags,
+    // skip fe entirely (NS-only) instead of emitting a link that fails.
     if target_env.contains("msvc") {
+        let flags = env::var("CARGO_ENCODED_RUSTFLAGS")
+            .or_else(|_| env::var("RUSTFLAGS"))
+            .unwrap_or_default();
+        if !flags.contains("lld-link") {
+            println!(
+                "cargo:warning=lumen-voice: faster-enhancer C runtime skipped on \
+                 MSVC (link.exe can't read the MinGW .a — build with \
+                 RUSTFLAGS=\"-C linker=lld-link\" to enable FastEnhancer). \
+                 WebRTC NS-only tier in effect."
+            );
+            return;
+        }
         let build_dir = out.join("fe-build-mingw");
         let st = cmake(&[
             "-S",
