@@ -43,7 +43,8 @@ async fn main() -> anyhow::Result<()> {
     let (mic_tx, mut mic_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
     let _mic = audio::start_capture(mic_tx)?;
     let mut out = AudioOutput::new();
-    out.start()?;
+    // The cpal::Stream must be held alive — dropping it stops playback.
+    let _out_stream = out.start()?;
 
     let mut ns = ns;
     let mut frames = 0usize;

@@ -622,6 +622,16 @@ impl AudioOutput {
     pub fn start(&self) -> anyhow::Result<cpal::Stream> {
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or_else(|| anyhow::anyhow!("no output device"))?;
+        let dcfg = device.default_output_config().ok();
+        eprintln!(
+            "lumen voice: audio output -> {:?} ({} Hz, {} ch)",
+            device
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "?".into()),
+            dcfg.as_ref().map(|c| c.sample_rate()).unwrap_or(0),
+            dcfg.as_ref().map(|c| c.channels()).unwrap_or(0),
+        );
         let config = device.default_output_config()?;
         let dev_rate = config.sample_rate();
         *self.state.lock() = Some(OutputState {
