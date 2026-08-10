@@ -89,6 +89,9 @@ jobs:
           echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
           echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
           echo "CXXFLAGS=${{ matrix.cxxflags }}" >> "$GITHUB_ENV"
+          # fe (FastEnhancer) builds with MinGW gcc (GNU .a); lld-link reads
+          # both the MSVC .lib (webrtc) and the GNU .a in one link.
+          echo "RUSTFLAGS=-C linker=lld-link" >> "$GITHUB_ENV"
       - name: Build lumen-desktop (debug)
         run: cargo build -p lumen-desktop
         env:

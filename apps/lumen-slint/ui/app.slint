@@ -86,10 +86,13 @@ export component AppWindow inherits Window {
     in-out property <string> voice-local-user;
     in-out property <string> voice-local-initial;
     in-out property <[PeerTile]> voice-peers;
+    in-out property <string> voice-suppressor-model;
+    in-out property <bool> voice-suppressor-model-available;
     callback voice-join();
     callback voice-leave();
     callback voice-toggle-mute();
     callback voice-toggle-deafen();
+    callback voice-suppressor-model-changed(string);
 
     // --- modals (window level, internal) ---
     property <bool> modal-create-server;
@@ -155,10 +158,13 @@ export component AppWindow inherits Window {
             local-user: root.voice-local-user;
             local-initial: root.voice-local-initial;
             peers: root.voice-peers;
+            suppressor-model: root.voice-suppressor-model;
+            suppressor-model-available: root.voice-suppressor-model-available;
             join => { root.voice-join(); }
             leave => { root.voice-leave(); }
             toggle-mute => { root.voice-toggle-mute(); }
             toggle-deafen => { root.voice-toggle-deafen(); }
+            suppressor-model-changed(m) => { root.voice-suppressor-model-changed(m); }
         }
         if !root.voice-visible : ChatView {
             title: root.chat-title;

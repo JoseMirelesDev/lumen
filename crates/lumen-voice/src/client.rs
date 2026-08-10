@@ -96,6 +96,8 @@ pub enum TransmitMode {
 pub struct VoiceClient {
     events: mpsc::UnboundedSender<VoiceEvent>,
     session: tokio::sync::Mutex<Option<Arc<VoiceSession>>>,
+    /// Noise-suppression model for the next join (read at `VoiceSession::start`).
+    suppressor_model: Arc<parking_lot::RwLock<crate::audio::SuppressorModel>>,
 }
 
 impl VoiceClient {
@@ -104,7 +106,29 @@ impl VoiceClient {
     /// updates properties).
     pub fn new() -> (Self, mpsc::UnboundedReceiver<VoiceEvent>) {
         let (events, rx) = mpsc::unbounded_channel();
-        (Self { events, session: tokio::sync::Mutex::new(None) }, rx)
+        (
+            Self {
+                events,
+                session: tokio::sync::Mutex::new(None),
+                // Default: the full-band FastEnhancer tier when the CPU can run
+                // it, else NS-only (auto-selection inside `with_model`).
+                suppressor_model: Arc::new(parking_lot::RwLock::new(
+                    crate::audio::SuppressorModel::FastEnhancerM,
+                )),
+            },
+            rx,
+        )
+    }
+
+    /// Select the noise-suppression model used on the next join. The active
+    /// session keeps its current model (the suppressor holds streaming state
+    /// and can't be swapped mid-call) — the new model applies on re-join.
+    pub fn set_suppressor_model(&self, model: crate::audio::SuppressorModel) {
+        *self.suppressor_model.write() = model;
+    }
+
+    pub fn suppressor_model(&self) -> crate::audio::SuppressorModel {
+        *self.suppressor_model.read()
     }
 
     pub async fn join(&self, args: VoiceJoinArgs) -> std::result::Result<(), String> {
@@ -127,7 +151,8 @@ impl VoiceClient {
         if guard.is_some() {
             return Err("already in a voice channel".into());
         }
-        let session = VoiceSession::start(self.events.clone(), args)
+        let model = *self.suppressor_model.read();
+        let session = VoiceSession::start(self.events.clone(), args, model)
             .await
             .map_err(|e| e.to_string())?;
         *guard = Some(session);
@@ -191,7 +216,11 @@ struct VoiceSession {
 }
 
 impl VoiceSession {
-    async fn start(events: mpsc::UnboundedSender<VoiceEvent>, args: VoiceJoinArgs) -> Result<Arc<Self>> {
+    async fn start(
+        events: mpsc::UnboundedSender<VoiceEvent>,
+        args: VoiceJoinArgs,
+        suppressor_model: crate::audio::SuppressorModel,
+    ) -> Result<Arc<Self>> {
         let ws_base = args.backend_url.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
         let ws_url = format!("{ws_base}/api/ws/{}", args.channel_id);
         let (signal, signal_rx) =
@@ -255,8 +284,9 @@ impl VoiceSession {
             let stopping = stopping.clone();
             let render_tap = render_tap.clone();
             tokio::spawn(async move {
-                // WebRTC APM (AEC3/HPF/NS) + DeepFilterNet denoiser + leveler.
-                let mut ns = crate::audio::NoiseSuppressor::new();
+                // WebRTC APM (AEC3/HPF/NS) + the selected denoiser tier
+                // (FastEnhancer by default, auto-degrading to NS-only).
+                let mut ns = crate::audio::NoiseSuppressor::with_model(suppressor_model);
                 while let Some(mut frame) = mic_rx.recv().await {
                     if stopping.load(Ordering::SeqCst) {
                         break;

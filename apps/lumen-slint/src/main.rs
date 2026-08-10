@@ -31,9 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bus = EventBus::new();
     let settings = Arc::new(Settings::load());
     let api = Arc::new(ApiClient::new(settings.backend_url()));
-    let auth = AuthService::new(api.clone(), settings, bus.clone());
+    let auth = AuthService::new(api.clone(), settings.clone(), bus.clone());
     let shell = ShellState::new(api.clone(), bus.clone());
-    let voice = VoiceController::new(api.clone(), rt.handle().clone());
+    let voice = VoiceController::new(api.clone(), settings.clone(), rt.handle().clone());
     let ctrl = UiController::new(api, auth, shell, voice, bus, rt.handle().clone());
     ctrl.attach(&ui);
 

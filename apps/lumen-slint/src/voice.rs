@@ -52,6 +52,7 @@ struct JoinInfo {
 pub struct VoiceController {
     client: Arc<VoiceClient>,
     api: Arc<ApiClient>,
+    settings: Arc<lumen_core::Settings>,
     rt: tokio::runtime::Handle,
     weak: RwLock<Option<Weak<AppWindow>>>,
     /// Peer tiles, shared with the UI-thread sync timer.
@@ -73,11 +74,16 @@ pub struct VoiceController {
 }
 
 impl VoiceController {
-    pub fn new(api: Arc<ApiClient>, rt: tokio::runtime::Handle) -> Arc<Self> {
+    pub fn new(
+        api: Arc<ApiClient>,
+        settings: Arc<lumen_core::Settings>,
+        rt: tokio::runtime::Handle,
+    ) -> Arc<Self> {
         let (client, events) = VoiceClient::new();
         let this = Arc::new(Self {
             client: Arc::new(client),
             api,
+            settings,
             rt,
             weak: RwLock::new(None),
             peers: Arc::new(Mutex::new(Vec::new())),
@@ -99,7 +105,24 @@ impl VoiceController {
                 drain.on_event(ev);
             }
         });
+        // Apply the persisted suppressor model so the first join uses it.
+        if let Some(s) = this.settings.suppressor_model() {
+            if let Some(m) = lumen_voice::audio::SuppressorModel::parse(&s) {
+                this.client.set_suppressor_model(m);
+            }
+        }
         this
+    }
+
+    /// Persist + apply the chosen suppressor model (takes effect on the next
+    /// join; the active session keeps its current model).
+    pub fn set_suppressor_model(&self, model: lumen_voice::audio::SuppressorModel) {
+        self.client.set_suppressor_model(model);
+        self.settings.set_suppressor_model(model.as_str().to_string());
+    }
+
+    pub fn current_suppressor_model(&self) -> lumen_voice::audio::SuppressorModel {
+        self.client.suppressor_model()
     }
 
     /// Install the window handle and start the UI-thread model sync timer.

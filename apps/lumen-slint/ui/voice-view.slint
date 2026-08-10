@@ -5,7 +5,7 @@
 // (speaking glow, level bar) stay continuous instead of resetting every frame.
 
 import { AppTheme } from "theme.slint";
-import { Button, ScrollView } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView } from "std-widgets.slint";
 import { PeerTile } from "types.slint";
 import { DangerButton } from "base.slint";
 
@@ -106,10 +106,19 @@ export component VoiceView inherits Rectangle {
     in property <string> local-user;
     in property <string> local-initial;
     in property <[PeerTile]> peers;
+    // Noise-suppression model: "fastenhancer" | "ns-only" (see
+    // lumen_voice::audio::SuppressorModel::as_str). Applied on the next join.
+    in property <string> suppressor-model;
+    // Whether this CPU can run the FastEnhancer-M model (AVX2+FMA3+F16C).
+    // When false and "fastenhancer" is selected, the model still runs as the
+    // user asked but the engine degrades to WebRTC NS — surfaced as a warning,
+    // never silent.
+    in property <bool> suppressor-model-available;
     callback join();
     callback leave();
     callback toggle-mute();
     callback toggle-deafen();
+    callback suppressor-model-changed(string);
 
     background: AppTheme.colors.bg;
     horizontal-stretch: 1;
@@ -144,6 +153,33 @@ export component VoiceView inherits Rectangle {
             }
         }
         Rectangle { height: 1px; background: AppTheme.colors.border; }
+
+        // Suppressor model select (applies on the next voice join).
+        HorizontalLayout {
+            padding-top: 8px; padding-bottom: 8px; padding-left: 16px; padding-right: 16px;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Suppression:";
+                color: AppTheme.colors.text;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                model: ["FastEnhancer-M", "NS (WebRTC)"];
+                current-index: root.suppressor-model == "fastenhancer" ? 0 : 1;
+                selected(idx) => {
+                    root.suppressor-model-changed(idx == 0 ? "fastenhancer" : "ns-only");
+                }
+            }
+            if root.suppressor-model == "fastenhancer" && !root.suppressor-model-available : Text {
+                text: "FastEnhancer-M no es compatible con este CPU (requiere AVX2+FMA3). Se usará NS (WebRTC).";
+                color: AppTheme.colors.danger;
+                font-size: 11px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
 
         if root.error != "" : HorizontalLayout {
             padding-top: 4px; padding-bottom: 4px; padding-left: 16px; padding-right: 16px;

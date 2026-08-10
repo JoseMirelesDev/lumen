@@ -16,6 +16,11 @@ pub struct SettingsData {
     pub backend_url: Option<String>,
     #[serde(default)]
     pub token: Option<String>,
+    /// Voice noise-suppression model, as `SuppressorModel::as_str()` —
+    /// "fastenhancer" | "ns-only". Parsed by the app (lumen-core doesn't
+    /// depend on lumen-voice). `None` = the client's default.
+    #[serde(default)]
+    pub suppressor_model: Option<String>,
 }
 
 pub struct Settings {
@@ -68,6 +73,15 @@ impl Settings {
 
     pub fn set_token(&self, token: Option<String>) {
         self.data.write().token = token;
+        self.persist();
+    }
+
+    pub fn suppressor_model(&self) -> Option<String> {
+        self.data.read().suppressor_model.clone()
+    }
+
+    pub fn set_suppressor_model(&self, model: String) {
+        self.data.write().suppressor_model = Some(model);
         self.persist();
     }
 }

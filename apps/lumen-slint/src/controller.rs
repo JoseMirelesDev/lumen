@@ -138,6 +138,17 @@ impl UiController {
         ui.on_voice_toggle_mute(move || this.voice_toggle_mute());
         let this = self.clone();
         ui.on_voice_toggle_deafen(move || this.voice_toggle_deafen());
+        let this = self.clone();
+        ui.on_voice_suppressor_model_changed(move |m| {
+            if let Some(model) = lumen_voice::audio::SuppressorModel::parse(m.as_str()) {
+                this.voice.set_suppressor_model(model);
+                // Reflect the value back into the UI (async-safe via the loop).
+                let weak = this.weak();
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    ui.set_voice_suppressor_model(model.as_str().into());
+                });
+            }
+        });
     }
 
     // -- helpers -----------------------------------------------------------
@@ -444,5 +455,9 @@ impl UiController {
         ui.set_voice_visible(self.voice_visible());
         ui.set_voice_local_user(username.clone().into());
         ui.set_voice_local_initial(model::first_char_upper(&username));
+        ui.set_voice_suppressor_model(self.voice.current_suppressor_model().as_str().into());
+        // Non-silent fallback: tell the UI whether this CPU can run the
+        // FastEnhancer-M engine, so a degraded-to-NS selection is surfaced.
+        ui.set_voice_suppressor_model_available(lumen_voice::audio::FastEnhancerDenoiser::available());
     }
 }

@@ -40,7 +40,7 @@ pub fn run() {
                             };
                             ("voice://debug", payload)
                         }
-                        VoiceEvent::PeerJoined { peer_id, user_id } => (
+                        VoiceEvent::PeerJoined { peer_id, user_id, .. } => (
                             "voice://peer-joined",
                             serde_json::json!({ "peerId": peer_id, "userId": user_id }),
                         ),

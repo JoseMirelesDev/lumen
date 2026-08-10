@@ -826,6 +826,10 @@ pub struct NoiseSuppressor {
     /// the old GTCRN. `None` means the model failed to load and we fall back
     /// to RNNoise.
     neural: Option<DeepFilterDenoiser>,
+    /// FastEnhancer-Medium (48 kHz full-band, int8 C runtime) — the default
+    /// neural tier. `None` when the CPU can't run it (no AVX2+FMA3+F16C) →
+    /// the chain degrades to WebRTC NS-only.
+    fe: Option<FastEnhancerDenoiser>,
     /// Whether the last processed frame contained speech (DeepFilterNet LSNR
     /// in the neural path, RNNoise VAD in the fallback).
     speech_detected: bool,
@@ -839,24 +843,41 @@ impl NoiseSuppressor {
     /// (transparent-initial-state patch) + HPF + NS VeryHigh + GainController2,
     /// then the peak limiter. No external denoiser and no custom leveler.
     pub fn new() -> Self {
-        Self::chain(None, false)
+        Self::chain(None, false, None)
+    }
+
+    /// Build the suppressor for a UI-selectable model. `NsOnly` is the WebRTC
+    /// NS chain (no neural denoiser); `FastEnhancerM` runs the 48 kHz int8 C
+    /// runtime and auto-degrades to `NsOnly` on CPUs that can't run it (no
+    /// AVX2+FMA3+F16C — e.g. pre-Haswell or Pentium/Celeron).
+    pub fn with_model(model: SuppressorModel) -> Self {
+        match model {
+            SuppressorModel::NsOnly => Self::new(),
+            SuppressorModel::FastEnhancerM => {
+                Self::chain(None, false, FastEnhancerDenoiser::new())
+            }
+        }
     }
 
     /// The DeepFilterNet tier (AEC3 + NS + GC2 + DeepFilterNet) — kept as an
     /// optional enhancement for very noisy environments; measured to damage
     /// the voice more than the NS-only chain (see the harness diary).
     pub fn new_neural() -> Self {
-        Self::chain(DeepFilterDenoiser::new(), false)
+        Self::chain(DeepFilterDenoiser::new(), false, None)
     }
 
     /// The RNNoise tier (AEC3 + NS + GC2 + RNNoise) — kept for the light
     /// fallback; RNNoise cuts quiet words (measured p10 -51.8 dB).
     pub fn new_light() -> Self {
-        Self::chain(None, true)
+        Self::chain(None, true, None)
     }
 
     /// Shared construction: WebRTC APM plus the optional external denoiser.
-    fn chain(neural: Option<DeepFilterDenoiser>, rnnoise: bool) -> Self {
+    fn chain(
+        neural: Option<DeepFilterDenoiser>,
+        rnnoise: bool,
+        fe: Option<FastEnhancerDenoiser>,
+    ) -> Self {
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
             processor.set_config(apm_config());
             processor
@@ -865,6 +886,7 @@ impl NoiseSuppressor {
             processor,
             rnnoise: if rnnoise { Some(nnnoiseless::DenoiseState::new()) } else { None },
             neural,
+            fe,
             speech_detected: false,
             last_lsnr: None,
         }
@@ -918,7 +940,15 @@ impl NoiseSuppressor {
         };
         // Denoise with the active tier and derive the speech signal.
         let mut result: Vec<i16>;
-        if let Some(n) = self.neural.as_mut() {
+        if let Some(fe) = self.fe.as_mut() {
+            // FastEnhancer tier (default): full-band 48 kHz int8 runtime.
+            // Its output on noise-only frames is near-silence, so the VAD is
+            // post-denoise energy — the model itself suppresses before we
+            // decide to transmit (the mic never opens on noise).
+            self.last_lsnr = None;
+            result = fe.process(&out);
+            self.speech_detected = rms_level(&result) > 0.01;
+        } else if let Some(n) = self.neural.as_mut() {
             // DeepFilterNet tier (opt-in): the VAD comes from the model's own
             // LSNR (local SNR, dB) — mapped onto a [0..1] probability.
             let (denoised, lsnr) = n.process(&out);
@@ -978,10 +1008,11 @@ impl NoiseSuppressor {
         self.speech_detected
     }
 
-    /// Whether the DeepFilterNet denoiser is available (loaded). `false` means
-    /// the model failed to load and the chain uses the RNNoise fallback.
+    /// Whether any neural denoiser is active (FastEnhancer or DeepFilterNet).
+    /// `false` means the chain is WebRTC NS-only (the model failed to load or
+    /// the CPU can't run it).
     pub fn neural_available(&self) -> bool {
-        self.neural.is_some()
+        self.fe.is_some() || self.neural.is_some()
     }
 
     /// LSNR (dB) of the most recently processed frame in the neural tier;
@@ -1029,9 +1060,165 @@ fn apm_config() -> Config {
     }
 }
 
+/// UI-selectable suppression model for the voice send path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SuppressorModel {
+    /// WebRTC NS only — no external neural denoiser ("practically free").
+    NsOnly,
+    /// FastEnhancer-Medium (48 kHz full-band, int8 C runtime). Requires
+    /// AVX2+FMA3+F16C; auto-degrades to `NsOnly` when the CPU can't run it.
+    FastEnhancerM,
+}
+
+impl SuppressorModel {
+    /// Stable identifier for persistence/UI (lumen-core stores this string).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SuppressorModel::NsOnly => "ns-only",
+            SuppressorModel::FastEnhancerM => "fastenhancer",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ns-only" => Some(SuppressorModel::NsOnly),
+            "fastenhancer" => Some(SuppressorModel::FastEnhancerM),
+            _ => None,
+        }
+    }
+
+    /// Whether this model can actually run on this build/hardware — used by
+    /// the UI to surface (never silently hide) an unavailable selection.
+    /// NsOnly is always available; FastEnhancerM needs AVX2+FMA3+F16C.
+    pub fn available(&self) -> bool {
+        match self {
+            SuppressorModel::NsOnly => true,
+            SuppressorModel::FastEnhancerM => FastEnhancerDenoiser::available(),
+        }
+    }
+}
+
 impl Default for NoiseSuppressor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FastEnhancerDenoiser (faster-enhancer.c, FastEnhancer-Medium 48 kHz)
+// ---------------------------------------------------------------------------
+
+/// Raw FFI to the vendored faster-enhancer.c runtime (single global engine,
+/// one audio thread). Only linked on non-MSVC targets — fe requires
+/// GCC/Clang-style per-file ISA flags and rejects MSVC/clang-cl at configure.
+#[cfg(not(target_env = "msvc"))]
+mod ffe {
+    use std::os::raw::{c_int, c_void};
+
+    extern "C" {
+        /// Returns 0 on success; non-zero (e.g. no AVX2+FMA3+F16C) on failure.
+        pub fn fe_init(weights_blob: *const c_void, weights_size: c_int) -> c_int;
+        pub fn fe_run(in_: *const f32, out: *mut f32);
+        pub fn fe_free();
+    }
+}
+
+/// FastEnhancer-Medium 48 kHz full-band denoiser — the default neural tier.
+/// Wraps the vendored faster-enhancer.c int8 runtime (MIT, see
+/// vendor/faster-enhancer/). Requires AVX2+FMA3+F16C; [`new`] returns `None`
+/// on CPUs without it (pre-Haswell, or Pentium/Celeron) so the caller falls
+/// back to WebRTC NS-only. The engine is a C global (single instance); the
+/// struct is never `Send`/`Sync` — it lives on the single send-task thread.
+pub struct FastEnhancerDenoiser {
+    _private: (),
+}
+
+#[cfg(not(target_env = "msvc"))]
+impl FastEnhancerDenoiser {
+    /// Embedded W8A8 weight blob (fe.q8). `fe_init` references it zero-copy,
+    /// so it must outlive the engine — a `'static` slice works.
+    const WEIGHTS: &'static [u8] = include_bytes!("../vendor/faster-enhancer/weights/fe.q8");
+
+    /// Non-destructive availability probe (does NOT init the global engine).
+    /// Mirrors the runtime's own AVX2+FMA3+F16C floor (x86) / NEON baseline
+    /// (arm64) so the UI can avoid offering a model this CPU can't run —
+    /// there is no silent fallback at the UI layer.
+    pub fn available() -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma")
+                && std::arch::is_x86_feature_detected!("f16c")
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            true // NEON baseline is always present on arm64
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            false
+        }
+    }
+
+    /// Initialize the engine. Returns `None` when `fe_init` fails — i.e. the
+    /// host lacks AVX2+FMA3+F16C — which is how the runtime degrades to the
+    /// NS-only tier on weak CPUs (the UI already avoids offering M there).
+    pub fn new() -> Option<Self> {
+        let ok = unsafe {
+            ffe::fe_init(
+                Self::WEIGHTS.as_ptr() as *const std::os::raw::c_void,
+                Self::WEIGHTS.len() as i32,
+            )
+        };
+        if ok == 0 {
+            Some(Self { _private: () })
+        } else {
+            None
+        }
+    }
+
+    /// Process one frame. `frame` must be a multiple of 320 samples (the
+    /// engine's 6.67 ms frame); a 20 ms capture frame is exactly 3 × 320.
+    pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
+        debug_assert!(
+            frame.len() % 320 == 0,
+            "FastEnhancer requires frames of 320-sample multiples"
+        );
+        let mut input = vec![0f32; frame.len()];
+        for (i, s) in frame.iter().enumerate() {
+            input[i] = *s as f32 / 32768.0;
+        }
+        let mut out = vec![0f32; frame.len()];
+        for c in 0..frame.len() / 320 {
+            unsafe {
+                ffe::fe_run(input[c * 320..].as_ptr(), out[c * 320..].as_mut_ptr());
+            }
+        }
+        out.iter()
+            .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+            .collect()
+    }
+}
+
+#[cfg(not(target_env = "msvc"))]
+impl Drop for FastEnhancerDenoiser {
+    fn drop(&mut self) {
+        unsafe { ffe::fe_free(); }
+    }
+}
+
+// On MSVC the C runtime is not built; the type exists so the tier wiring
+// compiles, but `new()` always returns None → NS-only chain.
+#[cfg(target_env = "msvc")]
+impl FastEnhancerDenoiser {
+    pub fn new() -> Option<Self> {
+        None
+    }
+    pub fn available() -> bool {
+        false
+    }
+    pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
+        frame.to_vec()
     }
 }
 
