@@ -79,6 +79,48 @@ pub struct VoiceJoinArgs {
     pub ice_servers: Vec<IceServer>,
 }
 
+/// Diagnostics: `LUMEN_VOICE_DIAG=1` appends a JSONL trace (send RTP, recv RTP,
+/// NetEQ per-tick stats) to `<tmp>/lumen-voice-diag-<pid>.jsonl` so a real
+/// two-machine call can be diagnosed (packet loss / jitter / PLC expansion).
+mod diag {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::sync::{LazyLock, Mutex};
+
+    static F: LazyLock<Mutex<std::fs::File>> = LazyLock::new(|| {
+        let path =
+            std::env::temp_dir().join(format!("lumen-voice-diag-{}.jsonl", std::process::id()));
+        Mutex::new(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("open diag file"),
+        )
+    });
+
+    pub fn enabled() -> bool {
+        std::env::var("LUMEN_VOICE_DIAG").is_ok()
+    }
+
+    pub fn log(ev: &str, obj: &serde_json::Value) {
+        if !enabled() {
+            return;
+        }
+        let mut o = obj.clone();
+        o["ev"] = serde_json::json!(ev);
+        o["t_ms"] = serde_json::json!(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        );
+        if let Ok(mut f) = F.lock() {
+            let _ = writeln!(f, "{o}");
+        }
+    }
+}
+
 /// How the local mic decides when to transmit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -436,6 +478,10 @@ impl VoiceSession {
                     ticker.tick().await;
                     acc.fill(0);
                     let mut talking = 0usize;
+                    let mut n_expand = 0u32;
+                    let mut n_normal = 0u32;
+                    let mut n_cng = 0u32;
+                    let mut n_other = 0u32;
                     // Clone handles out of the lock so decoding never holds
                     // the peers map (signaling/send tasks lock it too).
                     let snapshot: Vec<Peer> = peers.lock().values().cloned().collect();
@@ -449,6 +495,12 @@ impl VoiceSession {
                         for _ in 0..2 {
                             match peer.neteq.lock().get_audio() {
                                 Ok(audio) => {
+                                    match audio.speech_type {
+                                        neteq::neteq::SpeechType::Expand => n_expand += 1,
+                                        neteq::neteq::SpeechType::Cng => n_cng += 1,
+                                        neteq::neteq::SpeechType::Normal => n_normal += 1,
+                                        _ => n_other += 1,
+                                    }
                                     let n = audio.samples.len().min(FRAME_SAMPLES - got);
                                     for (i, s) in audio.samples[..n].iter().enumerate() {
                                         pcm[got + i] = (*s * 32767.0)
@@ -468,6 +520,24 @@ impl VoiceSession {
                             acc[i] = acc[i].saturating_add(*s as i32);
                         }
                         talking += 1;
+                    }
+                    if diag::enabled() {
+                        if let Some(nq) = snapshot.iter().next().and_then(|p| p.neteq.try_lock()) {
+                            let st = nq.get_statistics();
+                            diag::log(
+                                "mix",
+                                &serde_json::json!({
+                                    "expand": n_expand,
+                                    "normal": n_normal,
+                                    "cng": n_cng,
+                                    "other": n_other,
+                                    "buffer_ms": st.current_buffer_size_ms,
+                                    "target_ms": st.target_delay_ms,
+                                    "pps": st.packets_per_sec,
+                                    "waiting_ms": st.network.mean_waiting_time_ms,
+                                }),
+                            );
+                        }
                     }
                     if talking == 0 {
                         output.push(&silence);
@@ -868,6 +938,7 @@ fn spawn_send_worker(
     tokio::spawn(async move {
         let mut packetizer = AudioPacketizer::new(ssrc, 111);
         let mut pt: Option<u8> = None;
+        let mut last_send: Option<std::time::Instant> = None;
         while let Some(frame) = rx.recv().await {
             if stop.load(Ordering::SeqCst) {
                 break;
@@ -881,6 +952,17 @@ fn spawn_send_worker(
                 }
             }
             let pkt = packetizer.packet(&frame);
+            let now = std::time::Instant::now();
+            diag::log(
+                "send",
+                &serde_json::json!({
+                    "seq": pkt.header.sequence_number,
+                    "ts": pkt.header.timestamp,
+                    "len": pkt.payload.len(),
+                    "since_ms": last_send.map(|t| now.duration_since(t).as_millis() as u64).unwrap_or(0),
+                }),
+            );
+            last_send = Some(now);
             let _ = track.write_rtp(pkt).await; // errors while unconnected are dropped
         }
     });
@@ -955,15 +1037,32 @@ impl PeerConnectionEventHandler for PeerHandler {
         let recv_neteq = self.neteq.clone();
         let stop_recv = self.stop.clone();
         tokio::spawn(async move {
+            let mut last_seq: Option<u16> = None;
+            let mut last_t: Option<std::time::Instant> = None;
             while let Some(event) = track.poll().await {
                 if stop_recv.load(Ordering::SeqCst) {
                     break;
                 }
                 match event {
                     TrackRemoteEvent::OnRtpPacket(pkt) => {
+                        let seq = pkt.header.sequence_number;
+                        let ts = pkt.header.timestamp;
+                        let now = std::time::Instant::now();
+                        diag::log(
+                            "recv",
+                            &serde_json::json!({
+                                "seq": seq,
+                                "ts": ts,
+                                "gap": last_seq.map(|s| (seq.wrapping_sub(s) as i32).saturating_sub(1).max(0)).unwrap_or(0),
+                                "since_ms": last_t.map(|t| now.duration_since(t).as_millis() as u64).unwrap_or(0),
+                                "buffer_ms": recv_neteq.lock().get_statistics().current_buffer_size_ms,
+                            }),
+                        );
+                        last_seq = Some(seq);
+                        last_t = Some(now);
                         let header = RtpHeader {
-                            sequence_number: pkt.header.sequence_number,
-                            timestamp: pkt.header.timestamp,
+                            sequence_number: seq,
+                            timestamp: ts,
                             ssrc: pkt.header.ssrc,
                             payload_type: pkt.header.payload_type,
                             marker: pkt.header.marker,
