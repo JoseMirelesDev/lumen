@@ -346,6 +346,19 @@ fn generate_scene_manifest() -> String {
 }
 
 fn main() {
+    // The Slint compiler recurses deep on large .slint files (members
+    // overlay, settings tabs, chat-view) and the Windows main-thread stack
+    // is only 1 MiB → STATUS_STACK_OVERFLOW in the build script
+    // (0xc00000fd). Run the whole build on a thread with a bigger stack;
+    // this also covers the Linux/macOS runners for margin.
+    let child = std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run_build)
+        .expect("spawn build thread");
+    child.join().expect("build thread panicked");
+}
+
+fn run_build() {
     let art_manifest = generate_art_manifest();
     let scene_manifest = generate_scene_manifest();
     let gen_dir = Path::new("ui/generated");
@@ -369,5 +382,4 @@ fn main() {
     println!("cargo:rerun-if-changed=ui");
     println!("cargo:rerun-if-changed=assets");
     println!("cargo:rerun-if-changed=../../designs/art/scenes");
-    println!("cargo:rerun-if-changed=../../designs/art/export");
 }
