@@ -97,7 +97,11 @@ jobs:
           # fe (FastEnhancer) builds with MinGW gcc (GNU .a); lld-link reads
           # both the MSVC .lib (webrtc) and the GNU .a in one link. Enabled
           # now that the webrtc fresh-build bug (pthread.h) is fixed.
-          echo "RUSTFLAGS=-C linker=lld-link" >> "$GITHUB_ENV"
+          # /FORCE:MULTIPLE: skia's bundled ICU = static objects in
+          # skunicode_icu.lib + an icuuc.dll import (skia-bindings Windows
+          # quirk) → duplicate u* symbols at link; identical copies, the
+          # linker keeps the static one.
+          echo "RUSTFLAGS=-C linker=lld-link -C link-arg=/FORCE:MULTIPLE" >> "$GITHUB_ENV"
       - name: Build lumen-desktop (debug)
         run: cargo build -p lumen-desktop
         env:
