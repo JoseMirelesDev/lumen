@@ -46,3 +46,4 @@ apps/lumen-slint/ui/generated/
 designs/art/*.xcf
 designs/art/sources/
 designs/art/export/
+secrets/ 
