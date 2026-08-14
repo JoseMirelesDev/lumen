@@ -1,0 +1,110 @@
+// Lumen primitives — chips module.
+import { AppTheme } from "../theme.slint";
+
+// SectionHeader — mono uppercase section label with a square marker.
+// Centralizes the "6px marker + label" header pattern (roster, friends,
+// settings) so marker color, spacing and the cross-axis centering live in
+// ONE place. Explicit-size children in layouts otherwise land at the start
+// of the cross axis (the marker stuck to the top bug).
+export component SectionHeader inherits HorizontalLayout {
+    in property <string> label;
+    in property <color> marker-color: AppTheme.colors.ice;
+    in property <length> row-height: 28px;
+    in property <length> pad-top: 0px;
+    in property <length> pad-left: AppTheme.sp-2;
+
+    height: root.row-height;
+    padding-top: root.pad-top;
+    padding-left: root.pad-left;
+    spacing: 8px;
+    cross-axis-alignment: center;
+
+    Rectangle {
+        width: 6px;
+        height: 6px;
+        background: root.marker-color;
+    }
+    Text {
+        text: root.label;
+        font-family: AppTheme.font-mono;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+        color: AppTheme.colors.text-dim;
+        overflow: elide;
+        min-width: 0px;
+        vertical-alignment: center;
+    }
+}
+
+// Lumen primitives — chips module.
+import { AppTheme } from "../theme.slint";
+
+// Status dot — SHAPE-coded, not just color (WCAG 1.4.11): disc = online,
+// diamond = idle, slashed square = dnd, hollow = offline.
+export component StatusDot inherits Rectangle {
+    in property <string> shape: "disc"; // disc | diamond | square | hollow
+    in property <color> dot-color: AppTheme.colors.offline;
+    width: 8px;
+    height: 8px;
+    background: transparent;
+
+    if root.shape == "disc" : Rectangle {
+        width: 8px; height: 8px;
+        border-radius: AppTheme.radius-pill;
+        background: root.dot-color;
+    }
+    if root.shape == "diamond" : Path {
+        x: 0px; y: 0px;
+        width: 8px; height: 8px;
+        commands: "M 4 0 L 8 4 L 4 8 L 0 4 Z";
+        fill: root.dot-color;
+    }
+    if root.shape == "square" : Rectangle {
+        width: 8px; height: 8px;
+        background: root.dot-color;
+        Path {
+            x: -2px; y: 2px;
+            width: 12px; height: 3px;
+            commands: "M 0 1 L 11 0";
+            stroke: AppTheme.colors.bg-deep;
+            stroke-width: 2px;
+        }
+    }
+    if root.shape == "hollow" : Rectangle {
+        width: 8px; height: 8px;
+        border-width: 1px;
+        border-color: root.dot-color;
+        background: transparent;
+    }
+}
+
+// Lumen primitives — chips module.
+import { AppTheme } from "../theme.slint";
+
+// StateChip — tiny pill for compact rows / status text (mono uppercase).
+// Root is a layout so it auto-sizes to its label inside row layouts.
+export component StateChip inherits HorizontalLayout {
+    in property <string> label;
+    in property <color> chip-color: AppTheme.colors.text-dim;
+
+    height: 16px;
+    padding-left: 6px;
+    padding-right: 6px;
+    Rectangle {
+        background: AppTheme.colors.surface;
+        border-width: 1px;
+        border-color: root.chip-color;
+        border-radius: AppTheme.radius-pill;
+    }
+    Text {
+        text: root.label;
+        font-family: AppTheme.font-mono;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: root.chip-color;
+        vertical-alignment: center;
+    }
+}
+

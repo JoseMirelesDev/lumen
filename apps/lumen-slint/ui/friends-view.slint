@@ -1,37 +1,95 @@
-// Friends pane — port of apps/desktop/src/lib/components/FriendsView.svelte.
-// Pure view: DMs, online/offline friends, incoming requests, add-friend box.
+// Friends pane — DMs, online/offline friends, incoming requests, add-friend
+// box. Bust silhouettes (skin by username hash), shape-coded status dots,
+// mono uppercase group labels.
 
 import { AppTheme } from "theme.slint";
-import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+import { Icons } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
 import { DmItem, FriendItem, FriendRequestItem } from "types.slint";
-import { HeaderBar, ListRow, Divider } from "base.slint";
+import { HeaderBar, ListRow, Divider } from "primitives/layout.slint";
+import { Bust } from "primitives/identity.slint";
+import { StatusDot, SectionHeader } from "primitives/chips.slint";
+import { VoxButton, HeaderIconBtn } from "primitives/buttons.slint";
+import { VoxLineEdit } from "primitives/inputs.slint";
+import { IconGlyph } from "primitives/icon.slint";
 
 component FriendRow inherits ListRow {
+    in property <string> id;
     in property <string> label;
+    in property <string> skin: "ivory";
     in property <bool> online;
-    Rectangle {
-        width: 8px;
-        height: 8px;
-        border-radius: 4px;
-        background: root.online ? AppTheme.colors.online : AppTheme.colors.state-mid;
-        opacity: root.online ? 1.0 : 0.6;
+    in property <int> shared: 0;
+    callback remove(string);
+    pad-y: 2px;
+    height: 36px;
+
+    Bust {
+        skin: root.skin;
+        state: "idle";
+        width: 32px;
+        height: 32px;
+    }
+    StatusDot {
+        shape: root.online ? "disc" : "hollow";
+        dot-color: root.online ? AppTheme.colors.online : AppTheme.colors.text-mute;
     }
     Text {
         text: root.label;
-        color: root.online ? AppTheme.colors.text : AppTheme.colors.text-dim;
-        font-size: AppTheme.font-md;
+        font-family: AppTheme.font-body;
+        font-weight: root.online ? 600 : 400;
+        font-size: AppTheme.font-sm;
+        color: root.online ? AppTheme.colors.text-hi : AppTheme.colors.text-dim;
         overflow: elide;
         horizontal-stretch: 1;
+    }
+    if root.shared > 0 : Text {
+        text: root.shared + " en común";
+        font-family: AppTheme.font-mono;
+        font-size: AppTheme.font-xs;
+        color: AppTheme.colors.text-mute;
+        overflow: elide;
+        min-width: 0px;
+        vertical-alignment: center;
+    }
+    // "quitar amigo" (Fase 2) — hover-revealed via ListRow's exposed
+    // `hovered` out-property (primitives/layout.slint).
+    if root.hovered : rm-ta := TouchArea {
+        width: 24px;
+        height: 24px;
+        mouse-cursor: pointer;
+        clicked => { root.remove(root.id); }
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: rm-ta.has-hover ? AppTheme.colors.card-hi : transparent;
+            border-radius: AppTheme.radius-1;
+            IconGlyph {
+                glyph: Icons.x;
+                size: 14px;
+                text-color: rm-ta.has-hover ? AppTheme.colors.rose : AppTheme.colors.text-dim;
+            }
+        }
     }
 }
 
 component DmRow inherits ListRow {
     in property <string> label;
-    Text { text: "@"; color: AppTheme.colors.text-dim; font-size: AppTheme.font-md; }
+    in property <string> skin: "ivory";
+    pad-y: 2px;
+    height: 36px;
+
+    Bust {
+        skin: root.skin;
+        state: "idle";
+        width: 32px;
+        height: 32px;
+    }
     Text {
         text: root.label;
+        font-family: AppTheme.font-body;
+        font-weight: 500;
+        font-size: AppTheme.font-sm;
         color: AppTheme.colors.text;
-        font-size: AppTheme.font-md;
         overflow: elide;
         horizontal-stretch: 1;
     }
@@ -47,152 +105,223 @@ export component FriendsView inherits Rectangle {
     callback accept-friend(string);
     callback decline-friend(string);
     callback add-friend(string);
-    property <string> request-user;
+    callback remove-friend(string);
+    callback open-settings();
+    in-out property <string> request-user: "";
 
     width: AppTheme.sidebar-width;
     vertical-stretch: 1;
-    background: AppTheme.colors.bg-list;
+    background: AppTheme.colors.surface;
 
     VerticalLayout {
         width: 100%;
         height: 100%;
+
         HeaderBar {
-            pad-x: 14px;
-            Text { text: "Friends"; font-size: AppTheme.font-base; font-weight: 700; color: AppTheme.colors.text; }
+            pad-x: AppTheme.sp-3;
+            Text {
+                text: "Friends";
+                font-family: AppTheme.font-display;
+                font-weight: 700;
+                font-size: AppTheme.font-title;
+                color: AppTheme.colors.text-hi;
+                horizontal-stretch: 1;
+            }
+            HeaderIconBtn {
+                icon: Icons.gear-six;
+                clicked => { root.open-settings(); }
+            }
         }
         Divider { }
 
         ScrollView {
             vertical-stretch: 1;
+            // wheel-scrollable, no visible bar (matches settings panel)
+            vertical-scrollbar-policy: always-off;
             VerticalLayout {
+                // Guard: pin to the viewport width so no content can force a
+                // horizontal scrollbar (same as login/settings ScrollViews).
+                min-width: 0px;
                 alignment: start;
                 padding-top: AppTheme.sp-2;
                 padding-bottom: AppTheme.sp-2;
-                padding-left: 6px;
-                padding-right: 6px;
-                spacing: 2px;
+                padding-left: AppTheme.sp-2;
+                padding-right: AppTheme.sp-2;
+                spacing: AppTheme.sp-1;
 
-                HorizontalLayout {
-                    padding-left: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "DIRECT MESSAGES"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
+            // REQUESTS — actionable, first.
+            if root.requests.length > 0 : VerticalLayout {
+                spacing: AppTheme.sp-1;
+                SectionHeader {
+                    label: "SOLICITUDES";
+                    marker-color: AppTheme.colors.rose;
+                    row-height: 30px;
                 }
-                if root.dms.length == 0 : HorizontalLayout {
-                    padding-left: AppTheme.sp-2;
-                    padding-right: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "No DMs yet — send a friend request below."; font-size: AppTheme.font-sm; color: AppTheme.colors.text-dim; wrap: word-wrap; }
-                }
-                for d in root.dms: DmRow {
-                    label: d.username;
-                    clicked => { root.open-dm(d.username); }
-                }
-
-                HorizontalLayout {
-                    padding-left: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "ONLINE"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
-                }
-                if root.online.length == 0 : HorizontalLayout {
-                    padding-left: AppTheme.sp-2;
-                    padding-right: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "No friends online."; font-size: AppTheme.font-sm; color: AppTheme.colors.text-dim; }
-                }
-                for f in root.online: FriendRow {
-                    label: f.username;
-                    online: true;
-                    clicked => { root.open-dm(f.username); }
-                }
-
-                HorizontalLayout {
-                    padding-left: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "OFFLINE"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
-                }
-                if root.offline.length == 0 : HorizontalLayout {
-                    padding-left: AppTheme.sp-2;
-                    padding-right: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "No friends yet."; font-size: AppTheme.font-sm; color: AppTheme.colors.text-dim; }
-                }
-                for f in root.offline: FriendRow {
-                    label: f.username;
-                    online: false;
-                    clicked => { root.open-dm(f.username); }
-                }
-
-                if root.requests.length > 0 : VerticalLayout {
-                    alignment: start;
-                    spacing: 2px;
-                    HorizontalLayout {
-                        padding-left: AppTheme.sp-2;
-                        padding-top: AppTheme.sp-1;
-                        padding-bottom: AppTheme.sp-1;
-                        Text { text: "REQUESTS"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
-                    }
-                    for r in root.requests: Rectangle {
-                        height: AppTheme.row-height;
-                        border-radius: AppTheme.radius-sm;
+                for r in root.requests: Rectangle {
+                        height: 44px;
+                        border-radius: AppTheme.radius-1;
                         HorizontalLayout {
                             alignment: start;
                             padding-left: AppTheme.sp-2;
                             padding-right: AppTheme.sp-2;
-                            padding-top: 6px;
-                            padding-bottom: 6px;
                             spacing: AppTheme.sp-2;
+                            cross-axis-alignment: center;
+                            IconGlyph {
+                                glyph: Icons.user;
+                                size: 16px;
+                                text-color: AppTheme.colors.text-mute;
+                            }
                             Text {
                                 text: r.username;
+                                font-family: AppTheme.font-body;
+                                font-size: AppTheme.font-sm;
                                 color: AppTheme.colors.text;
-                                font-size: AppTheme.font-md;
                                 overflow: elide;
                                 horizontal-stretch: 1;
                             }
-                            Button {
-                                text: "✓";
+                            VoxButton {
+                                icon: Icons.check;
+                                compact: true;
+                                primary: true;
                                 clicked => { root.accept-friend(r.id); }
                             }
-                            Button {
-                                text: "✕";
+                            VoxButton {
+                                icon: Icons.x;
+                                compact: true;
                                 clicked => { root.decline-friend(r.id); }
                             }
                         }
                     }
+                Divider { }
+            }
+
+            // DIRECT MESSAGES
+            SectionHeader {
+                label: "MENSAJES DIRECTOS";
+                marker-color: AppTheme.colors.ice;
+                row-height: 30px;
+                pad-top: AppTheme.sp-3;
+            }
+            if root.dms.length == 0 : Rectangle {
+                HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    Text {
+                        text: "No DMs yet — send a friend request below.";
+                        font-family: AppTheme.font-body;
+                        font-size: AppTheme.font-sm;
+                        color: AppTheme.colors.text-mute;
+                        wrap: word-wrap;
+                    }
                 }
             }
+            if root.dms.length > 0 : VerticalLayout {
+                spacing: AppTheme.sp-1;
+                for d in root.dms: DmRow {
+                label: d.username;
+                skin: d.skin;
+                clicked => { root.open-dm(d.username); }
+            }
+            }
+            Divider { }
+
+            // ONLINE
+            SectionHeader {
+                label: "EN LÍNEA";
+                marker-color: AppTheme.colors.online;
+                row-height: 30px;
+                pad-top: AppTheme.sp-3;
+            }
+            if root.online.length == 0 : Rectangle {
+                                HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    Text {
+                        text: "No friends online.";
+                        font-family: AppTheme.font-body;
+                        font-size: AppTheme.font-sm;
+                        color: AppTheme.colors.text-mute;
+                    }
+                }
+            }
+            if root.online.length > 0 : VerticalLayout {
+                spacing: AppTheme.sp-1;
+                for f in root.online: FriendRow {
+                id: f.id;
+                label: f.username;
+                skin: f.skin;
+                online: true;
+                shared: f.shared;
+                clicked => { root.open-dm(f.username); }
+                remove(id) => { root.remove-friend(id); }
+            }
+            }
+            Divider { }
+
+            // OFFLINE
+            SectionHeader {
+                label: "DESCONECTADOS";
+                marker-color: AppTheme.colors.text-mute;
+                row-height: 30px;
+                pad-top: AppTheme.sp-3;
+            }
+            if root.offline.length == 0 : Rectangle {
+                                HorizontalLayout {
+                    padding-left: AppTheme.sp-2;
+                    Text {
+                        text: "No friends yet.";
+                        font-family: AppTheme.font-body;
+                        font-size: AppTheme.font-sm;
+                        color: AppTheme.colors.text-mute;
+                    }
+                }
+            }
+            if root.offline.length > 0 : VerticalLayout {
+                spacing: AppTheme.sp-1;
+                for f in root.offline: FriendRow {
+                id: f.id;
+                label: f.username;
+                skin: f.skin;
+                online: false;
+                shared: f.shared;
+                clicked => { root.open-dm(f.username); }
+                remove(id) => { root.remove-friend(id); }
+            }
+            }
+        }
         }
 
         if root.error != "" : HorizontalLayout {
-            padding-left: 10px;
-            padding-right: 10px;
+            padding-left: AppTheme.sp-2;
+            padding-right: AppTheme.sp-2;
             padding-top: AppTheme.sp-1;
             padding-bottom: AppTheme.sp-1;
-            Text { text: root.error; color: AppTheme.colors.danger; font-size: AppTheme.font-sm; wrap: word-wrap; }
+            Text {
+                text: root.error;
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                color: AppTheme.colors.rose;
+                wrap: word-wrap;
+            }
         }
 
         Divider { }
         Rectangle {
+            background: AppTheme.colors.bg-deep;
             VerticalLayout {
-                padding: 10px;
+                padding: AppTheme.sp-2;
                 HorizontalLayout {
                     spacing: AppTheme.sp-2;
-                    LineEdit {
+                    VoxLineEdit {
                         text <=> root.request-user;
-                        placeholder-text: "Add friend by username";
+                        placeholder: "Añadir amigo por usuario";
                         horizontal-stretch: 1;
-                        accepted => { root.add-friend(root.request-user); root.request-user = ""; }
+                        accepted(text) => { root.add-friend(text); }
                     }
-                    Button {
-                        text: "Send";
+                    VoxButton {
+                        icon: Icons.paper-plane-right;
                         primary: true;
+                        compact: true;
                         enabled: root.request-user != "";
-                        clicked => { root.add-friend(root.request-user); root.request-user = ""; }
+                        clicked => { root.add-friend(root.request-user); }
                     }
                 }
             }

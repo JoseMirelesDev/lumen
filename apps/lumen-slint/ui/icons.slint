@@ -1,0 +1,108 @@
+/* Phosphor icon glyphs — MIT license (@phosphor-icons/web regular).
+ * Rendered via Text { font-family: AppTheme.font-icon; } and colored by
+ * tokens. Glyphs are Private-Use-Area codepoints from Phosphor-selection.json
+ * (kept beside Phosphor.ttf in ../fonts/).
+ *
+ * Zone rule (designer verdict): Phosphor lives in calm zones (rail, sidebar,
+ * chat, footer). Ritual zones keep hard square chip frames around the glyph
+ * — the frame carries the pixel identity.
+ */
+export global Icons {
+    // voice
+    in property <string> mic: "\u{E326}";
+    in property <string> mic-slash: "\u{E328}";
+    in property <string> headphones: "\u{E2A6}";
+    in property <string> video-camera: "\u{E4DA}";
+    in property <string> video-camera-slash: "\u{E4DC}";
+    in property <string> speaker-high: "\u{E44A}";
+    in property <string> speaker-x: "\u{E45C}";
+    in property <string> speaker-none: "\u{E44E}";
+    in property <string> ear-slash: "\u{E70E}";
+    in property <string> phone-slash: "\u{E3C2}";
+    in property <string> waveform: "\u{E802}";
+    // nav / channels
+    in property <string> hash: "\u{E2A2}";
+    in property <string> caret-down: "\u{E136}";
+    in property <string> caret-right: "\u{E13A}";
+    in property <string> plus: "\u{E3D4}";
+    in property <string> magnifying-glass: "\u{E30C}";
+    in property <string> gear-six: "\u{E272}";
+    in property <string> sliders-horizontal: "\u{E434}";
+    in property <string> users-three: "\u{E68E}";
+    in property <string> chat-circle-text: "\u{E16E}";
+    in property <string> chat-text: "\u{E17A}";
+    in property <string> at: "\u{E0AC}";
+    in property <string> link: "\u{E2E2}";
+    in property <string> user: "\u{E4C2}";
+    // actions
+    in property <string> paper-plane-right: "\u{E396}";
+    in property <string> door-open: "\u{E7E6}";
+    in property <string> phone: "\u{E3B8}";
+    in property <string> check: "\u{E182}";
+    in property <string> x: "\u{E4F6}";
+    in property <string> arrow-left: "\u{E058}";
+    in property <string> arrow-right: "\u{E06C}";
+    in property <string> pencil-simple: "\u{E3B4}";
+    in property <string> download: "\u{E20A}";
+    in property <string> upload: "\u{E4BE}";
+    // ritual / status
+    in property <string> fire: "\u{E242}";
+    in property <string> crown: "\u{E614}";
+    in property <string> sword: "\u{E5BA}";
+    in property <string> shield: "\u{E40A}";
+    in property <string> bell: "\u{E0CE}";
+    in property <string> warning: "\u{E4E0}";
+    in property <string> waves: "\u{E6DE}";
+    in property <string> circle-notch: "\u{EB44}";
+    in property <string> play: "\u{E3D0}";
+    in property <string> pause: "\u{E39E}";
+
+    // glyph name -> SVG asset (neutral fill; callers colorize)
+    public pure function img(glyph: string) -> image {
+        if glyph == mic { return @image-url("../assets/icons/mic.svg"); }
+        if glyph == mic-slash { return @image-url("../assets/icons/mic-slash.svg"); }
+        if glyph == headphones { return @image-url("../assets/icons/headphones.svg"); }
+        if glyph == video-camera { return @image-url("../assets/icons/video-camera.svg"); }
+        if glyph == video-camera-slash { return @image-url("../assets/icons/video-camera-slash.svg"); }
+        if glyph == speaker-high { return @image-url("../assets/icons/speaker-high.svg"); }
+        if glyph == speaker-x { return @image-url("../assets/icons/speaker-x.svg"); }
+        if glyph == speaker-none { return @image-url("../assets/icons/speaker-none.svg"); }
+        if glyph == ear-slash { return @image-url("../assets/icons/ear-slash.svg"); }
+        if glyph == phone-slash { return @image-url("../assets/icons/phone-slash.svg"); }
+        if glyph == waveform { return @image-url("../assets/icons/waveform.svg"); }
+        if glyph == hash { return @image-url("../assets/icons/hash.svg"); }
+        if glyph == caret-down { return @image-url("../assets/icons/caret-down.svg"); }
+        if glyph == caret-right { return @image-url("../assets/icons/caret-right.svg"); }
+        if glyph == plus { return @image-url("../assets/icons/plus.svg"); }
+        if glyph == magnifying-glass { return @image-url("../assets/icons/magnifying-glass.svg"); }
+        if glyph == gear-six { return @image-url("../assets/icons/gear-six.svg"); }
+        if glyph == sliders-horizontal { return @image-url("../assets/icons/sliders-horizontal.svg"); }
+        if glyph == users-three { return @image-url("../assets/icons/users-three.svg"); }
+        if glyph == chat-circle-text { return @image-url("../assets/icons/chat-circle-text.svg"); }
+        if glyph == chat-text { return @image-url("../assets/icons/chat-text.svg"); }
+        if glyph == at { return @image-url("../assets/icons/at.svg"); }
+        if glyph == link { return @image-url("../assets/icons/link.svg"); }
+        if glyph == user { return @image-url("../assets/icons/user.svg"); }
+        if glyph == paper-plane-right { return @image-url("../assets/icons/paper-plane-right.svg"); }
+        if glyph == door-open { return @image-url("../assets/icons/door-open.svg"); }
+        if glyph == phone { return @image-url("../assets/icons/phone.svg"); }
+        if glyph == check { return @image-url("../assets/icons/check.svg"); }
+        if glyph == x { return @image-url("../assets/icons/x.svg"); }
+        if glyph == arrow-left { return @image-url("../assets/icons/arrow-left.svg"); }
+        if glyph == arrow-right { return @image-url("../assets/icons/arrow-right.svg"); }
+        if glyph == pencil-simple { return @image-url("../assets/icons/pencil-simple.svg"); }
+        if glyph == download { return @image-url("../assets/icons/download.svg"); }
+        if glyph == upload { return @image-url("../assets/icons/upload.svg"); }
+        if glyph == fire { return @image-url("../assets/icons/fire.svg"); }
+        if glyph == crown { return @image-url("../assets/icons/crown.svg"); }
+        if glyph == sword { return @image-url("../assets/icons/sword.svg"); }
+        if glyph == shield { return @image-url("../assets/icons/shield.svg"); }
+        if glyph == bell { return @image-url("../assets/icons/bell.svg"); }
+        if glyph == warning { return @image-url("../assets/icons/warning.svg"); }
+        if glyph == waves { return @image-url("../assets/icons/waves.svg"); }
+        if glyph == circle-notch { return @image-url("../assets/icons/circle-notch.svg"); }
+        if glyph == play { return @image-url("../assets/icons/play.svg"); }
+        if glyph == pause { return @image-url("../assets/icons/pause.svg"); }
+        return @image-url("../assets/icons/plus.svg");
+    }
+}

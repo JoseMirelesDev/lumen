@@ -4,14 +4,17 @@
 // handles the callbacks. Port of apps/desktop/src/routes/+page.svelte.
 
 import { AppTheme } from "theme.slint";
-import { ServerItem, ChannelItem, MessageItem, FriendItem, FriendRequestItem, DmItem, PeerTile } from "types.slint";
+import { Icons } from "icons.slint";
+import { ServerItem, ChannelItem, MessageItem, FriendItem, FriendRequestItem, DmItem, PeerTile, MemberItem, ToastItem } from "types.slint";
 import { Login } from "login.slint";
-import { ModalCard } from "modal.slint";
+import { MenuCard, ModalCard } from "modal.slint";
 import { ServerRail } from "server-rail.slint";
 import { ChannelList } from "channel-list.slint";
 import { ChatView } from "chat-view.slint";
 import { FriendsView } from "friends-view.slint";
 import { VoiceView } from "voice-view.slint";
+import { SettingsView } from "settings.slint";
+import { IconGlyph } from "primitives/icon.slint";
 
 export component AppWindow inherits Window {
     title: "Lumen";
@@ -19,7 +22,7 @@ export component AppWindow inherits Window {
     // `width`/`height` here would pin the WM minimum to that exact size).
     preferred-width: 1100px;
     preferred-height: 720px;
-    // Floor: rail (56) + sidebar (220) + ~324px of chat; tall enough for
+    // Floor: rail (76) + sidebar (240) + ~284px of main content; tall enough for
     // header + composer + a readable message area.
     min-width: 600px;
     min-height: 400px;
@@ -31,22 +34,43 @@ export component AppWindow inherits Window {
     in-out property <bool> is-register;
     in-out property <string> auth-error;
     in-out property <string> backend-url;
+    // --- identity / a11y ---
+    in-out property <string> local-skin;
+    in-out property <bool> reduced-motion;
     callback login-submit(string, string);
     callback login-toggle-mode();
     callback backend-changed(string);
+    callback login-oauth(string);
     callback logout();
 
     // --- shell / nav ---
     in-out property <bool> friends-view;
     in-out property <string> current-user;
     in-out property <[ServerItem]> servers;
+    in-out property <string> selected-server-id: "";
     callback select-server(string);
     callback create-server(string);
     callback join-server(string);
     callback open-friends();
 
+    // --- Fase 2 CRUD actions ---
+    in-out property <string> server-rename-text: "";
+    in-out property <string> channel-rename-text: "";
+    in-out property <string> edit-message-text: "";
+    in-out property <string> avatar-path: "";
+    callback server-action(string);
+    callback channel-action(string, string);
+    callback member-action(string, string);
+    callback message-action(string, string);
+    callback remove-friend(string);
+    callback username-submit(string);
+    callback password-submit(string, string);
+    callback avatar-submit(string);
+    callback avatar-pick();
+
     // --- channel list ---
     in-out property <[ChannelItem]> channels;
+    in-out property <[MemberItem]> online-members;
     in-out property <string> channel-list-title;
     in-out property <bool> can-create-channel;
     callback select-channel(string);
@@ -55,12 +79,17 @@ export component AppWindow inherits Window {
 
     // --- chat ---
     in-out property <[MessageItem]> messages;
+    // Overlay de miembros (EN LÍNEA) — colapsable sobre el chat.
+    in-out property <bool> members-visible: false;
     in-out property <string> chat-title;
+    in-out property <string> typing-label: "";
     in-out property <bool> is-dm;
     in-out property <bool> dm-call;
     in-out property <string> chat-error;
     callback send-message(string);
     callback toggle-dm-call();
+    callback link-clicked(string);
+    callback copy-message(string);
 
     // --- friends ---
     in-out property <[DmItem]> dms;
@@ -84,22 +113,44 @@ export component AppWindow inherits Window {
     in-out property <float> voice-local-level;
     in-out property <bool> voice-local-speaking;
     in-out property <string> voice-local-user;
-    in-out property <string> voice-local-initial;
     in-out property <[PeerTile]> voice-peers;
     in-out property <string> voice-suppressor-model;
     in-out property <bool> voice-suppressor-model-available;
     in-out property <bool> voice-aec-enabled;
+    in-out property <bool> voice-animations-enabled;
+    in-out property <bool> voice-particles-enabled;
     callback voice-join();
     callback voice-leave();
     callback voice-toggle-mute();
     callback voice-toggle-deafen();
     callback voice-suppressor-model-changed(string);
     callback voice-aec-enabled-changed(bool);
+    callback voice-animations-enabled-changed(bool);
+    callback voice-particles-enabled-changed(bool);
 
-    // --- modals (window level, internal) ---
-    property <bool> modal-create-server;
-    property <bool> modal-join-server;
-    property <bool> modal-create-channel;
+    // --- toasts (transient feedback) ---
+    in-out property <[ToastItem]> toasts;
+
+    // --- overlays (window level) ---
+    // single stack slot: "none" | "create-server" | "join-server" |
+    // "create-channel" | "settings" | "server-menu" | "server-rename" |
+    // "server-delete" | "channel-rename" | "channel-delete" | "edit-message".
+    in-out property <string> overlay: "none";
+
+    FocusScope {
+        // Window-level Escape handler only; not a tab target (a full-window
+        // ghost rect would otherwise appear in the focus chain between
+        // inputs). Click-focus + programmatic focus still reach it, and the
+        // modal overlays handle their own Escape via VoxOverlay.
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") {
+                root.overlay = "none";
+                return accept;
+            }
+            return reject;
+        }
+    }
 
     if !root.logged-in : Login {
         width: 100%;
@@ -111,30 +162,35 @@ export component AppWindow inherits Window {
         submit(username, password) => { root.login-submit(username, password); }
         toggle-mode => { root.login-toggle-mode(); }
         backend-changed(url) => { root.backend-changed(url); }
+        oauth(provider) => { root.login-oauth(provider); }
     }
-    Rectangle {
-        width: 100%;
-        height: 100%;
-        background: transparent;
-        if root.logged-in : HorizontalLayout {
-            spacing: 0;
-            ServerRail {
+
+    if root.logged-in : HorizontalLayout {
+        spacing: 0;
+        ServerRail {
             servers: root.servers;
-            user-label: root.current-user;
-            friends-active: root.friends-view;
             select-server(id) => { root.select-server(id); }
             open-friends => { root.open-friends(); }
-            logout => { root.logout(); }
-            open-create-server => { root.modal-create-server = true; }
-            open-join-server => { root.modal-join-server = true; }
+            open-create-server => { root.overlay = "create-server"; }
+            open-join-server => { root.overlay = "join-server"; }
         }
         if !root.friends-view : ChannelList {
             channels: root.channels;
             server-name: root.channel-list-title;
+            server-id: root.selected-server-id;
             can-create: root.can-create-channel;
+            user-label: root.current-user;
+            user-skin: root.local-skin;
+            user-muted: root.voice-muted;
+            user-deafened: root.voice-deafened;
             select-channel(id) => { root.select-channel(id); }
             copy-invite => { root.copy-invite(); }
-            open-create-channel => { root.modal-create-channel = true; }
+            open-create-channel => { root.overlay = "create-channel"; }
+            toggle-mute => { root.voice-toggle-mute(); }
+            toggle-deafen => { root.voice-toggle-deafen(); }
+            open-settings => { root.overlay = "settings"; }
+            server-action(a) => { root.server-action(a); }
+            channel-action(a, id) => { root.channel-action(a, id); }
         }
         if root.friends-view : FriendsView {
             dms: root.dms;
@@ -146,6 +202,8 @@ export component AppWindow inherits Window {
             accept-friend(id) => { root.accept-friend(id); }
             decline-friend(id) => { root.decline-friend(id); }
             add-friend(username) => { root.add-friend(username); }
+            remove-friend(id) => { root.remove-friend(id); }
+            open-settings => { root.overlay = "settings"; }
         }
         if root.voice-visible : VoiceView {
             channel-name: root.voice-channel-name;
@@ -158,52 +216,209 @@ export component AppWindow inherits Window {
             local-level: root.voice-local-level;
             local-speaking: root.voice-local-speaking;
             local-user: root.voice-local-user;
-            local-initial: root.voice-local-initial;
+            local-skin: root.local-skin;
+            reduced-motion: root.reduced-motion;
+            particles-enabled: root.voice-particles-enabled;
             peers: root.voice-peers;
-            suppressor-model: root.voice-suppressor-model;
-            suppressor-model-available: root.voice-suppressor-model-available;
-            aec-enabled: root.voice-aec-enabled;
             join => { root.voice-join(); }
             leave => { root.voice-leave(); }
             toggle-mute => { root.voice-toggle-mute(); }
             toggle-deafen => { root.voice-toggle-deafen(); }
-            suppressor-model-changed(m) => { root.voice-suppressor-model-changed(m); }
-            aec-enabled-changed(v) => { root.voice-aec-enabled-changed(v); }
         }
         if !root.voice-visible : ChatView {
             title: root.chat-title;
             is-dm: root.is-dm;
             dm-call: root.dm-call;
+            typing-label: root.typing-label;
             messages: root.messages;
+            members: root.online-members;
+            members-visible <=> root.members-visible;
+            can-create: root.can-create-channel;
             error: root.chat-error;
             send-message(content) => { root.send-message(content); }
+            toggle-members => { root.members-visible = !root.members-visible; }
             toggle-dm-call => { root.toggle-dm-call(); }
+            link-clicked(url) => { root.link-clicked(url); }
+            copy-message(id) => { root.copy-message(id); }
+            message-action(a, id) => { root.message-action(a, id); }
+            member-action(a, id) => { root.member-action(a, id); }
         }
     }
 
-    if root.modal-create-server : ModalCard {
-        title: "Create server";
-        placeholder: "Server name";
-        button-label: "Create";
+    if root.logged-in && root.overlay == "create-server" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Crear servidor";
+        hint: "Nombra tu warband";
+        icon: Icons.users-three;
+        placeholder: "Nombre del servidor";
+        button-label: "Crear";
         show-kind: false;
-        cancel => { root.modal-create-server = false; }
-        submit-kind(value, kind) => { root.create-server(value); root.modal-create-server = false; }
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.create-server(value); root.overlay = "none"; }
     }
-    if root.modal-join-server : ModalCard {
-        title: "Join by invite";
-        placeholder: "Invite code";
-        button-label: "Join";
+    if root.logged-in && root.overlay == "join-server" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Unirse por invitación";
+        hint: "Pega el código de invitación";
+        icon: Icons.link;
+        placeholder: "Código de invitación";
+        button-label: "Unirse";
         show-kind: false;
-        cancel => { root.modal-join-server = false; }
-        submit-kind(value, kind) => { root.join-server(value); root.modal-join-server = false; }
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.join-server(value); root.overlay = "none"; }
     }
-    if root.modal-create-channel : ModalCard {
-        title: "Create channel";
-        placeholder: "Channel name";
-        button-label: "Create";
+    if root.logged-in && root.overlay == "create-channel" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Crear canal";
+        hint: "Elige texto o voz";
+        icon: Icons.hash;
+        placeholder: "Nombre del canal";
+        button-label: "Crear";
         show-kind: true;
-        cancel => { root.modal-create-channel = false; }
-        submit-kind(value, kind) => { root.create-channel(value, kind); root.modal-create-channel = false; }
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.create-channel(value, kind); root.overlay = "none"; }
     }
+    if root.logged-in && root.overlay == "settings" : SettingsView {
+        width: 100%;
+        height: 100%;
+        username: root.current-user;
+        suppressor-model: root.voice-suppressor-model;
+        suppressor-model-available: root.voice-suppressor-model-available;
+        aec-enabled: root.voice-aec-enabled;
+        animations-enabled: root.voice-animations-enabled;
+        particles-enabled: root.voice-particles-enabled;
+        close => { root.overlay = "none"; }
+        logout => { root.logout(); }
+        suppressor-model-changed(m) => { root.voice-suppressor-model-changed(m); }
+        aec-enabled-changed(v) => { root.voice-aec-enabled-changed(v); }
+        animations-enabled-changed(v) => { root.voice-animations-enabled-changed(v); }
+        particles-enabled-changed(v) => { root.voice-particles-enabled-changed(v); }
+        username-submit(u) => { root.username-submit(u); }
+        password-submit(c, n) => { root.password-submit(c, n); }
+        avatar-submit(p) => { root.avatar-submit(p); }
+        avatar-pick => { root.avatar-pick(); }
+        avatar-path <=> root.avatar-path;
+    }
+
+    // --- Fase 2 overlays ---
+    if root.logged-in && root.overlay == "server-menu" : MenuCard {
+        width: 100%;
+        height: 100%;
+        title: root.channel-list-title;
+        can-manage: root.can-create-channel;
+        cancel => { root.overlay = "none"; }
+        action(a) => { root.server-action(a); }
+    }
+    if root.logged-in && root.overlay == "server-rename" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Renombrar servidor";
+        icon: Icons.pencil-simple;
+        placeholder: "Nombre del servidor";
+        button-label: "Guardar";
+        show-kind: false;
+        value <=> root.server-rename-text;
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.server-action("rename-submit"); }
+    }
+    if root.logged-in && root.overlay == "server-delete" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Eliminar servidor";
+        hint: "Se borrarán todos los canales y mensajes. Esta acción no se puede deshacer.";
+        icon: Icons.warning;
+        button-label: "Eliminar";
+        show-kind: false;
+        show-input: false;
+        danger: true;
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.server-action("delete-confirm"); }
+    }
+    if root.logged-in && root.overlay == "channel-rename" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Renombrar canal";
+        icon: Icons.pencil-simple;
+        placeholder: "Nombre del canal";
+        button-label: "Guardar";
+        show-kind: false;
+        value <=> root.channel-rename-text;
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.channel-action("rename-submit", value); }
+    }
+    if root.logged-in && root.overlay == "channel-delete" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Eliminar canal";
+        hint: "Se borrarán todos los mensajes del canal. Esta acción no se puede deshacer.";
+        icon: Icons.warning;
+        button-label: "Eliminar";
+        show-kind: false;
+        show-input: false;
+        danger: true;
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.channel-action("delete-confirm", value); }
+    }
+    if root.logged-in && root.overlay == "edit-message" : ModalCard {
+        width: 100%;
+        height: 100%;
+        title: "Editar mensaje";
+        icon: Icons.pencil-simple;
+        placeholder: "Mensaje";
+        button-label: "Guardar";
+        show-kind: false;
+        value <=> root.edit-message-text;
+        cancel => { root.overlay = "none"; }
+        submit-kind(value, kind) => { root.message-action("edit-submit", value); }
+    }
+
+    // --- toasts — feedback transitorio, abajo-centro, por encima de todo.
+    // Sin TouchArea: los clics pasan al resto de la UI. El modelo lo maneja
+    // Rust (auto-dismiss ~4s); aquí solo se renderiza.
+    Rectangle {
+        x: (parent.width - Math.min(380px, parent.width - 32px)) / 2;
+        y: parent.height - 182px; // borde inferior a 12px del viewport
+        width: Math.min(380px, parent.width - 32px);
+        height: 170px;
+        VerticalLayout {
+            alignment: end;
+            spacing: AppTheme.sp-2;
+            for t in root.toasts : Rectangle {
+                background: AppTheme.colors.bg-deep;
+                border-width: 1px;
+                border-color: t.kind == "error" ? AppTheme.colors.rose
+                    : t.kind == "success" ? AppTheme.colors.online
+                    : AppTheme.colors.ice;
+                border-radius: AppTheme.radius-1;
+                HorizontalLayout {
+                    padding-left: AppTheme.sp-3;
+                    padding-right: AppTheme.sp-3;
+                    padding-top: AppTheme.sp-2;
+                    padding-bottom: AppTheme.sp-2;
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    IconGlyph {
+                        glyph: t.kind == "error" ? Icons.warning
+                            : t.kind == "success" ? Icons.check
+                            : Icons.bell;
+                        size: 16px;
+                        text-color: t.kind == "error" ? AppTheme.colors.rose
+                            : t.kind == "success" ? AppTheme.colors.online
+                            : AppTheme.colors.ice;
+                    }
+                    Text {
+                        text: t.message;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: AppTheme.colors.text;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
     }
 }

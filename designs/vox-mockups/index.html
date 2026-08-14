@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox UI · Mockups</title>
+  <link rel="stylesheet" href="assets/vox-tokens.css">
+  <style>
+    body {
+      overflow-y: auto;
+      background:
+        radial-gradient(ellipse 60% 40% at 50% 0%, rgba(224, 106, 62, 0.1) 0%, transparent 60%),
+        radial-gradient(ellipse 100% 80% at 50% 100%, var(--vox-indigo) 0%, var(--vox-bg) 50%, var(--vox-bg-deep) 100%);
+      min-height: 100vh;
+    }
+
+    .hub {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: var(--vox-s-11) var(--vox-s-9) var(--vox-s-13);
+    }
+
+    /* === Hero === */
+    .hub-hero {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: var(--vox-s-9);
+      align-items: center;
+      margin-bottom: var(--vox-s-11);
+      position: relative;
+    }
+    .hub-hero__eyebrow {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      margin-bottom: var(--vox-s-4);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+    }
+    .hub-hero__eyebrow::before {
+      content: '';
+      width: 24px;
+      height: 2px;
+      background: var(--vox-amber);
+    }
+    .hub-hero__title {
+      font-family: var(--vox-font-title);
+      font-weight: 900;
+      font-size: 64px;
+      line-height: 0.95;
+      color: var(--vox-text-hi);
+      letter-spacing: -0.02em;
+      margin-bottom: var(--vox-s-5);
+    }
+    .hub-hero__title-accent {
+      color: var(--vox-amber);
+    }
+    .hub-hero__desc {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-md);
+      line-height: var(--vox-lh-loose);
+      color: var(--vox-text-dim);
+      max-width: 560px;
+      margin-bottom: var(--vox-s-7);
+    }
+    .hub-hero__meta {
+      display: flex;
+      gap: var(--vox-s-5);
+      flex-wrap: wrap;
+    }
+    .hub-hero__meta-item {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .hub-hero__meta-item strong {
+      color: var(--vox-text-hi);
+      font-weight: 700;
+    }
+
+    /* Animated campfire preview in hero */
+    .hub-hero__visual {
+      position: relative;
+      width: 320px;
+      height: 320px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hub-hero__visual-bg {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 60%, rgba(224, 106, 62, 0.3) 0%, transparent 60%);
+    }
+    .hub-hero__campfire {
+      position: relative;
+      width: 192px;
+      height: 144px;
+      z-index: 2;
+    }
+    .hub-hero__campfire img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .hub-hero__campfire img:nth-child(1) { animation: vox-campfire var(--vox-fire-frame) steps(1, end) infinite; }
+    .hub-hero__campfire img:nth-child(2) { animation: vox-campfire-2 var(--vox-fire-frame) steps(1, end) infinite; }
+    .hub-hero__campfire img:nth-child(3) { animation: vox-campfire-3 var(--vox-fire-frame) steps(1, end) infinite; }
+    .hub-hero__campfire img:nth-child(4) { animation: vox-campfire-4 var(--vox-fire-frame) steps(1, end) infinite; }
+
+    .hub-hero__character {
+      position: absolute;
+      bottom: 20px;
+      left: 30px;
+      width: 96px;
+      height: 128px;
+      z-index: 1;
+      animation: vox-breath var(--vox-breath) steps(6) infinite;
+    }
+    .hub-hero__character--right {
+      left: auto;
+      right: 30px;
+      bottom: 30px;
+      transform: scaleX(-1);
+    }
+    .hub-hero__character img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+
+    /* === Sections === */
+    .hub-section {
+      margin-bottom: var(--vox-s-11);
+    }
+    .hub-section__header {
+      display: flex;
+      align-items: baseline;
+      gap: var(--vox-s-4);
+      margin-bottom: var(--vox-s-7);
+      padding-bottom: var(--vox-s-4);
+      border-bottom: 1px solid var(--vox-border-dim);
+    }
+    .hub-section__title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-xl);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+    }
+    .hub-section__count {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+    }
+    .hub-section__desc {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-dim);
+      margin-left: auto;
+      max-width: 480px;
+      text-align: right;
+    }
+
+    /* === Mockup cards grid === */
+    .mockup-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--vox-s-6);
+    }
+
+    .mockup-card {
+      position: relative;
+      background: var(--vox-surface);
+      border: 1px solid var(--vox-border-dim);
+      overflow: hidden;
+      cursor: pointer;
+      transition: none;
+      text-decoration: none;
+      color: inherit;
+      display: flex;
+      flex-direction: column;
+    }
+    .mockup-card:hover {
+      background: var(--vox-card);
+      border-color: var(--vox-amber);
+    }
+    .mockup-card:hover .mockup-card__overlay {
+      opacity: 1;
+    }
+    .mockup-card:hover .mockup-card__number {
+      color: var(--vox-amber);
+      border-color: var(--vox-amber);
+    }
+
+    .mockup-card__preview {
+      position: relative;
+      aspect-ratio: 16/10;
+      background: var(--vox-bg-deep);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-bottom: 1px solid var(--vox-border-dim);
+    }
+    .mockup-card__preview-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      image-rendering: pixelated;
+      filter: brightness(0.85) saturate(0.9);
+    }
+    .mockup-card__preview-bg {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 60%, rgba(224, 106, 62, 0.2) 0%, transparent 60%);
+    }
+    .mockup-card__number {
+      position: absolute;
+      top: var(--vox-s-4);
+      left: var(--vox-s-4);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-border);
+      padding: 4px 8px;
+      z-index: 2;
+    }
+
+    .mockup-card__overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(12, 17, 28, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity var(--vox-step-base) steps(1);
+      z-index: 3;
+    }
+    .mockup-card__overlay-text {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-sm);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      background: var(--vox-bg-deep);
+      border: 2px solid var(--vox-amber);
+      padding: var(--vox-s-3) var(--vox-s-5);
+    }
+
+    .mockup-card__body {
+      padding: var(--vox-s-5) var(--vox-s-6);
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-2);
+    }
+    .mockup-card__title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+    }
+    .mockup-card__desc {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-dim);
+      line-height: var(--vox-lh-snug);
+    }
+    .mockup-card__tags {
+      display: flex;
+      gap: var(--vox-s-2);
+      flex-wrap: wrap;
+      margin-top: var(--vox-s-3);
+    }
+
+    /* === Token preview strip === */
+    .tokens-strip {
+      background: var(--vox-surface);
+      border: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-6) var(--vox-s-7);
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr;
+      gap: var(--vox-s-7);
+    }
+    .tokens-strip__section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-3);
+    }
+    .tokens-strip__label {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .tokens-strip__colors {
+      display: flex;
+      gap: var(--vox-s-2);
+      flex-wrap: wrap;
+    }
+    .tokens-strip__color {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--vox-border-dim);
+      position: relative;
+    }
+    .tokens-strip__color-label {
+      position: absolute;
+      bottom: -16px;
+      left: 0;
+      right: 0;
+      font-family: var(--vox-font-mono);
+      font-size: 8px;
+      text-align: center;
+      color: var(--vox-text-dim);
+      white-space: nowrap;
+    }
+    .tokens-strip__typo {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-2);
+    }
+    .tokens-strip__typo-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tokens-strip__typo-sample--title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-lg);
+      color: var(--vox-text-hi);
+    }
+    .tokens-strip__typo-sample--body {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-base);
+      color: var(--vox-text);
+    }
+    .tokens-strip__typo-sample--mono {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+    }
+
+    /* === Footer === */
+    .hub-footer {
+      margin-top: var(--vox-s-13);
+      padding-top: var(--vox-s-7);
+      border-top: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--vox-s-5);
+    }
+    .hub-footer__info {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .hub-footer__pdf {
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+
+    /* Atmospheric grain */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image: repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(255, 255, 255, 0.008) 2px, rgba(255, 255, 255, 0.008) 4px);
+      z-index: 1000;
+    }
+
+    /* Star field */
+    body::after {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 50%;
+      pointer-events: none;
+      background-image:
+        radial-gradient(1px 1px at 10% 20%, var(--vox-text) 50%, transparent),
+        radial-gradient(1px 1px at 30% 50%, var(--vox-text-dim) 50%, transparent),
+        radial-gradient(1px 1px at 60% 10%, var(--vox-text) 50%, transparent),
+        radial-gradient(1px 1px at 80% 40%, var(--vox-text-dim) 50%, transparent),
+        radial-gradient(1px 1px at 90% 20%, var(--vox-text) 50%, transparent),
+        radial-gradient(1px 1px at 50% 30%, var(--vox-text-dim) 50%, transparent);
+      opacity: 0.3;
+      z-index: -1;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="hub">
+
+    <!-- ====== HERO ====== -->
+    <section class="hub-hero">
+      <div>
+        <div class="hub-hero__eyebrow">VOX UI · MOCKUPS NAVEGABLES</div>
+        <h1 class="hub-hero__title">
+          Voice chat con<br>
+          <span class="hub-hero__title-accent">alma vikinga</span>.
+        </h1>
+        <p class="hub-hero__desc">
+          Sistema de diseño para Vox — app de voice chat y mensajería en Rust + Slint.
+          Estética Hyper Light Drifter × pixel art RPG vikingo. 6 pantallas navegables,
+          sprites reales generados con paleta indexada, y la fogata como metáfora central
+          de presencia en voz.
+        </p>
+        <div class="hub-hero__meta">
+          <span class="hub-hero__meta-item"><strong>6</strong> pantallas</span>
+          <span class="hub-hero__meta-item"><strong>40+</strong> sprites</span>
+          <span class="hub-hero__meta-item"><strong>4</strong> frames fogata</span>
+          <span class="hub-hero__meta-item"><strong>3</strong> capas skin</span>
+          <span class="hub-hero__meta-item"><strong>16</strong> colores indexados</span>
+        </div>
+      </div>
+
+      <div class="hub-hero__visual">
+        <div class="hub-hero__visual-bg"></div>
+        <div class="hub-hero__character">
+          <img src="assets/sprites/characters/idle.png" alt="">
+        </div>
+        <div class="hub-hero__character hub-hero__character--right">
+          <img src="assets/sprites/characters/talking.png" alt="">
+        </div>
+        <div class="hub-hero__campfire">
+          <img src="assets/sprites/campfire/frame_0.png" alt="">
+          <img src="assets/sprites/campfire/frame_1.png" alt="">
+          <img src="assets/sprites/campfire/frame_2.png" alt="">
+          <img src="assets/sprites/campfire/frame_3.png" alt="">
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== TOKENS PREVIEW ====== -->
+    <section class="hub-section">
+      <div class="hub-section__header">
+        <span class="hub-section__title">Sistema</span>
+        <span class="hub-section__count">TOKENS BASE</span>
+        <span class="hub-section__desc">
+          Paleta dark con acentos óxido-ámbar/bronce. Tipografía Inter / JetBrains Mono / Cinzel.
+          Espaciado en escala de 4px. Animaciones a saltos, no easing suave.
+        </span>
+      </div>
+
+      <div class="tokens-strip">
+        <div class="tokens-strip__section">
+          <span class="tokens-strip__label">Paleta — fondos + energía</span>
+          <div class="tokens-strip__colors">
+            <div class="tokens-strip__color" style="background: #0C111C;">
+              <span class="tokens-strip__color-label">BG</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #141A28;">
+              <span class="tokens-strip__color-label">SURFACE</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #232A3E;">
+              <span class="tokens-strip__color-label">CARD</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #363C54;">
+              <span class="tokens-strip__color-label">BORDER</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #B4432E;">
+              <span class="tokens-strip__color-label">RUST</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #E06A3E;">
+              <span class="tokens-strip__color-label">AMBER</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #F0B464;">
+              <span class="tokens-strip__color-label">PEAK</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #8A7355;">
+              <span class="tokens-strip__color-label">BRONZE</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #3C6E78;">
+              <span class="tokens-strip__color-label">TEAL</span>
+            </div>
+            <div class="tokens-strip__color" style="background: #E7E1D4;">
+              <span class="tokens-strip__color-label">IVORY</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tokens-strip__section">
+          <span class="tokens-strip__label">Tipografía</span>
+          <div class="tokens-strip__typo">
+            <div class="tokens-strip__typo-row">
+              <span class="tokens-strip__typo-sample--title">Cinzel · Títulos</span>
+            </div>
+            <div class="tokens-strip__typo-row">
+              <span class="tokens-strip__typo-sample--body">Inter · Cuerpo legible</span>
+            </div>
+            <div class="tokens-strip__typo-row">
+              <span class="tokens-strip__typo-sample--mono">JET · META · 14:32</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tokens-strip__section">
+          <span class="tokens-strip__label">Principios</span>
+          <div style="font-family: var(--vox-font-body); font-size: var(--vox-text-xs); color: var(--vox-text-dim); line-height: var(--vox-lh-snug);">
+            <strong style="color:var(--vox-text);">Calma estructural + explosión ritual.</strong><br>
+            90% de la app es disciplinada y legible. La energía vikinga se concentra en la fogata, los estados de voz y las transiciones.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== MOCKUPS GRID ====== -->
+    <section class="hub-section">
+      <div class="hub-section__header">
+        <span class="hub-section__title">Pantallas</span>
+        <span class="hub-section__count">6 MOCKUPS</span>
+        <span class="hub-section__desc">
+          Coherencia de sistema sobre volumen. Cada pantalla reutiliza los mismos tokens,
+          el mismo lenguaje de bordes y el mismo set de sprites.
+        </span>
+      </div>
+
+      <div class="mockup-grid">
+
+        <!-- Mockup 1: Sidebar -->
+        <a href="screens/01-sidebar.html" class="mockup-card">
+          <div class="mockup-card__preview">
+            <div class="mockup-card__preview-bg"></div>
+            <span class="mockup-card__number">01</span>
+            <img src="assets/sprites/ui/icon_hash.png" class="mockup-card__preview-img" style="width: 50%; height: 50%; object-fit: contain; opacity: 0.4;">
+            <div class="mockup-card__overlay">
+              <span class="mockup-card__overlay-text">ABRIR →</span>
+            </div>
+          </div>
+          <div class="mockup-card__body">
+            <div class="mockup-card__title">Sidebar & App Shell</div>
+            <div class="mockup-card__desc">
+              3 columnas: clanes / salones / área principal. Navegación densa con tipografía
+              JetBrains Mono y jerarquía clara. Es la base sobre la que viven todas las demás pantallas.
+            </div>
+            <div class="mockup-card__tags">
+              <span class="tag">SHELL</span>
+              <span class="tag tag--bronze">3 COLUMNAS</span>
+              <span class="tag tag--amber">DENSIDAD</span>
+            </div>
+          </div>
+        </a>
+
+        <!-- Mockup 2: Fogata -->
+        <a href="screens/02-campfire.html" class="mockup-card">
+          <div class="mockup-card__preview">
+            <div class="mockup-card__preview-bg" style="background: radial-gradient(ellipse at 50% 70%, rgba(224, 106, 62, 0.5) 0%, transparent 60%);"></div>
+            <span class="mockup-card__number">02</span>
+            <div style="position: relative; width: 60%; height: 80%; display: flex; align-items: center; justify-content: center;">
+              <div style="position: relative; width: 96px; height: 72px;">
+                <img src="assets/sprites/campfire/frame_0.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; animation: vox-campfire 140ms steps(1) infinite;">
+                <img src="assets/sprites/campfire/frame_1.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; animation: vox-campfire-2 140ms steps(1) infinite;">
+                <img src="assets/sprites/campfire/frame_2.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; animation: vox-campfire-3 140ms steps(1) infinite;">
+                <img src="assets/sprites/campfire/frame_3.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; animation: vox-campfire-4 140ms steps(1) infinite;">
+              </div>
+            </div>
+            <div class="mockup-card__overlay">
+              <span class="mockup-card__overlay-text">ABRIR →</span>
+            </div>
+          </div>
+          <div class="mockup-card__body">
+            <div class="mockup-card__title">Fogata · Voice Channel</div>
+            <div class="mockup-card__desc">
+              Escena 2D con personajes pixel art alrededor de fogata animada. Asientos escalonados,
+              estados talking/muted/idle con lenguaje diegético (borde + pose, no halos).
+            </div>
+            <div class="mockup-card__tags">
+              <span class="tag tag--amber">CORE FEATURE</span>
+              <span class="tag">ANIM 4 FRAMES</span>
+              <span class="tag tag--bronze">POSES</span>
+            </div>
+          </div>
+        </a>
+
+        <!-- Mockup 3: Lista compacta -->
+        <a href="screens/03-compact-list.html" class="mockup-card">
+          <div class="mockup-card__preview">
+            <div class="mockup-card__preview-bg"></div>
+            <span class="mockup-card__number">03</span>
+            <div style="display: flex; gap: 4px; padding: 16px;">
+              <div style="flex:1; background: var(--vox-card); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center;">
+                <img src="assets/sprites/characters/bust_talking.png" style="width: 60%; image-rendering: pixelated;">
+              </div>
+              <div style="flex:1; background: var(--vox-card); border: 2px solid var(--vox-border); display: flex; align-items: center; justify-content: center;">
+                <img src="assets/sprites/characters/bust_idle.png" style="width: 60%; image-rendering: pixelated;">
+              </div>
+              <div style="flex:1; background: var(--vox-card); border: 2px solid var(--vox-bronze-dim); display: flex; align-items: center; justify-content: center; filter: brightness(0.7);">
+                <img src="assets/sprites/characters/bust_muted_arms.png" style="width: 60%; image-rendering: pixelated;">
+              </div>
+            </div>
+            <div class="mockup-card__overlay">
+              <span class="mockup-card__overlay-text">ABRIR →</span>
+            </div>
+          </div>
+          <div class="mockup-card__body">
+            <div class="mockup-card__title">Lista compacta · &gt;8 usuarios</div>
+            <div class="mockup-card__desc">
+              Vista densa que se activa automáticamente pasado el umbral de 10 personas.
+              Mantiene bustos derivados del sprite y el mismo lenguaje visual de bordes/poses.
+            </div>
+            <div class="mockup-card__tags">
+              <span class="tag">FALLBACK</span>
+              <span class="tag tag--amber">AUTO-TRIGGER</span>
+              <span class="tag tag--bronze">DENSIDAD</span>
+            </div>
+          </div>
+        </a>
+
+        <!-- Mockup 4: Video -->
+        <a href="screens/04-video-transition.html" class="mockup-card">
+          <div class="mockup-card__preview">
+            <div class="mockup-card__preview-bg"></div>
+            <span class="mockup-card__number">04</span>
+            <div style="display: flex; gap: 8px; padding: 16px;">
+              <div style="width: 60px; height: 60px; border: 3px solid var(--vox-amber); background: linear-gradient(135deg, var(--vox-bronze), var(--vox-bg-deep)); position: relative;">
+                <span style="position:absolute; top:2px; right:2px; width:4px; height:4px; background:var(--vox-text-hi);"></span>
+                <span style="position:absolute; bottom:2px; left:2px; width:4px; height:4px; background:var(--vox-text-hi);"></span>
+              </div>
+              <div style="width: 60px; height: 60px; border: 2px solid var(--vox-border); display: flex; align-items: center; justify-content: center;">
+                <img src="assets/sprites/characters/bust_idle.png" style="width: 80%; image-rendering: pixelated;">
+              </div>
+              <div style="width: 60px; height: 60px; border: 3px solid var(--vox-teal-hi); background: repeating-linear-gradient(0deg, transparent 0, transparent 3px, rgba(90,160,170,0.3) 3px, rgba(90,160,170,0.3) 4px);"></div>
+            </div>
+            <div class="mockup-card__overlay">
+              <span class="mockup-card__overlay-text">ABRIR →</span>
+            </div>
+          </div>
+          <div class="mockup-card__body">
+            <div class="mockup-card__title">Transición sprite ↔ video</div>
+            <div class="mockup-card__desc">
+              Al activar cámara, el asiento mantiene su posición y solo cambia el contenido del tile.
+              Marco con esquinas duras y ticks tipo HUD de juego. Mezcla sprites y video en la misma sala.
+            </div>
+            <div class="mockup-card__tags">
+              <span class="tag">MIXED</span>
+              <span class="tag tag--amber">MISMO ASIENTO</span>
+              <span class="tag tag--bronze">HARD CORNERS</span>
+            </div>
+          </div>
+        </a>
+
+        <!-- Mockup 5: Chat -->
+        <a href="screens/05-text-chat.html" class="mockup-card">
+          <div class="mockup-card__preview">
+            <div class="mockup-card__preview-bg"></div>
+            <span class="mockup-card__number">05</span>
+            <div style="display: flex; gap: 8px; padding: 16px; width: 100%;">
+              <div style="width: 32px; height: 32px; background: var(--vox-bg-deep); border: 2px solid var(--vox-amber); flex-shrink: 0;">
+                <img src="assets/sprites/characters/bust_talking.png" style="width: 100%; image-rendering: pixelated;">
+              </div>
+              <div style="flex: 1; display: flex; flex-direction: column; gap: 4px; justify-content: center;">
+                <div style="display: flex; gap: 8px; align-items: baseline;">
+                  <span style="font-family: var(--vox-font-title); font-size: 12px; color: var(--vox-text-hi);">Hjornvard</span>
+                  <span style="font-family: var(--vox-font-mono); font-size: 9px; color: var(--vox-text-dim);">14:32</span>
+                </div>
+                <div style="height: 4px; background: var(--vox-text-dim); opacity: 0.4; width: 80%;"></div>
+                <div style="height: 4px; background: var(--vox-text-dim); opacity: 0.4; width: 60%;"></div>
+              </div>
+            </div>
+            <div class="mockup-card__overlay">
+              <span class="mockup-card__overlay-text">ABRIR →</span>
+            </div>
+          </div>
+          <div class="mockup-card__body">
+            <div class="mockup-card__title">Mensajes de texto</div>
+            <div class="mockup-card__desc">
+              Calma estructural. Burbujas con bustos derivados del sprite (no avatares circulares),
+              timestamps en JetBrains Mono, agrupación por autor, code blocks, reacciones y attachments.
+            </div>
+            <div class="mockup-card__tags">
+              <span class="tag">CALMA</span>
+              <span class="tag tag--amber">LEGIBILIDAD</span>
+              <span class="tag tag--bronze">SESIONES LARGAS</span>
+            </div>
+          </div>
+        </a>
+
+        <!-- Mockup 6: Skin editor -->
+        <a href="screens/06-skin-editor.html" class="mockup-card">
+          <div class="mockup-card__preview">
+            <div class="mockup-card__preview-bg" style="background: radial-gradient(ellipse at 50% 50%, rgba(224, 106, 62, 0.3) 0%, transparent 60%);"></div>
+            <span class="mockup-card__number">06</span>
+            <div style="position: relative; width: 80px; height: 110px;">
+              <img src="assets/sprites/characters/idle.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated;">
+              <img src="assets/sprites/characters/cape_rust.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated;">
+              <img src="assets/sprites/characters/helmet_horns.png" style="position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated;">
+            </div>
+            <div class="mockup-card__overlay">
+              <span class="mockup-card__overlay-text">ABRIR →</span>
+            </div>
+          </div>
+          <div class="mockup-card__body">
+            <div class="mockup-card__title">Editor de skins</div>
+            <div class="mockup-card__desc">
+              Personalización modular: body, casco, capa, accesorio. Cada capa es un PNG indexado
+              con paleta propia. Cambiar un color actualiza el sprite en tiempo real.
+            </div>
+            <div class="mockup-card__tags">
+              <span class="tag">MODULAR</span>
+              <span class="tag tag--amber">PALETA INDEXADA</span>
+              <span class="tag tag--bronze">4 CAPAS</span>
+            </div>
+          </div>
+        </a>
+      </div>
+    </section>
+
+    <!-- ====== ANTI-DISCORD RULES ====== -->
+    <section class="hub-section">
+      <div class="hub-section__header">
+        <span class="hub-section__title">Reglas anti-Discord</span>
+        <span class="hub-section__count">NO NEGOCIABLES</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--vox-s-5);">
+        <div style="background: var(--vox-surface); border: 1px solid var(--vox-border-dim); border-left: 3px solid var(--vox-rust); padding: var(--vox-s-6);">
+          <div style="font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-rust); margin-bottom: var(--vox-s-3);">REGLA 01</div>
+          <div style="font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-md); color: var(--vox-text-hi); margin-bottom: var(--vox-s-3);">
+            No avatares circulares apilados
+          </div>
+          <div style="font-family: var(--vox-font-body); font-size: var(--vox-text-sm); color: var(--vox-text-dim); line-height: var(--vox-lh-snug);">
+            Prohibido el patrón "avatar circular + nombre + estado de texto debajo". En su lugar: bustos cuadrados derivados del sprite, con el borde como indicador de estado.
+          </div>
+        </div>
+
+        <div style="background: var(--vox-surface); border: 1px solid var(--vox-border-dim); border-left: 3px solid var(--vox-rust); padding: var(--vox-s-6);">
+          <div style="font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-rust); margin-bottom: var(--vox-s-3);">REGLA 02</div>
+          <div style="font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-md); color: var(--vox-text-hi); margin-bottom: var(--vox-s-3);">
+            No grilla de íconos equidistantes
+          </div>
+          <div style="font-family: var(--vox-font-body); font-size: var(--vox-text-sm); color: var(--vox-text-dim); line-height: var(--vox-lh-snug);">
+            Prohibida la grilla Zoom/Discord/Teams de avatares flotando centrados. La escena de fogata con asientos escalonados orgánicos reemplaza ese patrón.
+          </div>
+        </div>
+
+        <div style="background: var(--vox-surface); border: 1px solid var(--vox-border-dim); border-left: 3px solid var(--vox-rust); padding: var(--vox-s-6);">
+          <div style="font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-rust); margin-bottom: var(--vox-s-3);">REGLA 03</div>
+          <div style="font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-md); color: var(--vox-text-hi); margin-bottom: var(--vox-s-3);">
+            No halos glow suaves genéricos
+          </div>
+          <div style="font-family: var(--vox-font-body); font-size: var(--vox-text-sm); color: var(--vox-text-dim); line-height: var(--vox-lh-snug);">
+            Todo lo que exprese estado debe sentirse diegético. El indicador de "hablando" es el borde del sprite (outline tipo selección de juego), no un halo superpuesto.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== FOOTER ====== -->
+    <footer class="hub-footer">
+      <div class="hub-footer__info">
+        VOX UI · MOCKUPS VIVOS · v0.4.2-ALPHA · 2026-08-10
+      </div>
+      <div class="hub-footer__pdf">
+        <span style="font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim);">
+          Spec completo en PDF:
+        </span>
+        <a href="vox-spec.pdf" class="btn btn--primary" style="text-decoration: none;">
+          <img src="assets/sprites/ui/rune.png" style="width:12px; height:12px;">
+          vox-spec.pdf
+        </a>
+      </div>
+    </footer>
+  </div>
+
+</body>
+</html>

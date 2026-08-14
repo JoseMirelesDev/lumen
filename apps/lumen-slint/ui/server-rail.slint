@@ -1,114 +1,220 @@
-// Server rail — port of apps/desktop/src/lib/components/ServerRail.svelte.
-// Pure view: renders servers + emits callbacks. Create/join modals live at
-// AppWindow level (ui/modal.slint); this view only signals open-*.
+// Clan rail — the leftmost column (mock: 76px). Square 48px pills with
+// Cinzel initials (NOT Discord circles). Home pill = rust fill + amber border
+// (mock .clan-rail__home); server pills = card with per-server skin accent;
+// add/join at the bottom. User identity lives in the ChannelList footer
+// (mock .user-footer), not here.
 
 import { AppTheme } from "theme.slint";
+import { Icons } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ServerItem } from "types.slint";
+import { IconGlyph } from "primitives/icon.slint";
+
+component ClanPill inherits Rectangle {
+    in property <string> label;
+    in property <string> skin: "ivory";
+    in property <bool> active: false;
+    in property <bool> hoverable: true;
+    callback clicked();
+
+    width: 48px;
+    height: 48px;
+    background: root.active
+        ? AppTheme.colors.card-hi
+        : (ta.has-hover && root.hoverable ? AppTheme.colors.card : AppTheme.colors.surface);
+    border-width: 2px;
+    border-color: root.active ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border);
+    border-radius: AppTheme.radius-1;
+    animate background { duration: AppTheme.step-base * 1ms; }
+    animate border-color { duration: AppTheme.step-base * 1ms; }
+
+    // ice focus ring for keyboard navigation
+    Rectangle {
+        x: -4px; y: -4px;
+        width: parent.width + 8px; height: parent.height + 8px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        border-radius: AppTheme.radius-1;
+        visible: fs.has-focus;
+    }
+
+    // active indicator — anchored to rail edge
+    Rectangle {
+        x: 0px;
+        y: (parent.height - 32px) / 2;
+        width: 4px;
+        height: 32px;
+        background: AppTheme.colors.ice;
+        visible: root.active;
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        HorizontalLayout {
+            width: 100%;
+            height: 100%;
+            alignment: center;
+            cross-axis-alignment: center;
+            Text {
+                text: root.label;
+                font-family: AppTheme.font-display;
+                font-weight: 700;
+                font-size: 18px;
+                color: root.active ? AppTheme.colors.text-hi : AppTheme.colors.text-dim;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+component RailActionBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <color> icon-color: AppTheme.colors.text-dim;
+    callback clicked();
+
+    width: 48px;
+    height: 48px;
+    border-width: 2px;
+    border-color: fs.has-focus ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.bronze-hi : AppTheme.colors.border);
+    background: ta.has-hover ? AppTheme.colors.card : transparent;
+    border-radius: AppTheme.radius-1;
+
+    // focus ring
+    Rectangle {
+        x: -4px; y: -4px;
+        width: parent.width + 8px; height: parent.height + 8px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        border-radius: AppTheme.radius-1;
+        visible: fs.has-focus;
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        IconGlyph {
+            glyph: root.glyph;
+            size: 18px;
+            text-color: ta.has-hover ? AppTheme.colors.bronze-hi : root.icon-color;
+        }
+    }
+}
 
 export component ServerRail inherits Rectangle {
     in property <[ServerItem]> servers;
-    in property <string> user-label;
-    in property <bool> friends-active;
     callback select-server(string);
     callback open-friends();
-    callback logout();
     callback open-create-server();
     callback open-join-server();
 
     width: AppTheme.rail-width;
     vertical-stretch: 1;
-    background: AppTheme.colors.bg-rail;
+    background: AppTheme.colors.bg-deep;
 
     VerticalLayout {
         width: 100%;
         height: 100%;
-        padding-top: 8px;
-        padding-bottom: 8px;
+        padding-top: AppTheme.sp-3;
+        padding-bottom: AppTheme.sp-3;
         spacing: AppTheme.sp-2;
+        cross-axis-alignment: center;
 
-        for s in root.servers: Rectangle {
-            width: 40px;
-            height: 40px;
-            border-radius: (s.active || ta.has-hover) ? 12px : 20px;
-            background: s.active ? AppTheme.colors.accent : (ta.has-hover ? AppTheme.colors.bg-hover : AppTheme.colors.bg-raised);
-            animate border-radius { duration: 120ms; }
-            animate background { duration: 100ms; }
-            ta := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.select-server(s.id); }
-                Text {
-                    text: s.label;
-                    color: s.active ? white : AppTheme.colors.text;
-                    font-size: 18px;
-                    font-weight: 700;
+        // Home pill — the keep
+        Rectangle {
+            width: 48px;
+            height: 48px;
+            background: ta_home.has-hover ? AppTheme.colors.crimson-hi : AppTheme.colors.crimson;
+            border-width: 2px;
+            border-color: fs_home.has-focus ? AppTheme.colors.ice : (ta_home.has-hover ? AppTheme.colors.ice-hi : AppTheme.colors.ice);
+            border-radius: AppTheme.radius-1;
+
+            Rectangle {
+                x: -4px; y: -4px;
+                width: parent.width + 8px; height: parent.height + 8px;
+                border-width: 2px;
+                border-color: AppTheme.colors.ice;
+                border-radius: AppTheme.radius-1;
+                visible: fs_home.has-focus;
+            }
+
+            fs_home := FocusScope {
+                key-pressed(event) => {
+                    if event.text == " " || event.text == "\n" {
+                        root.open-friends();
+                        return accept;
+                    }
+                    return reject;
                 }
             }
-        }
-        Rectangle {
-            width: 40px;
-            height: 40px;
-            border-radius: 20px;
-            border-width: 1px;
-            border-color: AppTheme.colors.border;
-            background: ta_create.has-hover ? AppTheme.colors.bg-hover : transparent;
-            animate background { duration: 100ms; }
-            ta_create := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.open-create-server(); }
-                Text { text: "+"; color: AppTheme.colors.accent; font-size: 18px; font-weight: 700; }
-            }
-        }
-        Rectangle {
-            width: 40px;
-            height: 40px;
-            border-radius: 20px;
-            border-width: 1px;
-            border-color: AppTheme.colors.border;
-            background: ta_join.has-hover ? AppTheme.colors.bg-hover : transparent;
-            animate background { duration: 100ms; }
-            ta_join := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.open-join-server(); }
-                Text { text: "@"; color: AppTheme.colors.accent; font-size: 18px; font-weight: 700; }
-            }
-        }
-        Rectangle {
-            vertical-stretch: 1;
-        }
-        Rectangle {
-            width: 40px;
-            height: 40px;
-            border-radius: (root.friends-active || ta_friends.has-hover) ? 12px : 20px;
-            background: root.friends-active ? AppTheme.colors.accent : (ta_friends.has-hover ? AppTheme.colors.bg-hover : AppTheme.colors.bg-raised);
-            animate border-radius { duration: 120ms; }
-            animate background { duration: 100ms; }
-            ta_friends := TouchArea {
+
+            ta_home := TouchArea {
                 mouse-cursor: pointer;
                 clicked => { root.open-friends(); }
-                Text {
-                    text: "Friends";
-                    color: root.friends-active ? white : AppTheme.colors.text;
-                    font-size: 9px;
-                    font-weight: 700;
+                IconGlyph {
+                    glyph: Icons.fire;
+                    size: 20px;
+                    text-color: AppTheme.colors.text-hi;
                 }
             }
         }
         Rectangle {
-            width: 40px;
-            height: 40px;
-            border-radius: 20px;
-            background: ta_logout.has-hover ? AppTheme.colors.bg-active : AppTheme.colors.bg-hover;
-            animate background { duration: 100ms; }
-            ta_logout := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.logout(); }
-                Text {
-                    text: root.user-label;
-                    color: AppTheme.colors.text-dim;
-                    font-size: 18px;
-                    font-weight: 700;
+            width: 32px;
+            height: 2px;
+            background: AppTheme.colors.border-dim;
+        }
+
+        // Scrollable server pills list
+        ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                spacing: AppTheme.sp-2;
+                cross-axis-alignment: center;
+
+                for s in root.servers: ClanPill {
+                    label: s.label;
+                    skin: s.skin;
+                    active: s.active;
+                    clicked => { root.select-server(s.id); }
                 }
             }
+        }
+
+        // add — create server
+        RailActionBtn {
+            glyph: Icons.plus;
+            icon-color: AppTheme.colors.text-dim;
+            clicked => { root.open-create-server(); }
+        }
+        // join — join server
+        RailActionBtn {
+            glyph: Icons.at;
+            icon-color: AppTheme.colors.teal-hi;
+            clicked => { root.open-join-server(); }
         }
     }
 }

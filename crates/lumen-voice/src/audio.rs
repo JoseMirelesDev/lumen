@@ -224,6 +224,13 @@ fn cpal_capture(
         }
     };
     let channels = config.channels() as usize;
+    eprintln!(
+        "lumen voice: audio input <- {:?} ({} Hz, {} ch, {})",
+        device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into()),
+        config.sample_rate(),
+        config.channels(),
+        config.sample_format(),
+    );
     let mut resampler = CaptureResampler::new(config.sample_rate());
     let mut acc: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES);
     let err_fn = |err| eprintln!("lumen voice: input stream error: {err}");
@@ -773,6 +780,17 @@ impl OpusEncoder {
         let n = self.encoder.encode(pcm, &mut out)?;
         Ok(out[..n].to_vec())
     }
+
+    /// Toggle Opus DTX (comfort noise for silence frames). For benches/tests.
+    pub fn set_dtx(&mut self, dtx: bool) -> anyhow::Result<()> {
+        Ok(self.encoder.set_dtx(dtx)?)
+    }
+
+    /// Set the encoder complexity (0-10). Lower = faster encode, less quality
+    /// on hard material. For benches/tests and the production tuning hook.
+    pub fn set_complexity(&mut self, value: i32) -> anyhow::Result<()> {
+        Ok(self.encoder.set_complexity(value)?)
+    }
 }
 
 pub struct OpusDecoder {
@@ -922,10 +940,21 @@ impl NoiseSuppressor {
     /// runtime and auto-degrades to `NsOnly` on CPUs that can't run it (no
     /// AVX2+FMA3+F16C — e.g. pre-Haswell or Pentium/Celeron).
     pub fn with_model(model: SuppressorModel) -> Self {
+        Self::with_model_and_aec(model, true)
+    }
+
+    /// Build for a model with the AEC3 module on/off (see
+    /// [`Self::chain_with_aec`]). The send task uses this so the APM config
+    /// mirrors the session's `aec_enabled` flag, not just whether render
+    /// frames are fed.
+    pub fn with_model_and_aec(model: SuppressorModel, aec: bool) -> Self {
         match model {
-            SuppressorModel::NsOnly => Self::new(),
+            SuppressorModel::NsOnly => Self::chain_with_aec(None, false, None, aec),
+            SuppressorModel::FastEnhancerS => {
+                Self::chain_with_aec(None, false, FastEnhancerDenoiser::new_small(), aec)
+            }
             SuppressorModel::FastEnhancerM => {
-                Self::chain(None, false, FastEnhancerDenoiser::new())
+                Self::chain_with_aec(None, false, FastEnhancerDenoiser::new(), aec)
             }
         }
     }
@@ -949,8 +978,24 @@ impl NoiseSuppressor {
         rnnoise: bool,
         fe: Option<FastEnhancerDenoiser>,
     ) -> Self {
+        Self::chain_with_aec(neural, rnnoise, fe, true)
+    }
+
+    /// Like [`Self::chain`] but with the AEC3 module included only when
+    /// `aec` is true. With AEC off (the default; settings `aec_enabled`:
+    /// false) the APM config drops the echo canceller entirely, so the AEC3
+    /// matched filter / adaptive filter (FilterCore, xcorr) never run — the
+    /// send path does HPF + NS + GC2 only. Saves a few µs/frame and, more
+    /// importantly, makes the aec_enabled=false state structurally immune to
+    /// the stale-settings case (session started before the flag flipped).
+    fn chain_with_aec(
+        neural: Option<DeepFilterDenoiser>,
+        rnnoise: bool,
+        fe: Option<FastEnhancerDenoiser>,
+        aec: bool,
+    ) -> Self {
         let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
-            processor.set_config(apm_config());
+            processor.set_config(apm_config_with_aec(aec));
             processor
         });
         Self {
@@ -1108,9 +1153,23 @@ impl NoiseSuppressor {
 /// denoiser (DeepFilterNet/RNNoise damaged the voice more than they helped:
 /// their aggressive masks attenuated clean speech by 10-50 dB on the worst
 /// frames, and the AGC normalizes the noise floor anyway).
+/// The production APM config (AEC3 on). Kept for the aec_enabled=true path
+/// and the tests/probes that feed a render reference.
 fn apm_config() -> Config {
+    apm_config_with_aec(true)
+}
+
+/// APM config for a given AEC state. `echo_canceller: None` means the C++
+/// `InitializeEchoController` leaves `submodules_.echo_controller` unset, so
+/// `AnalyzeCapture`/`ProcessCapture` never run and the AEC3 matched filter
+/// (FilterCore/xcorr) is absent from the profile entirely.
+fn apm_config_with_aec(aec: bool) -> Config {
     Config {
-        echo_canceller: Some(EchoCanceller::Full { stream_delay_ms: None }),
+        echo_canceller: if aec {
+            Some(EchoCanceller::Full { stream_delay_ms: None })
+        } else {
+            None
+        },
         high_pass_filter: Some(HighPassFilter { apply_in_full_band: true }),
         noise_suppression: Some(NoiseSuppression {
             level: NoiseSuppressionLevel::VeryHigh,
@@ -1136,7 +1195,13 @@ fn apm_config() -> Config {
 pub enum SuppressorModel {
     /// WebRTC NS only — no external neural denoiser ("practically free").
     NsOnly,
-    /// FastEnhancer-Medium (48 kHz full-band, int8 C runtime). Requires
+    /// FastEnhancer-Small (48 kHz full-band, int8 C runtime, hop 512) — the
+    /// "Ligera" tier: ~1.6 % of total CPU, slightly weaker noise floor than
+    /// Medium (measured −67.6 vs < −120 dBFS on the hard 36 s input; inaudible
+    /// in normal rooms). Requires AVX2+FMA3+F16C.
+    FastEnhancerS,
+    /// FastEnhancer-Medium (48 kHz full-band, int8 C runtime, hop 320) — the
+    /// "Ultra" tier: ~6.4 % of total CPU, deepest suppression. Requires
     /// AVX2+FMA3+F16C; auto-degrades to `NsOnly` when the CPU can't run it.
     FastEnhancerM,
 }
@@ -1146,6 +1211,7 @@ impl SuppressorModel {
     pub fn as_str(&self) -> &'static str {
         match self {
             SuppressorModel::NsOnly => "ns-only",
+            SuppressorModel::FastEnhancerS => "fastenhancer-s",
             SuppressorModel::FastEnhancerM => "fastenhancer",
         }
     }
@@ -1153,6 +1219,7 @@ impl SuppressorModel {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "ns-only" => Some(SuppressorModel::NsOnly),
+            "fastenhancer-s" => Some(SuppressorModel::FastEnhancerS),
             "fastenhancer" => Some(SuppressorModel::FastEnhancerM),
             _ => None,
         }
@@ -1160,10 +1227,11 @@ impl SuppressorModel {
 
     /// Whether this model can actually run on this build/hardware — used by
     /// the UI to surface (never silently hide) an unavailable selection.
-    /// NsOnly is always available; FastEnhancerM needs AVX2+FMA3+F16C.
+    /// NsOnly is always available; FastEnhancerS/M need AVX2+FMA3+F16C.
     pub fn available(&self) -> bool {
         match self {
             SuppressorModel::NsOnly => true,
+            SuppressorModel::FastEnhancerS => FastEnhancerDenoiser::available(),
             SuppressorModel::FastEnhancerM => FastEnhancerDenoiser::available(),
         }
     }
@@ -1191,24 +1259,44 @@ mod ffe {
         pub fn fe_init(weights_blob: *const c_void, weights_size: c_int) -> c_int;
         pub fn fe_run(in_: *const f32, out: *mut f32);
         pub fn fe_free();
+        /// FastEnhancer-Small ("Ligera"): hop 512, symbol-prefixed build
+        /// (see build.rs) so it links alongside the Medium runtime.
+        pub fn fe_s_init(weights_blob: *const c_void, weights_size: c_int) -> c_int;
+        pub fn fe_s_run(in_: *const f32, out: *mut f32);
+        pub fn fe_s_free();
     }
 }
 
-/// FastEnhancer-Medium 48 kHz full-band denoiser — the default neural tier.
+/// FastEnhancer 48 kHz full-band denoiser — the default neural tier.
 /// Wraps the vendored faster-enhancer.c int8 runtime (MIT, see
-/// vendor/faster-enhancer/). Requires AVX2+FMA3+F16C; [`new`] returns `None`
-/// on CPUs without it (pre-Haswell, or Pentium/Celeron) so the caller falls
-/// back to WebRTC NS-only. The engine is a C global (single instance); the
-/// struct is never `Send`/`Sync` — it lives on the single send-task thread.
+/// vendor/faster-enhancer/). Two variants:
+///   `new()`       — Medium ("Ultra", hop 320, 6.67 ms frames)
+///   `new_small()` — Small ("Ligera", hop 512, 10.67 ms frames)
+/// Requires AVX2+FMA3+F16C; both `new`/`new_small` return `None` on CPUs
+/// without it (pre-Haswell, or Pentium/Celeron) so the caller falls back to
+/// WebRTC NS-only. The engine is a C global (single instance); the struct is
+/// never `Send`/`Sync` — it lives on the single send-task thread.
 pub struct FastEnhancerDenoiser {
-    _private: (),
+    run: unsafe extern "C" fn(*const f32, *mut f32),
+    free: unsafe extern "C" fn(),
+    frame_size: usize,
+    /// Input accumulator: the app's 20 ms frames (960) don't align with the
+    /// Small engine's 512-sample frames, so the wrapper buffers and drains
+    /// full engine frames (Medium: 960 = 3×320 → never holds anything).
+    in_buf: Vec<f32>,
+    /// Output accumulator: the engine emits `frame_size` per call; the send
+    /// task / Opus encoder needs fixed 20 ms frames, so complete
+    /// input-length blocks are returned and the partial remainder is held
+    /// for the next call (bounded lag ≤ one frame ≈ 20 ms).
+    out_buf: Vec<f32>,
 }
 
 #[cfg(not(target_env = "msvc"))]
 impl FastEnhancerDenoiser {
-    /// Embedded W8A8 weight blob (fe.q8). `fe_init` references it zero-copy,
-    /// so it must outlive the engine — a `'static` slice works.
-    const WEIGHTS: &'static [u8] = include_bytes!("../vendor/faster-enhancer/weights/fe.q8");
+    /// Embedded W8A8 weight blobs. `fe_init` references them zero-copy,
+    /// so they must outlive the engine — `'static` slices work.
+    const WEIGHTS_M: &'static [u8] = include_bytes!("../vendor/faster-enhancer/weights/fe.q8");
+    const WEIGHTS_S: &'static [u8] = include_bytes!("../vendor/faster-enhancer/weights/fe_s.q8");
 
     /// Non-destructive availability probe (does NOT init the global engine).
     /// Mirrors the runtime's own AVX2+FMA3+F16C floor (x86) / NEON baseline
@@ -1231,41 +1319,62 @@ impl FastEnhancerDenoiser {
         }
     }
 
-    /// Initialize the engine. Returns `None` when `fe_init` fails — i.e. the
-    /// host lacks AVX2+FMA3+F16C — which is how the runtime degrades to the
-    /// NS-only tier on weak CPUs (the UI already avoids offering M there).
+    /// FastEnhancer-Medium ("Ultra", hop 320, 6.67 ms frames).
+    /// Returns `None` when `fe_init` fails — i.e. the host lacks
+    /// AVX2+FMA3+F16C — which is how the runtime degrades to the NS-only
+    /// tier on weak CPUs (the UI already avoids offering it there).
     pub fn new() -> Option<Self> {
+        Self::build(ffe::fe_init, ffe::fe_run, ffe::fe_free, Self::WEIGHTS_M, 320)
+    }
+
+    /// FastEnhancer-Small ("Ligera", hop 512, 10.67 ms frames) — the
+    /// low-CPU tier (~1.6 % of total CPU vs Medium's ~6.4 %, measured on the
+    /// i5-4590). Same AVX2+FMA3+F16C floor as Medium.
+    pub fn new_small() -> Option<Self> {
+        Self::build(ffe::fe_s_init, ffe::fe_s_run, ffe::fe_s_free, Self::WEIGHTS_S, 512)
+    }
+
+    fn build(
+        init: unsafe extern "C" fn(*const std::os::raw::c_void, std::os::raw::c_int) -> std::os::raw::c_int,
+        run: unsafe extern "C" fn(*const f32, *mut f32),
+        free: unsafe extern "C" fn(),
+        weights: &'static [u8],
+        frame_size: usize,
+    ) -> Option<Self> {
         let ok = unsafe {
-            ffe::fe_init(
-                Self::WEIGHTS.as_ptr() as *const std::os::raw::c_void,
-                Self::WEIGHTS.len() as i32,
+            init(
+                weights.as_ptr() as *const std::os::raw::c_void,
+                weights.len() as i32,
             )
         };
         if ok == 0 {
-            Some(Self { _private: () })
+            Some(Self { run, free, frame_size, in_buf: Vec::new(), out_buf: Vec::new() })
         } else {
             None
         }
     }
 
-    /// Process one frame. `frame` must be a multiple of 320 samples (the
-    /// engine's 6.67 ms frame); a 20 ms capture frame is exactly 3 × 320.
+    /// Process one frame (multiple of 480, e.g. a 960-sample 20 ms capture
+    /// frame). Returns complete input-length blocks (the send task / Opus
+    /// encoder needs fixed 20 ms frames); a partial remainder is held in the
+    /// output buffer and emitted with the next call.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
-        debug_assert!(
-            frame.len() % 320 == 0,
-            "FastEnhancer requires frames of 320-sample multiples"
-        );
-        let mut input = vec![0f32; frame.len()];
-        for (i, s) in frame.iter().enumerate() {
-            input[i] = *s as f32 / 32768.0;
+        for &s in frame {
+            self.in_buf.push(s as f32 / 32768.0);
         }
-        let mut out = vec![0f32; frame.len()];
-        for c in 0..frame.len() / 320 {
-            unsafe {
-                ffe::fe_run(input[c * 320..].as_ptr(), out[c * 320..].as_mut_ptr());
-            }
+        let fs = self.frame_size;
+        while self.in_buf.len() >= fs {
+            let chunk: Vec<f32> = self.in_buf.drain(..fs).collect();
+            let mut denoised = vec![0f32; fs];
+            unsafe { (self.run)(chunk.as_ptr(), denoised.as_mut_ptr()) };
+            self.out_buf.extend_from_slice(&denoised);
         }
-        out.iter()
+        let emit = self.out_buf.len() / frame.len() * frame.len();
+        if emit == 0 {
+            return Vec::new();
+        }
+        self.out_buf
+            .drain(..emit)
             .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
             .collect()
     }
@@ -1274,7 +1383,7 @@ impl FastEnhancerDenoiser {
 #[cfg(not(target_env = "msvc"))]
 impl Drop for FastEnhancerDenoiser {
     fn drop(&mut self) {
-        unsafe { ffe::fe_free(); }
+        unsafe { (self.free)(); }
     }
 }
 
@@ -1283,6 +1392,9 @@ impl Drop for FastEnhancerDenoiser {
 #[cfg(target_env = "msvc")]
 impl FastEnhancerDenoiser {
     pub fn new() -> Option<Self> {
+        None
+    }
+    pub fn new_small() -> Option<Self> {
         None
     }
     pub fn available() -> bool {
@@ -1675,6 +1787,29 @@ impl LinearResampler {
         // Carry the phase overshoot into the next chunk (stays in [0, step)).
         self.pos -= len;
         out
+    }
+}
+
+/// H1 silence-path decision: whether the send loop can reuse the last
+/// encoded silence packet instead of re-encoding the frame.
+///
+/// Contract (pinned by tests/send_chain_cpu.rs):
+/// - `speech == true`  → ALWAYS encode fresh and reset the streak (a speech
+///   onset is never delayed — no edge cuts).
+/// - silence: the first two frames encode fresh (to seed the cached packet),
+///   then the packet is reused until the ~8 s refresh boundary (the encoder
+///   re-runs so the remote's CNG state cannot go stale).
+///
+/// Returns `(reuse, new_streak)`.
+pub fn silence_reuse_decision(speech: bool, streak: u32, have_pkt: bool) -> (bool, u32) {
+    if speech {
+        return (false, 0);
+    }
+    let new_streak = if streak >= 400 { 0 } else { streak.saturating_add(1) };
+    if have_pkt && new_streak >= 2 && streak < 400 {
+        (true, new_streak)
+    } else {
+        (false, new_streak)
     }
 }
 

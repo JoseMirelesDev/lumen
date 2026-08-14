@@ -1,45 +1,190 @@
-// Channel list — port of apps/desktop/src/lib/components/ChannelList.svelte.
-// Pure view; the create-channel modal lives at AppWindow level.
+// Channel panel — the second column (mock .channel-panel, 240px). Header =
+// clan name in Cinzel 20px + mono uppercase tag (mock .channel-panel__header);
+// groups in mono uppercase; Phosphor glyphs for channels. Rows: mono 13px,
+// amber 2px active edge, hover darker than the panel (mock .channel-item).
+// Footer = user identity + mic/deafen/logout (mock .user-footer).
 
 import { AppTheme } from "theme.slint";
-import { Button, ScrollView } from "std-widgets.slint";
+import { Icons } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ChannelItem } from "types.slint";
-import { HeaderBar, ListRow, Divider } from "base.slint";
+import { Divider, ListRow } from "primitives/layout.slint";
+import { Bust } from "primitives/identity.slint";
+import { HeaderIconBtn } from "primitives/buttons.slint";
+import { IconGlyph } from "primitives/icon.slint";
+
+// 32px footer control with keyboard focus scope and ice focus ring
+component FooterBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> active: false;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    background: root.active ? AppTheme.colors.card : (ta.has-hover ? AppTheme.colors.card : transparent);
+    border-width: 1px;
+    border-color: root.active ? AppTheme.colors.border : (ta.has-hover ? AppTheme.colors.border : transparent);
+    border-radius: AppTheme.radius-1;
+
+    // focus ring
+    Rectangle {
+        x: -2px; y: -2px;
+        width: parent.width + 4px; height: parent.height + 4px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        border-radius: AppTheme.radius-1;
+        visible: fs.has-focus;
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        IconGlyph {
+            glyph: root.glyph;
+            size: 16px;
+            text-color: AppTheme.colors.text-dim;
+        }
+    }
+}
+
+// Collapsible channel group header
+component ChannelGroup inherits Rectangle {
+    in property <string> title;
+    in-out property <bool> collapsed: false;
+
+    height: 24px;
+    background: transparent;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.collapsed = !root.collapsed; }
+
+        HorizontalLayout {
+            alignment: start;
+            padding-left: 12px;
+            spacing: AppTheme.sp-1;
+            cross-axis-alignment: center;
+
+            IconGlyph {
+                glyph: root.collapsed ? Icons.caret-right : Icons.caret-down;
+                size: 10px;
+                text-color: AppTheme.colors.text-mute;
+            }
+            Text {
+                text: root.title;
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                font-weight: 700;
+                letter-spacing: 1.3px;
+                color: AppTheme.colors.text-dim;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
 
 export component ChannelList inherits Rectangle {
     in property <[ChannelItem]> channels;
     in property <string> server-name;
+    in property <string> server-id: "";
     in property <bool> can-create;
+    // user footer (mock .user-footer)
+    in property <string> user-label;
+    in property <string> user-skin: "ivory";
+    in property <bool> user-muted: false;
+    in property <bool> user-deafened: false;
     callback select-channel(string);
     callback copy-invite();
     callback open-create-channel();
+    callback toggle-mute();
+    callback toggle-deafen();
+    callback open-settings();
+    // Fase 2: server menu + channel actions ("rename" | "delete", id)
+    callback server-action(string);
+    callback channel-action(string, string);
+    // Menú contextual de canal (botón derecho, owner): id del canal objetivo.
+    in-out property <string> menu-channel: "";
 
     width: AppTheme.sidebar-width;
     vertical-stretch: 1;
-    background: AppTheme.colors.bg-list;
+    background: AppTheme.colors.surface;
+
+    // transient "invite copied" feedback — swap link → check for 1.2s
+    property <bool> copied: false;
+    Timer {
+        running: root.copied;
+        interval: 1200ms;
+        triggered() => { root.copied = false; }
+    }
 
     VerticalLayout {
         width: 100%;
         height: 100%;
-        HeaderBar {
-            pad-x: 14px;
-            Text {
-                text: root.server-name;
-                color: AppTheme.colors.text;
-                font-size: AppTheme.font-base;
-                font-weight: 700;
-                overflow: elide;
-                horizontal-stretch: 1;
-            }
-            Button {
-                text: "Invite";
-                enabled: root.server-name != "";
-                clicked => { root.copy-invite(); }
-            }
-            Button {
-                text: "+";
-                enabled: root.can-create;
-                clicked => { root.open-create-channel(); }
+
+        // --- header (mock .channel-panel__header) ---
+        Rectangle {
+            height: 72px;
+            VerticalLayout {
+                padding-left: 16px;
+                padding-right: 8px;
+                padding-top: 8px;
+                padding-bottom: 6px;
+                spacing: 2px;
+                Text {
+                    text: root.server-name;
+                    font-family: AppTheme.font-display;
+                    font-weight: 700;
+                    font-size: AppTheme.font-lg;
+                    color: AppTheme.colors.text-hi;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    cross-axis-alignment: center;
+                    Text {
+                        text: "CANALES (\{root.channels.length})";
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        font-weight: 500;
+                        letter-spacing: 1.2px;
+                        color: AppTheme.colors.bronze-hi;
+                        horizontal-stretch: 1;
+                    }
+                    HeaderIconBtn {
+                        icon: root.copied ? Icons.check : Icons.link;
+                        icon-active: Icons.check;
+                        active: root.copied;
+                        enabled: root.server-name != "";
+                        clicked => {
+                            root.copy-invite();
+                            root.copied = true;
+                        }
+                    }
+                    HeaderIconBtn {
+                        icon: Icons.sliders-horizontal;
+                        enabled: root.server-name != "";
+                        clicked => { root.server-action("menu"); }
+                    }
+                    // Owner-only: oculto (no disabled) — un botón visible
+                    // pero inerte para quien no puede usarlo es un
+                    // anti-patrón (disabled without explanation).
+                    if root.can-create : HeaderIconBtn {
+                        icon: Icons.plus;
+                        clicked => { root.open-create-channel(); }
+                    }
+                }
             }
         }
         Divider { }
@@ -50,47 +195,224 @@ export component ChannelList inherits Rectangle {
                 alignment: start;
                 padding-top: AppTheme.sp-2;
                 padding-bottom: AppTheme.sp-2;
-                padding-left: 6px;
-                padding-right: 6px;
-                spacing: 2px;
-                HorizontalLayout {
-                    alignment: start;
-                    padding-left: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "TEXT"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
-                }
-                for c in root.channels: ListRow { visible: c.kind == "text";
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 1px;
+
+                text_group := ChannelGroup { title: "TEXTO"; }
+                for c in root.channels : ListRow {
+                    visible: !text_group.collapsed && c.kind == "text";
+                    height: (!text_group.collapsed && c.kind == "text") ? AppTheme.row-height : 0px;
                     active: c.active;
-                    pad-x: AppTheme.sp-3;
-                    clicked => { root.select-channel(c.id); }
-                    Text { text: "#"; color: AppTheme.colors.text-dim; font-size: AppTheme.font-md; }
+                    pad-x: AppTheme.sp-4;
+                    pad-y: AppTheme.sp-1;
+                    clicked => { root.menu-channel = ""; root.select-channel(c.id); }
+                    context-menu => { if root.can-create { root.menu-channel = c.id; } }
+                    IconGlyph {
+                        glyph: Icons.hash;
+                        size: 14px;
+                        text-color: c.active ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                    }
                     Text {
                         text: c.name;
-                        color: c.active ? AppTheme.colors.text : AppTheme.colors.text-dim;
-                        font-size: AppTheme.font-md;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-sm;
+                        font-weight: c.active ? 500 : 400;
+                        color: c.active ? AppTheme.colors.text-hi : AppTheme.colors.text-dim;
                         overflow: elide;
+                        horizontal-stretch: 1; // empuja badge/acciones al borde derecho
                         vertical-stretch: 1;
                     }
+
+                    // Acciones (rename/delete) → menú contextual con botón derecho.
                 }
-                HorizontalLayout {
-                    alignment: start;
-                    padding-left: AppTheme.sp-2;
-                    padding-top: AppTheme.sp-1;
-                    padding-bottom: AppTheme.sp-1;
-                    Text { text: "VOICE"; font-size: AppTheme.font-xs; font-weight: 700; color: AppTheme.colors.text-dim; }
-                }
-                for c in root.channels: ListRow { visible: c.kind == "voice";
-                    active: c.active;
-                    pad-x: AppTheme.sp-3;
-                    clicked => { root.select-channel(c.id); }
-                    Text { text: "▸"; color: AppTheme.colors.text-dim; font-size: AppTheme.font-md; }
+
+                voice_group := ChannelGroup { title: "VOZ"; }
+                for c in root.channels : ListRow {
+                    visible: !voice_group.collapsed && c.kind == "voice";
+                    height: (!voice_group.collapsed && c.kind == "voice") ? AppTheme.row-height : 0px;
+                    active: c.active || c.joined;
+                    pad-x: AppTheme.sp-4;
+                    pad-y: AppTheme.sp-1;
+                    clicked => { root.menu-channel = ""; root.select-channel(c.id); }
+                    context-menu => { if root.can-create { root.menu-channel = c.id; } }
+                    IconGlyph {
+                        glyph: c.joined ? Icons.waveform : Icons.speaker-high;
+                        size: 15px;
+                        text-color: c.joined ? AppTheme.colors.ice : (c.active ? AppTheme.colors.ice : AppTheme.colors.text-dim);
+                    }
                     Text {
                         text: c.name;
-                        color: c.active ? AppTheme.colors.text : AppTheme.colors.text-dim;
-                        font-size: AppTheme.font-md;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-sm;
+                        font-weight: (c.active || c.joined) ? 600 : 400;
+                        color: (c.active || c.joined) ? AppTheme.colors.text-hi : AppTheme.colors.text-dim;
                         overflow: elide;
+                        horizontal-stretch: 1; // empuja badge/acciones al borde derecho
                         vertical-stretch: 1;
+                    }
+                    // Fase 3: voice occupancy badge — "N" sin entrar al canal.
+                    if c.peer-count > 0 : Rectangle {
+                        border-radius: 9px;
+                        background: AppTheme.colors.online;
+                        min-width: 18px;
+                        height: 18px;
+                        Text {
+                            text: c.peer-count;
+                            font-family: AppTheme.font-mono;
+                            font-size: AppTheme.font-xs;
+                            font-weight: 700;
+                            color: AppTheme.colors.bg-deep;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    // Estamos DENTRO de este canal (aunque no esté seleccionado):
+                    // punto "live" cuando el badge de ocupancia no lo cubre.
+                    if c.joined && c.peer-count == 0 : Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: AppTheme.colors.online;
+                    }
+
+                    // Acciones (rename/delete) → menú contextual con botón derecho.
+                }
+            }
+        }
+
+        // --- user footer (mock .user-footer) ---
+        Divider { }
+        Rectangle {
+            height: 64px;
+            background: AppTheme.colors.bg-deep;
+            HorizontalLayout {
+                padding-left: AppTheme.sp-2;
+                padding-right: AppTheme.sp-2;
+                spacing: AppTheme.sp-2;
+                cross-axis-alignment: center;
+                Bust {
+                    skin: root.user-skin;
+                    state: root.user-deafened || root.user-muted ? "muted" : "idle";
+                    width: 32px;
+                    height: 32px;
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    Text {
+                        text: root.user-label;
+                        font-family: AppTheme.font-body;
+                        font-weight: 600;
+                        font-size: AppTheme.font-sm;
+                        color: AppTheme.colors.text-hi;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.user-deafened ? "SORDO"
+                            : root.user-muted ? "MUTEADO"
+                            : "CONECTADO";
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        letter-spacing: 0.6px;
+                        color: root.user-muted || root.user-deafened ? AppTheme.colors.text-mute : AppTheme.colors.online;
+                    }
+                }
+                FooterBtn {
+                    glyph: root.user-muted ? Icons.mic-slash : Icons.mic;
+                    active: root.user-muted;
+                    clicked => { root.toggle-mute(); }
+                }
+                FooterBtn {
+                    glyph: root.user-deafened ? Icons.ear-slash : Icons.headphones;
+                    active: root.user-deafened;
+                    clicked => { root.toggle-deafen(); }
+                }
+                FooterBtn {
+                    glyph: Icons.gear-six;
+                    clicked => { root.open-settings(); }
+                }
+            }
+        }
+    }
+
+    // --- menú contextual de canal (botón derecho, owner only) ---
+    // Anclado en la columna derecha de la lista, bajo el header. Las acciones
+    // salen Ocultas por defecto: solo se ven al abrir este menú (anti-patrón
+    // evitado: sin botones visibles para quien no puede usarlos).
+    if root.can-create && root.menu-channel != "" : Rectangle {
+        x: parent.width - 196px - AppTheme.sp-3;
+        y: 96px;
+        width: 196px;
+        background: AppTheme.colors.bg-deep;
+        border-width: 2px;
+        border-color: AppTheme.colors.bronze-dim;
+        border-radius: AppTheme.radius-1;
+        VerticalLayout {
+            padding: AppTheme.sp-1;
+            spacing: 2px;
+            menu-rename := TouchArea {
+                height: 30px;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.channel-action("rename", root.menu-channel);
+                    root.menu-channel = "";
+                }
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: menu-rename.has-hover ? AppTheme.colors.card-hi : transparent;
+                    border-radius: AppTheme.radius-1;
+                    HorizontalLayout {
+                        padding-left: AppTheme.sp-2;
+                        padding-right: AppTheme.sp-2;
+                        spacing: AppTheme.sp-2;
+                        cross-axis-alignment: center;
+                        IconGlyph {
+                            glyph: Icons.pencil-simple;
+                            size: 14px;
+                            text-color: menu-rename.has-hover ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                        }
+                        Text {
+                            text: "Renombrar canal";
+                            font-family: AppTheme.font-mono;
+                            font-size: AppTheme.font-xs;
+                            color: menu-rename.has-hover ? AppTheme.colors.text-hi : AppTheme.colors.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            menu-delete := TouchArea {
+                height: 30px;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.channel-action("delete", root.menu-channel);
+                    root.menu-channel = "";
+                }
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: menu-delete.has-hover ? AppTheme.colors.rose : transparent;
+                    border-radius: AppTheme.radius-1;
+                    HorizontalLayout {
+                        padding-left: AppTheme.sp-2;
+                        padding-right: AppTheme.sp-2;
+                        spacing: AppTheme.sp-2;
+                        cross-axis-alignment: center;
+                        IconGlyph {
+                            glyph: Icons.x;
+                            size: 14px;
+                            text-color: menu-delete.has-hover ? AppTheme.colors.bg-deep : AppTheme.colors.rose;
+                        }
+                        Text {
+                            text: "Eliminar canal";
+                            font-family: AppTheme.font-mono;
+                            font-size: AppTheme.font-xs;
+                            color: menu-delete.has-hover ? AppTheme.colors.bg-deep : AppTheme.colors.rose;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }

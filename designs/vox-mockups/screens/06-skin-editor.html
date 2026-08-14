@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox · Editor de skins</title>
+  <link rel="stylesheet" href="../assets/vox-tokens.css">
+  <style>
+    /* === SHARED SHELL === */
+    .vox-shell { display: grid; grid-template-columns: 76px 240px 1fr; height: 100vh; background: var(--vox-bg); }
+    .clan-rail { background: var(--vox-bg-deep); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; align-items: center; padding: var(--vox-s-5) 0; gap: var(--vox-s-4); overflow-y: auto; }
+    .clan-rail__home { width: 48px; height: 48px; background: var(--vox-rust); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center; font-family: var(--vox-font-title); font-weight: 900; font-size: 22px; color: var(--vox-text-hi); cursor: pointer; position: relative; }
+    .clan-rail__divider { width: 32px; height: 2px; background: var(--vox-border-dim); margin: var(--vox-s-1) 0; }
+    .clan-rail__list { display: flex; flex-direction: column; gap: var(--vox-s-3); width: 100%; align-items: center; }
+    .clan-pill { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); font-family: var(--vox-font-title); font-weight: 700; font-size: 18px; color: var(--vox-text); cursor: pointer; position: relative; transition: none; }
+    .clan-pill:hover { border-color: var(--vox-bronze-hi); background: var(--vox-card-hi); }
+    .clan-pill--active { border-color: var(--vox-amber); background: var(--vox-card-hi); }
+    .clan-pill--active::before { content: ''; position: absolute; left: -16px; top: 50%; transform: translateY(-50%); width: 4px; height: 32px; background: var(--vox-amber); }
+    .clan-pill__add { width: 48px; height: 48px; background: transparent; border: 2px dashed var(--vox-border); color: var(--vox-text-dim); font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+    .channel-panel { background: var(--vox-surface); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; overflow: hidden; }
+    .channel-panel__header { padding: var(--vox-s-6) var(--vox-s-6) var(--vox-s-5); border-bottom: 1px solid var(--vox-border-dim); }
+    .channel-panel__clan-name { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-lg); color: var(--vox-text-hi); }
+    .channel-panel__clan-tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-bronze-hi); margin-top: var(--vox-s-2); }
+    .channel-panel__body { flex: 1; overflow-y: auto; padding: var(--vox-s-4) 0; }
+    .channel-group { margin-bottom: var(--vox-s-5); }
+    .channel-group__header { display: flex; align-items: center; justify-content: space-between; padding: var(--vox-s-3) var(--vox-s-6); cursor: pointer; }
+    .channel-group__label { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); display: flex; align-items: center; gap: var(--vox-s-2); }
+    .channel-group__chevron { width: 8px; height: 8px; border-right: 2px solid var(--vox-text-dim); border-bottom: 2px solid var(--vox-text-dim); transform: rotate(-45deg); display: inline-block; }
+    .channel-list { list-style: none; }
+    .channel-item { display: flex; align-items: center; gap: var(--vox-s-4); padding: var(--vox-s-2) var(--vox-s-6); font-family: var(--vox-font-mono); font-size: var(--vox-text-sm); color: var(--vox-text-dim); border-left: 2px solid transparent; cursor: pointer; transition: none; position: relative; }
+    .channel-item:hover { color: var(--vox-text); background: var(--vox-bg); }
+    .channel-item--active { color: var(--vox-text-hi); background: var(--vox-card); border-left-color: var(--vox-amber); }
+    .channel-item__icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
+    .channel-item--active .channel-item__icon { opacity: 1; }
+    .channel-item__name { flex: 1; }
+
+    .user-footer { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-5); display: flex; align-items: center; gap: var(--vox-s-4); }
+    .user-footer__bust { width: 32px; height: 32px; flex-shrink: 0; position: relative; }
+    .user-footer__bust img { width: 100%; height: 100%; }
+    .user-footer__info { flex: 1; min-width: 0; }
+    .user-footer__name { font-family: var(--vox-font-body); font-weight: var(--vox-fw-semi); font-size: var(--vox-text-sm); color: var(--vox-text-hi); }
+    .user-footer__tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); }
+    .user-footer__controls { display: flex; gap: var(--vox-s-2); }
+    .ctrl-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; cursor: pointer; transition: none; }
+    .ctrl-btn:hover { background: var(--vox-card); border-color: var(--vox-border); }
+    .ctrl-btn img { width: 16px; height: 16px; }
+
+    /* === MAIN: SKIN EDITOR === */
+    .editor-area {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      overflow: hidden;
+      background: var(--vox-bg);
+    }
+
+    /* === Preview area === */
+    .preview-area {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 65%, rgba(224, 106, 62, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse 100% 100% at 50% 30%, var(--vox-indigo) 0%, var(--vox-bg) 60%, var(--vox-bg-deep) 100%);
+      position: relative;
+    }
+
+    .preview-header {
+      height: 48px;
+      padding: 0 var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      background: var(--vox-bg-deep);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .preview-header__title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+    }
+    .preview-header__meta {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .preview-header__actions {
+      margin-left: auto;
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+
+    /* Pose switcher — para ver el skin en diferentes estados */
+    .pose-switcher {
+      display: flex;
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+    }
+    .pose-switcher__btn {
+      padding: var(--vox-s-2) var(--vox-s-4);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .pose-switcher__btn img {
+      width: 14px;
+      height: 14px;
+      image-rendering: pixelated;
+    }
+    .pose-switcher__btn--active {
+      background: var(--vox-rust);
+      color: var(--vox-text-hi);
+    }
+
+    /* Preview scene */
+    .preview-scene {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* Stage platform — donde está parado el personaje */
+    .preview-stage {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--vox-s-6);
+    }
+
+    .preview-stage__platform {
+      position: absolute;
+      bottom: -40px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 240px;
+      height: 60px;
+      background:
+        radial-gradient(ellipse at 50% 50%, var(--vox-bronze-dim) 0%, transparent 70%);
+      z-index: 0;
+    }
+    .preview-stage__platform::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 200px;
+      height: 12px;
+      background:
+        repeating-linear-gradient(
+          90deg,
+          var(--vox-border-dim) 0,
+          var(--vox-border-dim) 4px,
+          transparent 4px,
+          transparent 8px
+        );
+    }
+
+    /* Layered character preview — todas las capas stacked */
+    .preview-character {
+      position: relative;
+      width: 192px;
+      height: 256px;
+      z-index: 2;
+      animation: vox-breath var(--vox-breath) steps(6) infinite;
+    }
+    .preview-character__layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    /* Glow behind character */
+    .preview-character::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 280px;
+      height: 280px;
+      background: radial-gradient(ellipse, rgba(224, 106, 62, 0.15) 0%, transparent 70%);
+      z-index: -1;
+    }
+
+    /* Character info plate */
+    .preview-plate {
+      position: absolute;
+      bottom: var(--vox-s-9);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-4) var(--vox-s-6);
+      text-align: center;
+      min-width: 280px;
+      z-index: 10;
+    }
+    .preview-plate__name {
+      font-family: var(--vox-font-title);
+      font-weight: 900;
+      font-size: var(--vox-text-lg);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+      margin-bottom: var(--vox-s-1);
+    }
+    .preview-plate__tag {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bronze-hi);
+      margin-bottom: var(--vox-s-3);
+    }
+    .preview-plate__layers {
+      display: flex;
+      gap: var(--vox-s-2);
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .preview-plate__layer-chip {
+      font-family: var(--vox-font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      padding: 1px 6px;
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border-dim);
+      color: var(--vox-text-dim);
+    }
+    .preview-plate__layer-chip--active {
+      color: var(--vox-amber);
+      border-color: var(--vox-rust);
+      background: rgba(224, 106, 62, 0.1);
+    }
+
+    /* === Layers panel (right) === */
+    .layers-panel {
+      background: var(--vox-surface);
+      border-left: 1px solid var(--vox-border-dim);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .layers-panel__header {
+      padding: var(--vox-s-5) var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-2);
+    }
+    .layers-panel__title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+    }
+    .layers-panel__subtitle {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+
+    /* Layer tabs */
+    .layer-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--vox-border-dim);
+      background: var(--vox-bg-deep);
+    }
+    .layer-tab {
+      flex: 1;
+      padding: var(--vox-s-4) var(--vox-s-3);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      text-align: center;
+      position: relative;
+    }
+    .layer-tab:hover {
+      color: var(--vox-text);
+    }
+    .layer-tab--active {
+      color: var(--vox-amber);
+      border-bottom-color: var(--vox-amber);
+      background: var(--vox-surface);
+    }
+    .layer-tab__count {
+      display: inline-block;
+      margin-left: var(--vox-s-2);
+      font-size: 9px;
+      color: var(--vox-text-mute);
+    }
+
+    .layers-panel__body {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--vox-s-5) var(--vox-s-6);
+    }
+
+    /* Layer section */
+    .layer-section {
+      margin-bottom: var(--vox-s-9);
+    }
+    .layer-section__title {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      margin-bottom: var(--vox-s-4);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .layer-section__hint {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-mute);
+      margin-left: auto;
+    }
+
+    /* Option grid — selectable items */
+    .option-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--vox-s-3);
+    }
+    .option-item {
+      aspect-ratio: 1;
+      background: var(--vox-card);
+      border: 2px solid var(--vox-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      position: relative;
+      transition: none;
+    }
+    .option-item:hover {
+      background: var(--vox-card-hi);
+      border-color: var(--vox-border-hi);
+    }
+    .option-item--active {
+      border-color: var(--vox-amber);
+      background: var(--vox-card-hi);
+    }
+    .option-item--active::before {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 4px;
+      height: 4px;
+      background: var(--vox-amber);
+    }
+    .option-item--active::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      width: 4px;
+      height: 4px;
+      background: var(--vox-amber);
+    }
+    .option-item__preview {
+      width: 70%;
+      height: 70%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .option-item__preview img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .option-item--empty {
+      border-style: dashed;
+      color: var(--vox-text-mute);
+      font-size: 14px;
+    }
+    .option-item--locked {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .option-item--locked::after {
+      content: '🔒';
+      position: absolute;
+      bottom: 2px;
+      right: 2px;
+      font-size: 10px;
+      filter: grayscale(1);
+    }
+
+    /* Color palette — indexed palette per layer */
+    .color-palette {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: var(--vox-s-2);
+    }
+    .color-swatch {
+      aspect-ratio: 1;
+      border: 2px solid var(--vox-border-dim);
+      cursor: pointer;
+      position: relative;
+    }
+    .color-swatch:hover {
+      border-color: var(--vox-border-hi);
+    }
+    .color-swatch--active {
+      border-color: var(--vox-amber);
+    }
+    .color-swatch--active::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 4px;
+      height: 4px;
+      background: var(--vox-text-hi);
+    }
+    /* Indexed palette indicator */
+    .color-swatch__index {
+      position: absolute;
+      bottom: 1px;
+      right: 2px;
+      font-family: var(--vox-font-mono);
+      font-size: 7px;
+      color: var(--vox-bg-deep);
+      background: rgba(255, 255, 255, 0.7);
+      padding: 0 2px;
+    }
+
+    /* Save / footer */
+    .layers-panel__footer {
+      padding: var(--vox-s-5) var(--vox-s-6);
+      border-top: 1px solid var(--vox-border-dim);
+      background: var(--vox-bg-deep);
+      display: flex;
+      gap: var(--vox-s-3);
+      flex-shrink: 0;
+    }
+    .layers-panel__footer .btn {
+      flex: 1;
+      justify-content: center;
+    }
+    .layers-panel__changes {
+      flex: 1;
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .layers-panel__changes-count {
+      color: var(--vox-amber);
+      font-weight: 700;
+    }
+
+    .mockup-meta { position: fixed; top: var(--vox-s-3); right: var(--vox-s-5); z-index: 9999; display: flex; gap: var(--vox-s-3); align-items: center; }
+    .mockup-meta__tag { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); background: var(--vox-bg-deep); border: 1px solid var(--vox-rust); padding: 4px 8px; }
+    .mockup-meta__back { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text); background: var(--vox-card); border: 1px solid var(--vox-border); padding: 4px 10px; text-decoration: none; }
+    .mockup-meta__back:hover { border-color: var(--vox-amber); color: var(--vox-amber); }
+
+    /* Bottom info strip */
+    .editor-info-strip {
+      padding: var(--vox-s-4) var(--vox-s-7);
+      background: var(--vox-bg-deep);
+      border-top: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-6);
+      flex-shrink: 0;
+    }
+    .editor-info-strip__item {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .editor-info-strip__item strong {
+      color: var(--vox-text-hi);
+      font-weight: 700;
+    }
+    .editor-info-strip__sep {
+      color: var(--vox-text-mute);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="mockup-meta">
+    <span class="mockup-meta__tag">06 · EDITOR DE SKINS</span>
+    <a href="../index.html" class="mockup-meta__back">← INDEX</a>
+  </div>
+
+  <div class="vox-shell">
+
+    <!-- ====== COLUMNA 1: CLANES ====== -->
+    <aside class="clan-rail">
+      <div class="clan-rail__home">V</div>
+      <div class="clan-rail__divider"></div>
+      <div class="clan-rail__list">
+        <div class="clan-pill clan-pill--active">A</div>
+        <div class="clan-pill">M</div>
+        <div class="clan-pill">R</div>
+        <div class="clan-pill">F</div>
+        <div class="clan-pill">S</div>
+        <div class="clan-pill">V</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="clan-pill__add">+</div>
+    </aside>
+
+    <!-- ====== COLUMNA 2: SALONES ====== -->
+    <aside class="channel-panel">
+      <header class="channel-panel__header">
+        <div class="channel-panel__clan-name">Askrinn</div>
+        <div class="channel-panel__clan-tag">Clan · 47 miembros</div>
+      </header>
+      <div class="channel-panel__body">
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label"><span class="channel-group__chevron"></span>Tú</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item channel-item--active">
+              <img src="../assets/sprites/ui/icon_settings.png" class="channel-item__icon">
+              <span class="channel-item__name">mi-personaje</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon">
+              <span class="channel-item__name">mi-inventario</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/rune.png" class="channel-item__icon">
+              <span class="channel-item__name">mis-logros</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <footer class="user-footer">
+        <div class="user-footer__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+        <div class="user-footer__info">
+          <div class="user-footer__name">Rúnvardr</div>
+          <div class="user-footer__tag">#0471 · ASCENDIDO</div>
+        </div>
+        <div class="user-footer__controls">
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_mic_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- ====== COLUMNA 3: EDITOR ====== -->
+    <main class="editor-area">
+
+      <!-- Preview area -->
+      <section class="preview-area">
+
+        <header class="preview-header">
+          <span class="preview-header__title">Editor de personaje</span>
+          <span class="preview-header__meta">· CAPA: CASCO · POSE: IDLE</span>
+          <div class="preview-header__actions">
+            <div class="pose-switcher">
+              <button class="pose-switcher__btn pose-switcher__btn--active">
+                <img src="../assets/sprites/characters/bust_idle.png">
+                IDLE
+              </button>
+              <button class="pose-switcher__btn">
+                <img src="../assets/sprites/characters/bust_talking.png">
+                TALK
+              </button>
+              <button class="pose-switcher__btn">
+                <img src="../assets/sprites/characters/bust_muted_arms.png">
+                MUTE
+              </button>
+            </div>
+            <button class="btn btn--ghost">RESET</button>
+          </div>
+        </header>
+
+        <div class="preview-scene">
+          <!-- Atmospheric background -->
+          <div style="position:absolute; inset:0; background-image: radial-gradient(1px 1px at 20% 10%, var(--vox-text) 50%, transparent), radial-gradient(1px 1px at 70% 8%, var(--vox-text) 50%, transparent), radial-gradient(1px 1px at 80% 30%, var(--vox-text-dim) 50%, transparent), radial-gradient(1px 1px at 15% 35%, var(--vox-text-dim) 50%, transparent), radial-gradient(1px 1px at 55% 15%, var(--vox-text) 50%, transparent); opacity: 0.4;"></div>
+
+          <div class="preview-stage">
+            <div class="preview-stage__platform"></div>
+
+            <!-- Layered character — todas las capas stacked -->
+            <div class="preview-character">
+              <!-- Bottom layer: body -->
+              <img class="preview-character__layer" src="../assets/sprites/characters/idle.png" alt="">
+              <!-- Middle layer: cape -->
+              <img class="preview-character__layer" src="../assets/sprites/characters/cape_rust.png" alt="">
+              <!-- Top layer: helmet -->
+              <img class="preview-character__layer" src="../assets/sprites/characters/helmet_horns.png" alt="">
+            </div>
+
+            <!-- Info plate -->
+            <div class="preview-plate">
+              <div class="preview-plate__name">Rúnvardr</div>
+              <div class="preview-plate__tag">#0471 · ASCENDIDO · ASKRINN</div>
+              <div class="preview-plate__layers">
+                <span class="preview-plate__layer-chip">BODY: VIKINGO BASE</span>
+                <span class="preview-plate__layer-chip preview-plate__layer-chip--active">HELMET: CUERNO</span>
+                <span class="preview-plate__layer-chip">CAPE: ÓXIDO</span>
+                <span class="preview-plate__layer-chip">ACC: —</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="editor-info-strip">
+          <div class="editor-info-strip__item">
+            <span>SPRITE:</span>
+            <strong>24×32px</strong>
+          </div>
+          <span class="editor-info-strip__sep">|</span>
+          <div class="editor-info-strip__item">
+            <span>CAPAS:</span>
+            <strong>3/4</strong>
+          </div>
+          <span class="editor-info-strip__sep">|</span>
+          <div class="editor-info-strip__item">
+            <span>PALETA:</span>
+            <strong>16 ÍNDICES</strong>
+          </div>
+          <span class="editor-info-strip__sep">|</span>
+          <div class="editor-info-strip__item">
+            <span>TAMAÑO:</span>
+            <strong>2.4 KB</strong>
+          </div>
+          <span class="editor-info-strip__sep">|</span>
+          <div class="editor-info-strip__item">
+            <span>ÚLT. GUARDADO:</span>
+            <strong>HACE 12 MIN</strong>
+          </div>
+        </div>
+      </section>
+
+      <!-- Layers panel -->
+      <aside class="layers-panel">
+        <header class="layers-panel__header">
+          <div class="layers-panel__title">Capas</div>
+          <div class="layers-panel__subtitle">SISTEMA MODULAR · INTERCAMBIABLE</div>
+        </header>
+
+        <!-- Layer tabs -->
+        <div class="layer-tabs">
+          <button class="layer-tab">
+            BODY
+            <span class="layer-tab__count">1</span>
+          </button>
+          <button class="layer-tab layer-tab--active">
+            CASCO
+            <span class="layer-tab__count">3</span>
+          </button>
+          <button class="layer-tab">
+            CAPA
+            <span class="layer-tab__count">4</span>
+          </button>
+          <button class="layer-tab">
+            ACC
+            <span class="layer-tab__count">2</span>
+          </button>
+        </div>
+
+        <div class="layers-panel__body">
+
+          <!-- Sección: Estilo del casco -->
+          <div class="layer-section">
+            <div class="layer-section__title">
+              <span>Estilo</span>
+              <span class="layer-section__hint">3/4 desbloqueados</span>
+            </div>
+            <div class="option-grid">
+              <div class="option-item option-item--empty" title="Sin casco">
+                <span>∅</span>
+              </div>
+              <div class="option-item option-item--active" title="Casco con cuernos">
+                <div class="option-item__preview">
+                  <img src="../assets/sprites/characters/helmet_horns.png" alt="">
+                </div>
+              </div>
+              <div class="option-item" title="Casco de hierro">
+                <div class="option-item__preview">
+                  <img src="../assets/sprites/characters/helmet_iron.png" alt="">
+                </div>
+              </div>
+              <div class="option-item" title="Capucha">
+                <div class="option-item__preview">
+                  <img src="../assets/sprites/characters/helmet_hood.png" alt="">
+                </div>
+              </div>
+              <div class="option-item option-item--locked">
+                <div class="option-item__preview" style="filter: brightness(0.3);">
+                  <img src="../assets/sprites/characters/helmet_horns.png" alt="">
+                </div>
+              </div>
+              <div class="option-item option-item--locked">
+                <div class="option-item__preview" style="filter: brightness(0.3);">
+                  <img src="../assets/sprites/characters/helmet_iron.png" alt="">
+                </div>
+              </div>
+              <div class="option-item option-item--locked">
+                <div class="option-item__preview" style="filter: brightness(0.3);">
+                  <img src="../assets/sprites/characters/helmet_horns.png" alt="">
+                </div>
+              </div>
+              <div class="option-item option-item--locked">
+                <div class="option-item__preview" style="filter: brightness(0.3);">
+                  <img src="../assets/sprites/characters/helmet_hood.png" alt="">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sección: Paleta indexada del casco -->
+          <div class="layer-section">
+            <div class="layer-section__title">
+              <span>Paleta · casco</span>
+              <span class="layer-section__hint">8 índices</span>
+            </div>
+            <div class="color-palette">
+              <div class="color-swatch color-swatch--active" style="background: #B4432E;">
+                <span class="color-swatch__index">00</span>
+              </div>
+              <div class="color-swatch" style="background: #E06A3E;">
+                <span class="color-swatch__index">01</span>
+              </div>
+              <div class="color-swatch" style="background: #8A7355;">
+                <span class="color-swatch__index">02</span>
+              </div>
+              <div class="color-swatch" style="background: #C9A876;">
+                <span class="color-swatch__index">03</span>
+              </div>
+              <div class="color-swatch" style="background: #3C6E78;">
+                <span class="color-swatch__index">04</span>
+              </div>
+              <div class="color-swatch" style="background: #5AA0AA;">
+                <span class="color-swatch__index">05</span>
+              </div>
+              <div class="color-swatch" style="background: #E7E1D4;">
+                <span class="color-swatch__index">06</span>
+              </div>
+              <div class="color-swatch" style="background: #363C54;">
+                <span class="color-swatch__index">07</span>
+              </div>
+            </div>
+            <div style="margin-top: var(--vox-s-4); padding: var(--vox-s-3); background: var(--vox-card); border-left: 2px solid var(--vox-bronze); font-family: var(--vox-font-mono); font-size: 11px; color: var(--vox-text-dim); line-height: var(--vox-lh-snug);">
+              <strong style="color: var(--vox-text);">Índice 00 · ÓXIDO</strong> · Asignado a "cuerno primario". Cambiar este color repta a todos los sprites que usen el índice 00 — no hay que editar pixel a pixel.
+            </div>
+          </div>
+
+          <!-- Sección: Pose actual -->
+          <div class="layer-section">
+            <div class="layer-section__title">
+              <span>Vista previa por estado</span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--vox-s-3);">
+              <div style="aspect-ratio: 1; background: var(--vox-card); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--vox-s-2); padding: var(--vox-s-3);">
+                <img src="../assets/sprites/characters/bust_idle.png" style="width: 80%; height: 80%; image-rendering: pixelated;">
+                <span style="font-family: var(--vox-font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber);">IDLE</span>
+              </div>
+              <div style="aspect-ratio: 1; background: var(--vox-card); border: 2px solid var(--vox-border); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--vox-s-2); padding: var(--vox-s-3); cursor: pointer;">
+                <img src="../assets/sprites/characters/bust_talking.png" style="width: 80%; height: 80%; image-rendering: pixelated;">
+                <span style="font-family: var(--vox-font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim);">TALK</span>
+              </div>
+              <div style="aspect-ratio: 1; background: var(--vox-card); border: 2px solid var(--vox-border); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--vox-s-2); padding: var(--vox-s-3); cursor: pointer;">
+                <img src="../assets/sprites/characters/bust_muted_arms.png" style="width: 80%; height: 80%; image-rendering: pixelated;">
+                <span style="font-family: var(--vox-font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim);">MUTE</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Architecture note -->
+          <div style="margin-top: var(--vox-s-7); padding: var(--vox-s-4); background: var(--vox-bg-deep); border: 1px solid var(--vox-border-dim); border-left: 3px solid var(--vox-teal);">
+            <div style="font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-teal-hi); margin-bottom: var(--vox-s-2);">
+              ⚙ Arquitectura
+            </div>
+            <div style="font-family: var(--vox-font-body); font-size: var(--vox-text-xs); color: var(--vox-text); line-height: var(--vox-lh-snug);">
+              Cada capa es un PNG indexado separado con su propia paleta de 16 colores. Componer el personaje = apilar <code style="font-family:var(--vox-font-mono); color:var(--vox-amber); font-size:11px;">N</code> capas en orden Z. Cambiar un color de paleta actualiza el sprite en tiempo real — sin re-render.
+            </div>
+          </div>
+        </div>
+
+        <footer class="layers-panel__footer">
+          <div class="layers-panel__changes">
+            <span>CAMBIOS</span>
+            <span class="layers-panel__changes-count">3 SIN GUARDAR</span>
+          </div>
+          <button class="btn btn--ghost">DESCARTAR</button>
+          <button class="btn btn--primary">
+            <img src="../assets/sprites/ui/rune.png" style="width:12px; height:12px;">
+            GUARDAR
+          </button>
+        </footer>
+      </aside>
+    </main>
+  </div>
+
+</body>
+</html>

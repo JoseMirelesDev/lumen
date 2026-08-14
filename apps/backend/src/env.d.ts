@@ -11,6 +11,17 @@ declare global {
     REALTIME_TURN_KEY_ID?: string;
     /** Cloudflare API token with Realtime permissions — optional. */
     REALTIME_API_TOKEN?: string;
+    /** Local dev/test only — disables the Cache API rate limiter. NEVER set in production. */
+    LUMEN_RATE_LIMIT_DISABLED?: string;
+    /** OAuth (Fase 4): provider client credentials (wrangler secret put). */
+    GOOGLE_CLIENT_ID?: string;
+    GOOGLE_CLIENT_SECRET?: string;
+    GITHUB_CLIENT_ID?: string;
+    GITHUB_CLIENT_SECRET?: string;
+    /** Base URL of the OAuth callback, e.g. https://api.dominio.com/api/oauth. */
+    OAUTH_CALLBACK_URL?: string;
+    /** Web client origin for post-OAuth redirect, e.g. https://app.dominio.com. */
+    WEB_CLIENT_URL?: string;
   }
 }
 

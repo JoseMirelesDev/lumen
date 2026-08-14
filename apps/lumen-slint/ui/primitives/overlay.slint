@@ -1,0 +1,86 @@
+// VoxOverlay — the modal skeleton shared by every in-window dialog.
+// Encapsulates the overlay pattern: dimmed backdrop, Escape-to-close,
+// click-outside-to-close, pixel-offset shadow, and a centered card with a
+// pointer-swallowing TouchArea (so clicks inside the card never reach the
+// backdrop and accidentally dismiss it). Sizing is clamped to the window so
+// the card always stays on screen.
+//
+// Concrete dialogs (ModalCard, SettingsView) inherit this and supply the
+// card content via @children. Sized at instantiation site in app.slint
+// (Login pattern): a direct Window child, never inside a layout.
+
+import { AppTheme } from "../theme.slint";
+
+export component VoxOverlay inherits Rectangle {
+    in property <length> card-width: AppTheme.modal-width;
+    in property <length> card-height: 250px;
+    callback close();
+
+    // backdrop — dims the shell behind the dialog
+    background: AppTheme.colors.backdrop;
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.text == "\u{1b}") {
+                root.close();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // click outside the card closes the dialog
+    TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.close(); }
+    }
+
+    // pixel-offset shadow behind the card
+    Rectangle {
+        x: (parent.width - Math.min(root.card-width, parent.width - 24px)) / 2 + AppTheme.shadow-offset;
+        y: (parent.height - Math.min(root.card-height, parent.height - 24px)) / 2 + AppTheme.shadow-offset;
+        width: Math.min(root.card-width, parent.width - 24px);
+        height: Math.min(root.card-height, parent.height - 24px);
+        background: AppTheme.colors.bg-deep;
+        border-radius: AppTheme.radius-2;
+    }
+
+    // card — centered, clamped to the window
+    Rectangle {
+        x: (parent.width - Math.min(root.card-width, parent.width - 24px)) / 2;
+        y: (parent.height - Math.min(root.card-height, parent.height - 24px)) / 2;
+        width: Math.min(root.card-width, parent.width - 24px);
+        height: Math.min(root.card-height, parent.height - 24px);
+        background: AppTheme.colors.surface;
+        border-width: 2px;
+        border-color: AppTheme.colors.bronze-dim; // marco tallado (tablón)
+        border-radius: AppTheme.radius-2;
+
+        // filete interior — doble borde pixel (el marco tallado de Vox:
+        // piedra fría que enmarca, el contenido vive dentro)
+        Rectangle {
+            x: 3px;
+            y: 3px;
+            width: parent.width - 6px;
+            height: parent.height - 6px;
+            border-width: 1px;
+            border-color: AppTheme.colors.bronze;
+        }
+
+        // remaches de esquina — clavos del tablón (4 px cuadrados)
+        Rectangle { x: 6px; y: 6px; width: 6px; height: 6px; background: AppTheme.colors.bronze-hi; }
+        Rectangle { x: parent.width - 12px; y: 6px; width: 6px; height: 6px; background: AppTheme.colors.bronze-hi; }
+        Rectangle { x: 6px; y: parent.height - 12px; width: 6px; height: 6px; background: AppTheme.colors.bronze-hi; }
+        Rectangle { x: parent.width - 12px; y: parent.height - 12px; width: 6px; height: 6px; background: AppTheme.colors.bronze-hi; }
+
+        // Swallow pointer events so clicks inside card don't close backdrop
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        @children
+    }
+}

@@ -16,6 +16,10 @@ pub struct SettingsData {
     pub backend_url: Option<String>,
     #[serde(default)]
     pub token: Option<String>,
+    /// Opaque 30-day refresh token (ADR-0007). Persisted so sessions survive
+    /// restarts; the access token is memory-only.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
     /// Voice noise-suppression model, as `SuppressorModel::as_str()` —
     /// "fastenhancer" | "ns-only". Parsed by the app (lumen-core doesn't
     /// depend on lumen-voice). `None` = the client's default.
@@ -26,6 +30,14 @@ pub struct SettingsData {
     /// corrupts the send when render is fed). `None` = the client's default.
     #[serde(default)]
     pub aec_enabled: Option<bool>,
+    /// Animate the campfire scene (fire frames + seat pulse). `None` = on.
+    /// Off forces the OS reduced-motion path (static scene).
+    #[serde(default)]
+    pub animations_enabled: Option<bool>,
+    /// Render the campfire particle/fire frames (AnimationImage). `None` = on.
+    /// Off hides only the animated fire (static brazier glow remains).
+    #[serde(default)]
+    pub particles_enabled: Option<bool>,
 }
 
 pub struct Settings {
@@ -81,6 +93,15 @@ impl Settings {
         self.persist();
     }
 
+    pub fn refresh_token(&self) -> Option<String> {
+        self.data.read().refresh_token.clone()
+    }
+
+    pub fn set_refresh_token(&self, token: Option<String>) {
+        self.data.write().refresh_token = token;
+        self.persist();
+    }
+
     pub fn suppressor_model(&self) -> Option<String> {
         self.data.read().suppressor_model.clone()
     }
@@ -96,6 +117,24 @@ impl Settings {
 
     pub fn set_aec_enabled(&self, enabled: bool) {
         self.data.write().aec_enabled = Some(enabled);
+        self.persist();
+    }
+
+    pub fn animations_enabled(&self) -> Option<bool> {
+        self.data.read().animations_enabled
+    }
+
+    pub fn set_animations_enabled(&self, enabled: bool) {
+        self.data.write().animations_enabled = Some(enabled);
+        self.persist();
+    }
+
+    pub fn particles_enabled(&self) -> Option<bool> {
+        self.data.read().particles_enabled
+    }
+
+    pub fn set_particles_enabled(&self, enabled: bool) {
+        self.data.write().particles_enabled = Some(enabled);
         self.persist();
     }
 }

@@ -26,6 +26,9 @@ apps/backend/.dev.vars.*
 .idea/
 .vscode/
 
+# python
+__pycache__/
+
 # harness cache
 .cache/
 
@@ -37,3 +40,9 @@ dist-artifacts/
 # regenerable A/B + probe audio (voice_harness, *_probe)
 samples/
 scripts/.token2
+
+# arte: manifiesto generado por build.rs + fuentes del artista
+apps/lumen-slint/ui/generated/
+designs/art/*.xcf
+designs/art/sources/
+designs/art/export/

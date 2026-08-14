@@ -13,7 +13,11 @@ import { ApiError } from "./router";
 const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const KEY_BYTES = 32; // SHA-256 output size
-const TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/** Access token TTL (ADR-0007): short-lived, memory-only on the client. */
+export const ACCESS_TTL_SECONDS = 3600; // 1h
+/** Refresh token TTL (ADR-0007): opaque, revocable, persisted by the client. */
+export const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 const enc = new TextEncoder();
 
@@ -104,7 +108,7 @@ export async function signToken(userId: string, secret: string): Promise<string>
   const header = bytesToBase64Url(enc.encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
   const now = Math.floor(Date.now() / 1000);
   const payload = bytesToBase64Url(
-    enc.encode(JSON.stringify({ sub: userId, iat: now, exp: now + TOKEN_TTL_SECONDS })),
+    enc.encode(JSON.stringify({ sub: userId, iat: now, exp: now + ACCESS_TTL_SECONDS })),
   );
   const signingInput = `${header}.${payload}`;
   return `${signingInput}.${await hmacSign(signingInput, secret)}`;
@@ -134,4 +138,76 @@ export function getSecret(env: Env): string {
     throw new ApiError(500, "server_misconfigured", "AUTH_SECRET is not set");
   }
   return env.AUTH_SECRET;
+}
+
+// ---------------------------------------------------------------------------
+// Refresh tokens (ADR-0007): opaque 30d tokens, SHA-256 hashed in D1,
+// rotated on every use (reuse = 401) and revocable (logout / sessions).
+// ---------------------------------------------------------------------------
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", enc.encode(value));
+  return bytesToHex(new Uint8Array(digest));
+}
+
+/** Insert a refresh token row; returns the raw token (never stored). */
+export async function createRefreshToken(
+  db: D1Database,
+  userId: string,
+): Promise<string> {
+  // Two UUIDs = 256 bits of entropy; opaque (no user info, no signature).
+  const token = crypto.randomUUID() + crypto.randomUUID();
+  const hash = await sha256Hex(token);
+  await db
+    .prepare(
+      `INSERT INTO refresh_tokens (token_hash, user_id, expires_at)
+       VALUES (?, ?, ?)`,
+    )
+    .bind(hash, userId, new Date(Date.now() + REFRESH_TTL_SECONDS * 1000).toISOString())
+    .run();
+  return token;
+}
+
+/**
+ * Rotate a refresh token: revoke the presented one, issue a new one for the
+ * same user. Returns null when the token is invalid (unknown, revoked, or
+ * expired) — the caller answers 401. Reuse of an already-rotated token hits
+ * the revoked_at check and fails, which is the rotation-compromise signal.
+ */
+export async function rotateRefreshToken(
+  db: D1Database,
+  oldToken: string,
+): Promise<{ userId: string; newToken: string } | null> {
+  const hash = await sha256Hex(oldToken);
+  const row = await db
+    .prepare(
+      `SELECT user_id FROM refresh_tokens
+       WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?`,
+    )
+    .bind(hash, new Date().toISOString())
+    .first() as { user_id: string } | null;
+  if (!row) return null;
+  await db
+    .prepare(`UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ?`)
+    .bind(new Date().toISOString(), hash)
+    .run();
+  const newToken = await createRefreshToken(db, row.user_id);
+  return { userId: row.user_id, newToken };
+}
+
+/** Revoke one refresh token (logout). Idempotent. */
+export async function revokeRefreshToken(db: D1Database, token: string): Promise<void> {
+  const hash = await sha256Hex(token);
+  await db
+    .prepare(`UPDATE refresh_tokens SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`)
+    .bind(new Date().toISOString(), hash)
+    .run();
+}
+
+/** Revoke every live refresh token of a user (logout all / account delete). */
+export async function revokeAllSessions(db: D1Database, userId: string): Promise<void> {
+  await db
+    .prepare(`UPDATE refresh_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`)
+    .bind(new Date().toISOString(), userId)
+    .run();
 }

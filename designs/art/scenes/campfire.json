@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "comment": "Escena de la fogata — fuente de verdad del arte (docs/art-pipeline.md). El artista exporta los PNG a designs/art/export/; gen-art-import.py trocea y build.rs genera el manifiesto Slint. Añadir un elemento (silla, arma, otra fogata) = entrada nueva aquí + PNG exportado. El orden de la lista define el z (los elementos se emiten en este orden; se dibujan en el mismo orden).",
+  "design": { "w": 1024, "h": 576 },
+  "elements": [
+    { "id": "sky", "src": "sky.png", "fit": "fill", "z": 0 },
+    { "id": "horizon", "src": "horizon.png", "fit": "fill", "z": 1 },
+    { "id": "floor", "src": "floor.png", "fit": "fill", "z": 2 },
+    { "id": "props", "src": "props.png", "fit": "fill", "z": 3 },
+    {
+      "id": "brazier",
+      "src": "fire.png",
+      "grid": { "cols": 4, "frameW": 256, "frameH": 192 },
+      "anim": { "fps": 5 },
+      "anchor": { "x": 0.5, "y": 1.0 },
+      "glow": "#D1635E2E",
+      "z": 4,
+      "fallback": "pixel/campfire_{n}.png"
+    },
+    {
+      "id": "torch-left",
+      "src": "torch.png",
+      "grid": { "cols": 2, "frameW": 48, "frameH": 96 },
+      "anim": { "fps": 4 },
+      "anchor": { "x": 0.06, "y": 0.9 },
+      "z": 5,
+      "fallback": "pixel/torch_{n}.png"
+    },
+    {
+      "id": "torch-right",
+      "src": "torch.png",
+      "grid": { "cols": 2, "frameW": 48, "frameH": 96 },
+      "anim": { "fps": 4 },
+      "anchor": { "x": 0.94, "y": 0.9 },
+      "flip": true,
+      "z": 5,
+      "fallback": "pixel/torch_{n}.png"
+    },
+    {
+      "id": "chair-left",
+      "src": "chair.png",
+      "size": [96, 120],
+      "anchor": { "x": 0.28, "y": 0.97 },
+      "z": 5,
+      "fallback": "pixel/chair.png"
+    },
+    {
+      "id": "chair-right",
+      "src": "chair.png",
+      "size": [96, 120],
+      "anchor": { "x": 0.72, "y": 0.97 },
+      "flip": true,
+      "z": 5,
+      "fallback": "pixel/chair.png"
+    },
+    {
+      "id": "rune-l",
+      "src": "rune.png",
+      "size": [88, 72],
+      "anchor": { "x": 0.1, "y": 0.88 },
+      "min-w": 480,
+      "z": 5,
+      "fallback": "pixel/rune_gold.png"
+    },
+    {
+      "id": "rune-r",
+      "src": "rune.png",
+      "size": [88, 72],
+      "anchor": { "x": 0.9, "y": 0.88 },
+      "min-w": 480,
+      "z": 5,
+      "fallback": "pixel/rune_gold.png"
+    }
+  ],
+  "particles": [
+    {
+      "id": "embers",
+      "sprite": "ember.png",
+      "fallback": "pixel/ember.png",
+      "count": 22,
+      "spawn": { "x": 0.44, "y": 0.26, "w": 0.12, "h": 0.06 },
+      "rise": 58,
+      "gravity": -30,
+      "drift": 5,
+      "sway": 26,
+      "sway-freq": 2.4,
+      "life": [1.4, 3.0],
+      "size": 9,
+      "opacity": [0.9, 0.0]
+    },
+    {
+      "id": "fireflies",
+      "sprite": "firefly.png",
+      "fallback": "pixel/firefly.png",
+      "count": 12,
+      "spawn": { "x": 0.06, "y": 0.35, "w": 0.88, "h": 0.5 },
+      "rise": -4,
+      "gravity": 0,
+      "drift": 7,
+      "sway": 46,
+      "sway-freq": 0.85,
+      "life": [3.0, 6.5],
+      "size": 7,
+      "opacity": [0.65, 0.0]
+    }
+  ]
+}

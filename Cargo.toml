@@ -30,7 +30,7 @@ debug-assertions = false
 debug-assertions = false
 
 [workspace.dependencies]
-slint = { version = "1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-winit-software"] }
+slint = { version = "1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-winit-skia"] }
 slint-build = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -51,6 +51,7 @@ webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 directories = "6"
 thiserror = "2"
+rfd = "0.15"
 
 # Vendored wry patch (WebKitGTK media-permission hook). Must live at the
 # workspace root — a patch in a workspace member is silently ignored.
@@ -59,6 +60,18 @@ wry = { path = "vendor/wry" }
 # Vendored webrtc-audio-processing-sys patch: drops the GCC-only
 # -Wno-unused-parameter flag that breaks MSVC (cl D8021).
 webrtc-audio-processing-sys = { path = "vendor/webrtc-audio-processing-sys" }
+
+# Fork de Slint: componente de animación aislada (frames sin invalidar el árbol).
+# Ver docs/performance-fork-design.md.
+i-slint-core = { path = "vendor/slint-core" }
+i-slint-renderer-skia = { path = "vendor/slint-renderer-skia" }
+i-slint-compiler = { path = "vendor/slint-compiler" }
+# Fork de Slint: fix del TimerBasedFrameThrottle de X11 (doble redraw por
+# request) — ver docs/dev-diary/2026-08-12.md. El throttle de redraws usa un
+# timer al refresh rate; su tick final encola un RedrawRequested de más con
+# pending_redraw ya falso → cada request_redraw produce 2 renders (el segundo
+# vacío). El fix chequea pending_redraw ANTES de pedir el redraw.
+i-slint-backend-winit = { path = "vendor/slint-backend-winit" }
 
 # Disk policy: dev builds keep ONLY line tables (file:line in backtraces), not
 # full debug symbols. Test binaries drop from ~315 MB to ~30-40 MB each and

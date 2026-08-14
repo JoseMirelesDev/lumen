@@ -1,0 +1,377 @@
+// SettingsView — the app settings panel. Fixed-size centered card (the
+// explicit-height pattern that fixes the modal/login collapse) with a
+// TAB strip: cada grupo (Audio / Visuales / Cuenta / Acerca) vive en su
+// propia pestaña, así las configs nunca compiten por el mismo scroll
+// (proximidad: un solo grupo visible a la vez, jerarquía: la pestaña
+// activa es la única primaria). Footer fijo con logout.
+// Inherits the overlay skeleton from VoxOverlay.
+
+import { AppTheme } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Icons } from "icons.slint";
+import { Divider } from "primitives/layout.slint";
+import { VoxButton } from "primitives/buttons.slint";
+import { IconGlyph } from "primitives/icon.slint";
+import { VoxCheckBox } from "primitives/checkbox.slint";
+import { VoxComboBox } from "primitives/combobox.slint";
+import { VoxLineEdit } from "primitives/inputs.slint";
+import { VoxOverlay } from "primitives/overlay.slint";
+
+export component SettingsView inherits VoxOverlay {
+    in property <string> username;
+    in property <string> suppressor-model;
+    in property <bool> suppressor-model-available;
+    in property <bool> aec-enabled;
+    in property <bool> animations-enabled;
+    in property <bool> particles-enabled;
+    card-width: AppTheme.settings-width;
+    card-height: AppTheme.settings-height;
+    callback logout();
+    callback suppressor-model-changed(string);
+    callback aec-enabled-changed(bool);
+    callback animations-enabled-changed(bool);
+    callback particles-enabled-changed(bool);
+    // Fase 2: profile editing
+    callback username-submit(string);
+    callback password-submit(string, string);
+    callback avatar-submit(string);
+    callback avatar-pick();
+    in-out property <string> avatar-path: "";
+    in-out property <string> username-draft: "";
+    in-out property <string> password-current: "";
+    in-out property <string> password-new: "";
+    in-out property <string> profile-msg: "";
+    // Pestaña activa: 0 Audio · 1 Visuales · 2 Cuenta · 3 Acerca
+    in-out property <int> tab: 0;
+
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+        padding-top: AppTheme.sp-5;
+        padding-bottom: AppTheme.sp-4;
+        padding-left: AppTheme.sp-5;
+        padding-right: AppTheme.sp-5;
+        spacing: AppTheme.sp-3;
+
+        // header row — title + close (fijo)
+        HorizontalLayout {
+            spacing: AppTheme.sp-2;
+            cross-axis-alignment: center;
+            IconGlyph {
+                glyph: Icons.gear-six;
+                size: 20px;
+                text-color: AppTheme.colors.ice;
+            }
+            Text {
+                text: "Ajustes";
+                font-family: AppTheme.font-display;
+                font-weight: 700;
+                font-size: AppTheme.font-lg;
+                color: AppTheme.colors.text-hi;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            VoxButton {
+                text: "";
+                icon: Icons.x;
+                compact: true;
+                clicked => { root.close(); }
+            }
+        }
+        Divider { }
+
+        // tab strip — un solo grupo visible; el activo es el único primary
+        HorizontalLayout {
+            alignment: center;
+            spacing: AppTheme.sp-2;
+            VoxButton {
+                text: "Audio";
+                icon: Icons.waveform;
+                compact: true;
+                fixed-type: true;
+                primary: root.tab == 0;
+                clicked => { root.tab = 0; }
+            }
+            VoxButton {
+                text: "Visuales";
+                icon: Icons.fire;
+                compact: true;
+                fixed-type: true;
+                primary: root.tab == 1;
+                clicked => { root.tab = 1; }
+            }
+            VoxButton {
+                text: "Cuenta";
+                icon: Icons.user;
+                compact: true;
+                fixed-type: true;
+                primary: root.tab == 2;
+                clicked => { root.tab = 2; }
+            }
+            VoxButton {
+                text: "Acerca";
+                icon: Icons.gear-six;
+                compact: true;
+                fixed-type: true;
+                primary: root.tab == 3;
+                clicked => { root.tab = 3; }
+            }
+        }
+
+        // ---- contenido por pestaña (ScrollView propio, min-width guard) ----
+        if root.tab == 0 : ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: always-off;
+            VerticalLayout {
+                min-width: 0px;
+                alignment: start;
+                spacing: AppTheme.sp-2;
+                padding-top: AppTheme.sp-2;
+
+                HorizontalLayout {
+                    spacing: AppTheme.sp-3;
+                    alignment: start;
+                    cross-axis-alignment: center;
+                    Text {
+                        text: "Supresión de ruido";
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: AppTheme.colors.text-dim;
+                        vertical-alignment: center;
+                    }
+                    VoxComboBox {
+                        model: ["FastEnhancer-S (Ligera)", "FastEnhancer-M (Ultra)", "NS (WebRTC)"];
+                        current-index: root.suppressor-model == "fastenhancer-s" && root.suppressor-model-available ? 0 :
+                                       (root.suppressor-model == "fastenhancer" && root.suppressor-model-available) ? 1 : 2;
+                        selected(idx) => {
+                            root.suppressor-model-changed(idx == 0 ? "fastenhancer-s" : idx == 1 ? "fastenhancer" : "ns-only");
+                        }
+                    }
+                }
+                if (root.suppressor-model == "fastenhancer" || root.suppressor-model == "fastenhancer-s") && !root.suppressor-model-available : Text {
+                    text: "FastEnhancer no es compatible con este CPU (requiere AVX2+FMA3). Se usará NS (WebRTC).";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.rose;
+                    wrap: word-wrap;
+                }
+                VoxCheckBox {
+                    text: "Cancelación de eco (AEC)";
+                    checked: root.aec-enabled;
+                    toggled(val) => {
+                        root.aec-enabled-changed(val);
+                    }
+                }
+            }
+        }
+
+        if root.tab == 1 : ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: always-off;
+            VerticalLayout {
+                min-width: 0px;
+                alignment: start;
+                spacing: AppTheme.sp-2;
+                padding-top: AppTheme.sp-2;
+
+                VoxCheckBox {
+                    text: "Animación de la fogata";
+                    checked: root.animations-enabled;
+                    toggled(val) => {
+                        root.animations-enabled-changed(val);
+                    }
+                }
+                VoxCheckBox {
+                    text: "Partículas de la fogata";
+                    checked: root.particles-enabled;
+                    toggled(val) => {
+                        root.particles-enabled-changed(val);
+                    }
+                }
+                Text {
+                    text: "Desactivar las animaciones también respeta la preferencia del sistema (movimiento reducido).";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-mute;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.tab == 2 : ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: always-off;
+            VerticalLayout {
+                min-width: 0px;
+                alignment: start;
+                spacing: AppTheme.sp-3;
+                padding-top: AppTheme.sp-2;
+
+                // identidad
+                HorizontalLayout {
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    IconGlyph {
+                        glyph: Icons.user;
+                        size: 16px;
+                        text-color: AppTheme.colors.text-dim;
+                    }
+                    Text {
+                        text: root.username;
+                        font-family: AppTheme.font-body;
+                        font-weight: 600;
+                        font-size: AppTheme.font-sm;
+                        color: AppTheme.colors.text;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    VoxLineEdit {
+                        text <=> root.username-draft;
+                        placeholder: "Nuevo nombre de usuario";
+                        horizontal-stretch: 1;
+                    }
+                    VoxButton {
+                        text: "Renombrar";
+                        compact: true;
+                        enabled: root.username-draft != "";
+                        clicked => {
+                            root.username-submit(root.username-draft);
+                            root.username-draft = "";
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    VoxLineEdit {
+                        text <=> root.password-current;
+                        placeholder: "Contraseña actual";
+                        password: true;
+                        horizontal-stretch: 1;
+                    }
+                    VoxLineEdit {
+                        text <=> root.password-new;
+                        placeholder: "Nueva (8+ caracteres)";
+                        password: true;
+                        horizontal-stretch: 1;
+                    }
+                    VoxButton {
+                        text: "Cambiar";
+                        compact: true;
+                        enabled: root.password-current != "" && root.password-new != "";
+                        clicked => {
+                            root.password-submit(root.password-current, root.password-new);
+                            root.password-current = "";
+                            root.password-new = "";
+                        }
+                    }
+                }
+                if root.profile-msg != "" : Text {
+                    text: root.profile-msg;
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.rose;
+                    wrap: word-wrap;
+                }
+
+                Divider { }
+
+                // avatar — junto a la identidad (proximidad), no al final
+                Text {
+                    text: "AVATAR";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    font-weight: 700;
+                    letter-spacing: 1.2px;
+                    color: AppTheme.colors.bronze-hi;
+                }
+                HorizontalLayout {
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    VoxButton {
+                        text: "Elegir archivo…";
+                        icon: Icons.user;
+                        compact: true;
+                        clicked => { root.avatar-pick(); }
+                    }
+                    Text {
+                        text: root.avatar-path != "" ? root.avatar-path : "Ningún archivo seleccionado";
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: root.avatar-path != "" ? AppTheme.colors.text : AppTheme.colors.text-mute;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    VoxButton {
+                        text: "Subir";
+                        compact: true;
+                        primary: true;
+                        enabled: root.avatar-path != "";
+                        clicked => {
+                            root.avatar-submit(root.avatar-path);
+                            root.avatar-path = "";
+                        }
+                    }
+                }
+                Text {
+                    text: "PNG, ≤ 5 MB — se valida el archivo antes de subir. Se sirve desde R2.";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-mute;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.tab == 3 : ScrollView {
+            width: 100%;
+            vertical-stretch: 1;
+            vertical-scrollbar-policy: always-off;
+            VerticalLayout {
+                min-width: 0px;
+                alignment: start;
+                spacing: AppTheme.sp-2;
+                padding-top: AppTheme.sp-2;
+
+                Text {
+                    text: "Lumen 0.1.0 — cliente Slint.";
+                    font-family: AppTheme.font-display;
+                    font-weight: 700;
+                    font-size: AppTheme.font-md;
+                    color: AppTheme.colors.text-hi;
+                }
+                Text {
+                    text: "Voz P2P ultraligera para warbands pequeñas. UI pixel-art: lo tallado (tipografía, marcos, íconos) y lo vivo (fuego, partículas, personajes) — piedra fría + fuego vivo.";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-dim;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Divider { }
+
+        // footer fijo — logout siempre accesible, fuera del scroll
+        HorizontalLayout {
+            alignment: end;
+            VoxButton {
+                text: "Cerrar sesión";
+                icon: Icons.door-open;
+                primary: true;
+                error: true;
+                width-override: 180px;
+                clicked => { root.logout(); }
+            }
+        }
+    }
+}

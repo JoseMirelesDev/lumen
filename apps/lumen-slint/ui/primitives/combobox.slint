@@ -1,0 +1,121 @@
+// Lumen primitives — combobox module.
+import { AppTheme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { IconGlyph } from "icon.slint";
+
+export component VoxComboBox inherits Rectangle {
+    in property <[string]> model: [];
+    in-out property <int> current-index: 0;
+    in property <bool> enabled: true;
+    callback selected(int);
+
+    height: 32px;
+    min-width: 140px;
+    background: AppTheme.colors.bg-deep;
+    border-width: 1px;
+    border-color: fs.has-focus ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border);
+    border-radius: AppTheme.radius-1;
+
+    // focus ring
+    Rectangle {
+        x: -2px; y: -2px;
+        width: parent.width + 4px; height: parent.height + 4px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        border-radius: AppTheme.radius-1;
+        visible: fs.has-focus;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: AppTheme.sp-2;
+        alignment: space-between;
+        cross-axis-alignment: center;
+
+        Text {
+            text: root.model[root.current-index];
+            font-family: AppTheme.font-mono;
+            font-size: AppTheme.font-xs;
+            color: root.enabled ? AppTheme.colors.text : AppTheme.colors.text-mute;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        IconGlyph {
+            glyph: Icons.caret-down;
+            size: 12px;
+            text-color: AppTheme.colors.text-dim;
+        }
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                popup.show();
+                return accept;
+            }
+            if root.enabled && (event.text == "\u{1b}") {
+                popup.close();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            popup.show();
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: parent.height + 2px;
+        width: parent.width;
+
+        Rectangle {
+            background: AppTheme.colors.surface;
+            border-width: 1px;
+            border-color: AppTheme.colors.border-hi;
+            border-radius: AppTheme.radius-1;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                for item[idx] in root.model : Rectangle {
+                    height: 28px;
+                    background: item-ta.has-hover ? AppTheme.colors.card-hi : (idx == root.current-index ? AppTheme.colors.card : transparent);
+                    border-radius: AppTheme.radius-1;
+
+                    item-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current-index = idx;
+                            root.selected(idx);
+                            popup.close();
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            cross-axis-alignment: center;
+
+                            Text {
+                                text: item;
+                                font-family: AppTheme.font-mono;
+                                font-size: AppTheme.font-xs;
+                                color: idx == root.current-index ? AppTheme.colors.ice : AppTheme.colors.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

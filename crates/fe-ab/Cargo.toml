@@ -1,0 +1,13 @@
+[package]
+name = "fe-ab"
+version = "0.1.0"
+edition = "2021"
+description = "Experimental FE-S / FE-B 48 kHz int8 probe — standalone, NOT part of the app build"
+
+[dependencies]
+# Same version+feature as the app's workspace (root Cargo.toml) so the
+# already-built C++ artifact is reused when CARGO_TARGET_DIR points at the
+# repo target dir.
+webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }
+
+[workspace]

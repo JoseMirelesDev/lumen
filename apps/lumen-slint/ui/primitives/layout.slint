@@ -1,0 +1,103 @@
+// Lumen primitives — layout module.
+import { AppTheme } from "../theme.slint";
+
+// One-pixel separator between shell regions.
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: AppTheme.colors.border-dim;
+}
+
+// Standard 48px view header row. Children flow horizontally, left-aligned.
+export component HeaderBar inherits Rectangle {
+    in property <length> pad-x: AppTheme.sp-4;
+    in property <length> spacing: AppTheme.sp-2;
+    height: AppTheme.header-height;
+    background: AppTheme.colors.bg-deep;
+
+    HorizontalLayout {
+        padding-left: root.pad-x;
+        padding-right: root.pad-x;
+        spacing: root.spacing;
+        // Slint 1.17: `alignment` is the MAIN axis (justify-content-like);
+        // `cross-axis-alignment` is the cross axis. `alignment: center`
+        // would center the whole bar's content horizontally — wrong for a
+        // header. Use start + cross-axis center.
+        alignment: start;
+        cross-axis-alignment: center;
+        @children
+    }
+}
+
+// Standard list row — hard corners (mock: no radius), amber active edge
+// (2px, full height — mock .channel-item border-left).
+export component ListRow inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> hoverable: true;
+    in property <length> pad-x: AppTheme.sp-2;
+    in property <length> pad-y: 6px;
+    /// Exposed so child rows can hover-reveal their own action buttons.
+    out property <bool> hovered: ta.has-hover;
+    callback clicked();
+    /// Botón derecho (menú contextual).
+    callback context-menu();
+    height: AppTheme.row-height;
+    background: root.active
+        ? AppTheme.colors.card
+        : (ta.has-hover && root.hoverable)
+            ? AppTheme.colors.bg           // mock hover: darker than panel
+            : ta.pressed
+                ? AppTheme.colors.bg-pressed
+                : transparent;
+    animate background { duration: AppTheme.step-fast * 1ms; }
+
+    // active edge — amber, full height (mock .channel-item--active)
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 2px;
+        height: 100%;
+        background: AppTheme.colors.ice;
+        visible: root.active;
+        animate x { duration: AppTheme.step-base * 1ms; }
+    }
+
+    // focus ring — 2px ice border when focused
+    Rectangle {
+        x: 0px; y: 0px;
+        width: 100%; height: 100%;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        visible: fs.has-focus;
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.context-menu();
+                }
+            }
+            clicked => {
+                fs.focus();
+                root.clicked();
+            }
+            HorizontalLayout {
+                alignment: start;
+                padding-top: root.pad-y;
+                padding-bottom: root.pad-y;
+                padding-left: root.pad-x;
+                padding-right: root.pad-x;
+                spacing: AppTheme.sp-2;
+                @children
+            }
+        }
+    }
+}

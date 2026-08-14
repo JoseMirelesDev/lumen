@@ -18,15 +18,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use lumen_core::ApiClient;
-use lumen_voice::{VoiceClient, VoiceEvent, VoiceJoinArgs};
+use lumen_core::{ApiClient, CoreEvent, EventBus};
+use lumen_voice::{
+    dm::{DmDataChannel, DmEvent, DmSession, DmSignalIn, DmSignalOut},
+    VoiceClient, VoiceEvent, VoiceJoinArgs,
+};
 use parking_lot::{Mutex, RwLock};
-use slint::{Model, ModelRc, Timer, TimerMode, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 
+use crate::sound::{Sfx, SfxEvent};
 use crate::{AppWindow, PeerTile};
 
-const SPEAK_ON: f32 = 0.03;
-const SPEAK_OFF: f32 = 0.02;
+// Speech thresholds, aligned with the VoiceMeter's silence floor (0.05):
+// room-noise RMS (~0.02-0.04) must not trip "speaking". Hysteresis keeps the
+// gate from flickering on the threshold — turn on above SPEAK_ON, stay on
+// until below SPEAK_OFF.
+const SPEAK_ON: f32 = 0.05;
+const SPEAK_OFF: f32 = 0.03;
 
 fn with_hysteresis(level: f32, was_speaking: bool) -> bool {
     level > SPEAK_ON || (was_speaking && level > SPEAK_OFF)
@@ -49,6 +57,15 @@ struct JoinInfo {
     channel_name: String,
 }
 
+/// One open DM data-channel session: the channel + its outbound signaling
+/// sender (drained by the bridge task in `dm_open`).
+#[derive(Clone)]
+struct DmPeer {
+    channel: Arc<DmDataChannel>,
+    signal_tx: tokio::sync::mpsc::UnboundedSender<DmSignalOut>,
+    peer: String,
+}
+
 pub struct VoiceController {
     client: Arc<VoiceClient>,
     api: Arc<ApiClient>,
@@ -65,12 +82,20 @@ pub struct VoiceController {
     muted: AtomicBool,
     deafened: AtomicBool,
     channel_name: RwLock<Option<String>>,
+    /// Id del canal de voz en el que estamos (para el indicador in-channel
+    /// de la lista de canales).
+    channel_id: RwLock<Option<String>>,
     error: RwLock<Option<String>>,
+    /// Open P2P DM data-channel (ADR-006): at most one at a time.
+    dm: parking_lot::RwLock<Option<DmPeer>>,
+    bus: EventBus,
     /// Present while the user is (or wants to be) in the channel; drives the
     /// auto-reconnect loop. Cleared by an explicit leave.
     join_info: RwLock<Option<JoinInfo>>,
     /// One reconnect loop at a time.
     reconnecting: AtomicBool,
+    /// UI sound layer (join/leave/user events).
+    sfx: Arc<Sfx>,
 }
 
 impl VoiceController {
@@ -78,6 +103,8 @@ impl VoiceController {
         api: Arc<ApiClient>,
         settings: Arc<lumen_core::Settings>,
         rt: tokio::runtime::Handle,
+        sfx: Arc<Sfx>,
+        bus: EventBus,
     ) -> Arc<Self> {
         let (client, events) = VoiceClient::new();
         let this = Arc::new(Self {
@@ -85,6 +112,7 @@ impl VoiceController {
             api,
             settings,
             rt,
+            sfx,
             weak: RwLock::new(None),
             peers: Arc::new(Mutex::new(Vec::new())),
             peers_dirty: AtomicBool::new(false),
@@ -94,7 +122,10 @@ impl VoiceController {
             muted: AtomicBool::new(false),
             deafened: AtomicBool::new(false),
             channel_name: RwLock::new(None),
+            channel_id: RwLock::new(None),
             error: RwLock::new(None),
+            dm: parking_lot::RwLock::new(None),
+            bus: bus.clone(),
             join_info: RwLock::new(None),
             reconnecting: AtomicBool::new(false),
         });
@@ -146,6 +177,31 @@ impl VoiceController {
             client.set_aec_enabled(enabled).await;
             settings.set_aec_enabled(enabled);
         });
+    }
+
+    /// Campfire animations (fire frames + seat pulse). Off forces the OS
+    /// reduced-motion path: the scene freezes to its static render.
+    pub fn animations_enabled(&self) -> bool {
+        self.settings.animations_enabled().unwrap_or(true)
+    }
+
+    pub fn set_animations_enabled(&self, enabled: bool) {
+        self.settings.set_animations_enabled(enabled);
+    }
+
+    /// Canal de voz en el que estamos conectados (None si no).
+    pub fn current_channel_id(&self) -> Option<String> {
+        self.channel_id.read().clone()
+    }
+
+    /// Campfire particle/fire frames (AnimationImage). Off hides only the
+    /// animated fire; the static brazier glow and seat pulse remain.
+    pub fn particles_enabled(&self) -> bool {
+        self.settings.particles_enabled().unwrap_or(true)
+    }
+
+    pub fn set_particles_enabled(&self, enabled: bool) {
+        self.settings.set_particles_enabled(enabled);
     }
 
     /// Install the window handle and start the UI-thread model sync timer.
@@ -215,6 +271,7 @@ impl VoiceController {
             }).collect(),
             Err(_) => vec![],
         };
+        *self.channel_id.write() = Some(channel_id.clone());
         let args = VoiceJoinArgs {
             backend_url,
             token,
@@ -233,10 +290,12 @@ impl VoiceController {
             Ok(()) => {
                 self.active.store(true, Ordering::SeqCst);
                 *self.error.write() = None;
+                self.sfx.play(SfxEvent::Join);
             }
             Err(e) => {
                 *self.error.write() = Some(e);
                 self.active.store(false, Ordering::SeqCst);
+                self.sfx.play(SfxEvent::Error);
             }
         }
         self.push();
@@ -244,8 +303,10 @@ impl VoiceController {
 
     pub async fn leave(&self) {
         *self.join_info.write() = None;
+        *self.channel_id.write() = None;
         self.client.leave().await;
         self.active.store(false, Ordering::SeqCst);
+        self.sfx.play(SfxEvent::Leave);
         self.peers.lock().clear();
         self.peers_dirty.store(true, Ordering::SeqCst);
         *self.local_level.write() = 0.0;
@@ -255,12 +316,15 @@ impl VoiceController {
 
     pub async fn toggle_mute(&self) {
         let muted = !self.muted.fetch_xor(true, Ordering::SeqCst);
+        self.sfx.play(if muted { SfxEvent::MuteOn } else { SfxEvent::MuteOff });
         self.client.set_muted(muted).await;
         self.push();
     }
 
     pub async fn toggle_deafen(&self) {
         let deafened = !self.deafened.fetch_xor(true, Ordering::SeqCst);
+        self.sfx
+            .play(if deafened { SfxEvent::DeafenOn } else { SfxEvent::DeafenOff });
         self.client.set_deafened(deafened).await;
         self.push();
     }
@@ -268,6 +332,14 @@ impl VoiceController {
     fn on_event(self: &Arc<Self>, ev: VoiceEvent) {
         match ev {
             VoiceEvent::Levels { local, peers } => {
+                // Only reflect levels while actually in a call: the capture
+                // stream may outlive a leave() and would otherwise keep the
+                // "talking" state lit outside the voice channel.
+                if !self.active.load(Ordering::SeqCst) {
+                    self.local_speaking.store(false, Ordering::SeqCst);
+                    *self.local_level.write() = 0.0;
+                    return;
+                }
                 let was = self.local_speaking.load(Ordering::SeqCst);
                 self.local_speaking.store(with_hysteresis(local, was), Ordering::SeqCst);
                 *self.local_level.write() = local;
@@ -295,9 +367,11 @@ impl VoiceController {
                     .next()
                     .map(|c| c.to_uppercase().collect::<String>())
                     .unwrap_or_default();
+                self.sfx.play(SfxEvent::UserJoin);
                 {
                     let mut list = self.peers.lock();
                     if !list.iter().any(|s| s.tile.id.as_str() == peer_id) {
+                        let skin = crate::model::skin_for(&short);
                         list.push(PeerState {
                             tile: PeerTile {
                                 id: peer_id.into(),
@@ -307,6 +381,7 @@ impl VoiceController {
                                 speaking: false,
                                 state: "new".into(),
                                 muted: false,
+                                skin,
                             },
                         });
                     }
@@ -317,6 +392,7 @@ impl VoiceController {
             VoiceEvent::PeerLeft { peer_id } => {
                 self.peers.lock().retain(|s| s.tile.id.as_str() != peer_id);
                 self.peers_dirty.store(true, Ordering::SeqCst);
+                self.sfx.play(SfxEvent::UserLeft);
                 self.push();
             }
             VoiceEvent::State { peer_id, state } => {
@@ -349,6 +425,11 @@ impl VoiceController {
                 self.push();
             }
             VoiceEvent::Debug { .. } => {}
+            // In-call chat from a peer's data channel (ADR-006): route to the
+            // bus; the UiController decodes {type, content} frames.
+            VoiceEvent::DataChannelMessage { peer_id, data } => {
+                self.bus.publish(CoreEvent::InCallChat { peer_id, data });
+            }
         }
     }
 
@@ -388,8 +469,89 @@ impl VoiceController {
         });
     }
 
+    // -- P2P DM data channel (ADR-006, Fase 3) -----------------------------
+
+    /// Open a data-only DM session with an online friend. `send_relay` is the
+    /// bridge to the presence WS (`dm-signal`); inbound frames arrive via
+    /// `dm_signal`. Emits CoreEvent::InCallChat for inbound messages.
+    pub async fn dm_open(
+        self: &Arc<Self>,
+        peer: String,
+        ice: Vec<lumen_voice::IceServer>,
+        send_relay: impl Fn(DmSignalOut) + Send + Sync + 'static,
+    ) {
+        // Close any previous session first (one DM at a time).
+        self.dm_close().await;
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<DmEvent>();
+        let Ok(session) = DmDataChannel::open(&ice, events_tx).await else {
+            return;
+        };
+        let signal_tx = session.signal_tx.clone();
+        let channel = session.channel.clone();
+        *self.dm.write() = Some(DmPeer { channel, signal_tx: signal_tx.clone(), peer: peer.clone() });
+        // Drain outbound signaling → presence relay.
+        let this = self.clone();
+        self.rt.spawn(async move {
+            let mut rx = session.rx;
+            while let Some(out) = rx.recv().await {
+                send_relay(out);
+            }
+        });
+        // Drain inbound events → CoreEvent.
+        let this2 = self.clone();
+        self.rt.spawn(async move {
+            while let Some(ev) = events_rx.recv().await {
+                match ev {
+                    DmEvent::Message(data) => {
+                        this2.bus_publish(CoreEvent::InCallChat { peer_id: peer.clone(), data });
+                    }
+                    DmEvent::Open | DmEvent::Closed | DmEvent::Error(_) => {}
+                }
+            }
+        });
+        // We are the initiator: send the offer.
+        let _ = session.channel.create_offer(&signal_tx).await;
+        let _ = this;
+    }
+
+    fn bus_publish(&self, ev: CoreEvent) {
+        self.bus.publish(ev);
+    }
+
+    /// Handle an inbound DM signaling frame relayed by the presence WS.
+    pub async fn dm_signal(&self, peer: &str, signal: DmSignalIn) {
+        let dm = self.dm.read().clone();
+        let Some(dm) = dm else { return };
+        if dm.peer != peer {
+            return;
+        }
+        let _ = dm.channel.handle_signal(signal, &dm.signal_tx).await;
+    }
+
+    /// Send a text frame over the open DM data channel.
+    pub async fn dm_send(&self, peer: &str, text: &str) {
+        let dm = self.dm.read().clone();
+        let Some(dm) = dm else { return };
+        if dm.peer != peer {
+            return;
+        }
+        let _ = dm.channel.send(text).await;
+    }
+
+    pub async fn dm_close(&self) {
+        let dm = self.dm.write().take();
+        if let Some(dm) = dm {
+            dm.channel.close().await;
+        }
+    }
+
     /// Push the current voice state into the Slint window (from any thread).
     /// The peers model itself is synced by the UI-thread timer in `attach`.
+    ///
+    /// Deduplicado: se salta el `upgrade_in_event_loop` si nada relevante
+    /// cambió (el level stream llega a ~10 Hz; setear una propiedad a su mismo
+    /// valor sigue siendo barato en Slint, pero evitar el closure+set evita el
+    /// re-render inútil del VoiceMeter cuando el nivel no cruza su umbral).
     fn push(&self) {
         let weak = self.weak.read().clone();
         let Some(weak) = weak else { return };
@@ -401,8 +563,15 @@ impl VoiceController {
         let channel_name = self.channel_name.read().clone().unwrap_or_default();
         let error = self.error.read().clone().unwrap_or_default();
         let peer_count = self.peers.lock().len();
+        let particles = self.particles_enabled();
         let status = if active {
-            format!("connected — {peer_count} peer(s)")
+            // Nosotros contamos como uno en la fogata (el roster ya muestra
+            // peers + 1); el status debe cuadrar con eso.
+            let total = peer_count + 1;
+            match peer_count {
+                0 => "connected — solo en la fogata".to_string(),
+                _ => format!("connected — {total} en la fogata"),
+            }
         } else {
             "not connected".to_string()
         };
@@ -415,6 +584,12 @@ impl VoiceController {
             ui.set_voice_channel_name(channel_name.into());
             ui.set_voice_error(error.into());
             ui.set_voice_status(status.into());
+            // El campfire cabalga este render: su mark_dirty_region + request_redraw
+            // coalescen con el que ya dispara el level stream, sin renders propios.
+            // No-op si el key no está registrado o las partículas están apagadas.
+            if !ui.get_reduced_motion() && particles {
+                crate::particles::tick_fire(&ui.window());
+            }
         });
     }
 }

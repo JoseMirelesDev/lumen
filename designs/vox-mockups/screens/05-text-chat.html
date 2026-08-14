@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox · Mensajes de texto</title>
+  <link rel="stylesheet" href="../assets/vox-tokens.css">
+  <style>
+    /* === SHARED SHELL === */
+    .vox-shell { display: grid; grid-template-columns: 76px 240px 1fr 320px; height: 100vh; background: var(--vox-bg); }
+    .clan-rail { background: var(--vox-bg-deep); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; align-items: center; padding: var(--vox-s-5) 0; gap: var(--vox-s-4); overflow-y: auto; }
+    .clan-rail__home { width: 48px; height: 48px; background: var(--vox-rust); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center; font-family: var(--vox-font-title); font-weight: 900; font-size: 22px; color: var(--vox-text-hi); cursor: pointer; position: relative; }
+    .clan-rail__divider { width: 32px; height: 2px; background: var(--vox-border-dim); margin: var(--vox-s-1) 0; }
+    .clan-rail__list { display: flex; flex-direction: column; gap: var(--vox-s-3); width: 100%; align-items: center; }
+    .clan-pill { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); font-family: var(--vox-font-title); font-weight: 700; font-size: 18px; color: var(--vox-text); cursor: pointer; position: relative; transition: none; }
+    .clan-pill:hover { border-color: var(--vox-bronze-hi); background: var(--vox-card-hi); }
+    .clan-pill--active { border-color: var(--vox-amber); background: var(--vox-card-hi); }
+    .clan-pill--active::before { content: ''; position: absolute; left: -16px; top: 50%; transform: translateY(-50%); width: 4px; height: 32px; background: var(--vox-amber); }
+    .clan-pill__notif { position: absolute; bottom: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; background: var(--vox-rust); border: 2px solid var(--vox-bg-deep); color: var(--vox-text-hi); font-family: var(--vox-font-mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .clan-pill__add { width: 48px; height: 48px; background: transparent; border: 2px dashed var(--vox-border); color: var(--vox-text-dim); font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+    .channel-panel { background: var(--vox-surface); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; overflow: hidden; }
+    .channel-panel__header { padding: var(--vox-s-6) var(--vox-s-6) var(--vox-s-5); border-bottom: 1px solid var(--vox-border-dim); }
+    .channel-panel__clan-name { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-lg); color: var(--vox-text-hi); }
+    .channel-panel__clan-tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-bronze-hi); margin-top: var(--vox-s-2); }
+    .channel-panel__body { flex: 1; overflow-y: auto; padding: var(--vox-s-4) 0; }
+    .channel-group { margin-bottom: var(--vox-s-5); }
+    .channel-group__header { display: flex; align-items: center; justify-content: space-between; padding: var(--vox-s-3) var(--vox-s-6); cursor: pointer; }
+    .channel-group__label { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); display: flex; align-items: center; gap: var(--vox-s-2); }
+    .channel-group__chevron { width: 8px; height: 8px; border-right: 2px solid var(--vox-text-dim); border-bottom: 2px solid var(--vox-text-dim); transform: rotate(-45deg); display: inline-block; }
+    .channel-list { list-style: none; }
+    .channel-item { display: flex; align-items: center; gap: var(--vox-s-4); padding: var(--vox-s-2) var(--vox-s-6); font-family: var(--vox-font-mono); font-size: var(--vox-text-sm); color: var(--vox-text-dim); border-left: 2px solid transparent; cursor: pointer; transition: none; position: relative; }
+    .channel-item:hover { color: var(--vox-text); background: var(--vox-bg); }
+    .channel-item--active { color: var(--vox-text-hi); background: var(--vox-card); border-left-color: var(--vox-amber); }
+    .channel-item__icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
+    .channel-item--active .channel-item__icon { opacity: 1; }
+    .channel-item__name { flex: 1; }
+    .channel-item__badge { font-family: var(--vox-font-mono); font-size: 10px; font-weight: 700; color: var(--vox-bg-deep); background: var(--vox-text-hi); padding: 1px 5px; min-width: 16px; text-align: center; }
+
+    .user-footer { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-5); display: flex; align-items: center; gap: var(--vox-s-4); }
+    .user-footer__bust { width: 32px; height: 32px; flex-shrink: 0; position: relative; }
+    .user-footer__bust img { width: 100%; height: 100%; }
+    .user-footer__bust::after { content: ''; position: absolute; bottom: -2px; right: -2px; width: 10px; height: 10px; background: var(--vox-online); border: 2px solid var(--vox-bg-deep); }
+    .user-footer__info { flex: 1; min-width: 0; }
+    .user-footer__name { font-family: var(--vox-font-body); font-weight: var(--vox-fw-semi); font-size: var(--vox-text-sm); color: var(--vox-text-hi); }
+    .user-footer__tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); }
+    .user-footer__controls { display: flex; gap: var(--vox-s-2); }
+    .ctrl-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; cursor: pointer; transition: none; }
+    .ctrl-btn:hover { background: var(--vox-card); border-color: var(--vox-border); }
+    .ctrl-btn img { width: 16px; height: 16px; }
+
+    /* === MAIN: TEXT CHAT === */
+    .chat-area {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--vox-bg);
+    }
+
+    .chat-header {
+      height: 48px;
+      padding: 0 var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      background: var(--vox-bg-deep);
+      flex-shrink: 0;
+    }
+    .chat-header__crumb {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+    }
+    .chat-header__icon { width: 16px; height: 16px; }
+    .chat-header__name {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+    }
+    .chat-header__sep { color: var(--vox-text-mute); }
+    .chat-header__topic {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-dim);
+    }
+    .chat-header__actions {
+      margin-left: auto;
+      display: flex;
+      gap: var(--vox-s-2);
+      align-items: center;
+    }
+    .chat-header__btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+    }
+    .chat-header__btn:hover {
+      background: var(--vox-card);
+      border-color: var(--vox-border);
+    }
+    .chat-header__btn img { width: 16px; height: 16px; }
+
+    /* === Messages list === */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--vox-s-6) 0;
+    }
+
+    /* Day divider */
+    .day-divider {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+      padding: var(--vox-s-5) var(--vox-s-7);
+      margin: var(--vox-s-4) 0;
+    }
+    .day-divider::before,
+    .day-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--vox-border-dim);
+    }
+    .day-divider__label {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+
+    /* Message group — conjunto de mensajes del mismo autor consecutivos */
+    .msg-group {
+      padding: var(--vox-s-3) var(--vox-s-7);
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      gap: var(--vox-s-4);
+    }
+    .msg-group:hover {
+      background: rgba(20, 26, 40, 0.4);
+    }
+    .msg-group:hover .msg-group__actions {
+      opacity: 1;
+    }
+
+    /* Bust — derivado del sprite, NO avatar circular */
+    .msg-group__bust {
+      width: 48px;
+      height: 48px;
+      background: var(--vox-bg-deep);
+      border: 2px solid var(--vox-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .msg-group__bust img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    /* Estado en el busto — borde color, NO overlay icon */
+    .msg-group__bust--talking {
+      border-color: var(--vox-amber);
+      animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    .msg-group__bust--muted {
+      filter: brightness(0.7) saturate(0.6);
+      border-color: var(--vox-bronze-dim);
+    }
+    /* Subtle role color stripe on bust */
+    .msg-group__bust::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      right: -2px;
+      width: 8px;
+      height: 8px;
+      background: var(--vox-online);
+      border: 1px solid var(--vox-bg);
+    }
+    .msg-group__bust--idle::after { background: var(--vox-bronze-hi); }
+    .msg-group__bust--muted::after { background: var(--vox-text-mute); }
+    .msg-group__bust--offline::after { background: var(--vox-text-mute); }
+
+    /* Message content */
+    .msg-group__content {
+      min-width: 0;
+    }
+    .msg-group__header {
+      display: flex;
+      align-items: baseline;
+      gap: var(--vox-s-3);
+      margin-bottom: var(--vox-s-2);
+    }
+    .msg-group__name {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+    }
+    .msg-group__role {
+      font-family: var(--vox-font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bg-deep);
+      background: var(--vox-bronze-hi);
+      padding: 1px 5px;
+    }
+    .msg-group__role--jarl { background: var(--vox-amber); }
+    .msg-group__role--skald { background: var(--vox-teal-hi); }
+    .msg-group__time {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      color: var(--vox-text-dim);
+      letter-spacing: var(--vox-ls-mono);
+    }
+    .msg-group__body {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-base);
+      line-height: var(--vox-lh-base);
+      color: var(--vox-text);
+    }
+    .msg-group__body p {
+      margin-bottom: var(--vox-s-2);
+    }
+    .msg-group__body p:last-child { margin-bottom: 0; }
+    .msg-group__body strong {
+      color: var(--vox-text-hi);
+      font-weight: var(--vox-fw-semi);
+    }
+    .msg-group__body code {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-sm);
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border-dim);
+      padding: 1px 4px;
+      color: var(--vox-amber);
+    }
+    .msg-group__body em {
+      color: var(--vox-bronze-hi);
+      font-style: italic;
+    }
+    .msg-group__body a {
+      color: var(--vox-teal-hi);
+      text-decoration: underline;
+      text-decoration-style: dashed;
+      text-underline-offset: 2px;
+    }
+
+    /* Individual message within group */
+    .msg {
+      margin-top: var(--vox-s-1);
+    }
+    .msg__time-inline {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      color: var(--vox-text-mute);
+      margin-right: var(--vox-s-3);
+    }
+
+    /* Code block */
+    .msg-codeblock {
+      margin-top: var(--vox-s-3);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-border-dim);
+      border-left: 3px solid var(--vox-rust);
+      padding: var(--vox-s-4) var(--vox-s-5);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-sm);
+      line-height: var(--vox-lh-snug);
+      color: var(--vox-text);
+      overflow-x: auto;
+    }
+    .msg-codeblock__header {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bronze-hi);
+      margin-bottom: var(--vox-s-3);
+      padding-bottom: var(--vox-s-2);
+      border-bottom: 1px solid var(--vox-border-dim);
+    }
+    .msg-codeblock__content {
+      white-space: pre;
+    }
+    .msg-codeblock .k { color: var(--vox-amber); }
+    .msg-codeblock .s { color: var(--vox-teal-hi); }
+    .msg-codeblock .c { color: var(--vox-text-mute); font-style: italic; }
+
+    /* Attachment */
+    .msg-attachment {
+      margin-top: var(--vox-s-3);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+      padding: var(--vox-s-4);
+      background: var(--vox-surface);
+      border: 1px solid var(--vox-border-dim);
+      border-left: 3px solid var(--vox-bronze);
+      max-width: 480px;
+      cursor: pointer;
+    }
+    .msg-attachment:hover {
+      background: var(--vox-card);
+      border-color: var(--vox-border);
+    }
+    .msg-attachment__icon {
+      width: 40px;
+      height: 40px;
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .msg-attachment__icon img {
+      width: 20px;
+      height: 20px;
+    }
+    .msg-attachment__info {
+      flex: 1;
+      min-width: 0;
+    }
+    .msg-attachment__name {
+      font-family: var(--vox-font-body);
+      font-weight: var(--vox-fw-med);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-hi);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .msg-attachment__meta {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+
+    /* Reactions */
+    .msg-reactions {
+      margin-top: var(--vox-s-3);
+      display: flex;
+      gap: var(--vox-s-2);
+      flex-wrap: wrap;
+    }
+    .reaction {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+      padding: 2px var(--vox-s-3);
+      background: var(--vox-surface);
+      border: 1px solid var(--vox-border-dim);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-dim);
+      cursor: pointer;
+    }
+    .reaction:hover {
+      background: var(--vox-card);
+      border-color: var(--vox-border);
+    }
+    .reaction--mine {
+      background: rgba(224, 106, 62, 0.1);
+      border-color: var(--vox-rust);
+      color: var(--vox-amber);
+    }
+    .reaction__icon {
+      width: 14px;
+      height: 14px;
+      image-rendering: pixelated;
+    }
+    .reaction__count {
+      font-weight: 700;
+    }
+
+    /* Inline reply reference */
+    .msg-reply-ref {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+      margin-bottom: var(--vox-s-2);
+      padding-left: var(--vox-s-3);
+      border-left: 2px solid var(--vox-border);
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-dim);
+    }
+    .msg-reply-ref__name {
+      color: var(--vox-text);
+      font-weight: var(--vox-fw-med);
+    }
+
+    /* Hover actions */
+    .msg-group__actions {
+      position: absolute;
+      top: var(--vox-s-2);
+      right: var(--vox-s-6);
+      display: flex;
+      gap: var(--vox-s-1);
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+      opacity: 0;
+      transition: opacity var(--vox-step-fast) steps(1);
+    }
+    .msg-group__action-btn {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+    }
+    .msg-group__action-btn:hover {
+      background: var(--vox-card-hi);
+    }
+    .msg-group__action-btn img {
+      width: 14px;
+      height: 14px;
+      opacity: 0.7;
+    }
+
+    .msg-group { position: relative; }
+
+    /* === Composer === */
+    .composer {
+      padding: 0 var(--vox-s-7) var(--vox-s-6);
+      flex-shrink: 0;
+    }
+    .composer__inner {
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+      display: flex;
+      flex-direction: column;
+    }
+    .composer__toolbar {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+      padding: var(--vox-s-3) var(--vox-s-4);
+      border-bottom: 1px solid var(--vox-border-dim);
+    }
+    .composer__tool {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+    }
+    .composer__tool:hover {
+      background: var(--vox-card-hi);
+      border-color: var(--vox-border);
+    }
+    .composer__tool img {
+      width: 14px;
+      height: 14px;
+      opacity: 0.7;
+    }
+    .composer__tool-sep {
+      width: 1px;
+      height: 16px;
+      background: var(--vox-border-dim);
+      margin: 0 var(--vox-s-1);
+    }
+    .composer__hint {
+      margin-left: auto;
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-mute);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+    }
+    .composer__hint kbd {
+      font-family: var(--vox-font-mono);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-border);
+      padding: 1px 5px;
+      font-size: 10px;
+      color: var(--vox-text);
+    }
+    .composer__input {
+      padding: var(--vox-s-4) var(--vox-s-5);
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-base);
+      line-height: var(--vox-lh-base);
+      color: var(--vox-text);
+      min-height: 60px;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    .composer__input:empty::before {
+      content: 'Mensaje a #general';
+      color: var(--vox-text-mute);
+    }
+    .composer__footer {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      padding: var(--vox-s-2) var(--vox-s-4);
+      border-top: 1px solid var(--vox-border-dim);
+    }
+    .composer__charcount {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      color: var(--vox-text-mute);
+    }
+    .composer__send {
+      margin-left: auto;
+      padding: var(--vox-s-2) var(--vox-s-5);
+      background: var(--vox-rust);
+      border: 2px solid var(--vox-amber);
+      color: var(--vox-text-hi);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .composer__send:hover {
+      background: var(--vox-amber);
+    }
+    .composer__send img {
+      width: 12px;
+      height: 12px;
+    }
+
+    /* === Members panel (right) === */
+    .members-panel {
+      background: var(--vox-surface);
+      border-left: 1px solid var(--vox-border-dim);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .members-panel__header {
+      padding: var(--vox-s-5) var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+    }
+    .members-panel__title {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .members-panel__body {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--vox-s-4) 0;
+    }
+    .members-group {
+      margin-bottom: var(--vox-s-5);
+    }
+    .members-group__label {
+      padding: var(--vox-s-2) var(--vox-s-6);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .members-group__count {
+      color: var(--vox-text-dim);
+      font-weight: 400;
+    }
+    .member-row {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      padding: var(--vox-s-2) var(--vox-s-6);
+      cursor: pointer;
+    }
+    .member-row:hover {
+      background: var(--vox-bg);
+    }
+    .member-row__bust {
+      width: 32px;
+      height: 32px;
+      background: var(--vox-bg-deep);
+      border: 2px solid var(--vox-border);
+      flex-shrink: 0;
+      position: relative;
+    }
+    .member-row__bust img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .member-row__bust--talking {
+      border-color: var(--vox-amber);
+      animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    .member-row__bust--muted {
+      filter: brightness(0.7) saturate(0.6);
+    }
+    .member-row__info {
+      flex: 1;
+      min-width: 0;
+    }
+    .member-row__name {
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .member-row--offline .member-row__name {
+      color: var(--vox-text-mute);
+    }
+    .member-row__role {
+      font-family: var(--vox-font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+
+    .mockup-meta { position: fixed; top: var(--vox-s-3); right: var(--vox-s-5); z-index: 9999; display: flex; gap: var(--vox-s-3); align-items: center; }
+    .mockup-meta__tag { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); background: var(--vox-bg-deep); border: 1px solid var(--vox-rust); padding: 4px 8px; }
+    .mockup-meta__back { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text); background: var(--vox-card); border: 1px solid var(--vox-border); padding: 4px 10px; text-decoration: none; }
+    .mockup-meta__back:hover { border-color: var(--vox-amber); color: var(--vox-amber); }
+  </style>
+</head>
+<body>
+
+  <div class="mockup-meta">
+    <span class="mockup-meta__tag">05 · MENSAJES DE TEXTO</span>
+    <a href="../index.html" class="mockup-meta__back">← INDEX</a>
+  </div>
+
+  <div class="vox-shell">
+
+    <!-- ====== COLUMNA 1: CLANES ====== -->
+    <aside class="clan-rail">
+      <div class="clan-rail__home">V</div>
+      <div class="clan-rail__divider"></div>
+      <div class="clan-rail__list">
+        <div class="clan-pill clan-pill--active">A</div>
+        <div class="clan-pill">M<span class="clan-pill__notif">3</span></div>
+        <div class="clan-pill">R</div>
+        <div class="clan-pill">F<span class="clan-pill__notif">12</span></div>
+        <div class="clan-pill">S</div>
+        <div class="clan-pill">V</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="clan-pill__add">+</div>
+    </aside>
+
+    <!-- ====== COLUMNA 2: SALONES ====== -->
+    <aside class="channel-panel">
+      <header class="channel-panel__header">
+        <div class="channel-panel__clan-name">Askrinn</div>
+        <div class="channel-panel__clan-tag">Clan · 47 miembros</div>
+      </header>
+      <div class="channel-panel__body">
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label"><span class="channel-group__chevron"></span>Texto</span>
+            <span style="color:var(--vox-text-dim); font-size:16px;">+</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item channel-item--active">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon">
+              <span class="channel-item__name">general</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon">
+              <span class="channel-item__name">off-topic</span>
+              <span class="channel-item__badge">5</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon">
+              <span class="channel-item__name">raids-coord</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon">
+              <span class="channel-item__name">lore-y-relatos</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <footer class="user-footer">
+        <div class="user-footer__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+        <div class="user-footer__info">
+          <div class="user-footer__name">Rúnvardr</div>
+          <div class="user-footer__tag">#0471 · ASCENDIDO</div>
+        </div>
+        <div class="user-footer__controls">
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_mic_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- ====== COLUMNA 3: CHAT ====== -->
+    <main class="chat-area">
+
+      <header class="chat-header">
+        <div class="chat-header__crumb">
+          <img src="../assets/sprites/ui/icon_hash.png" class="chat-header__icon">
+          <span class="chat-header__name">general</span>
+          <span class="chat-header__sep">|</span>
+          <span class="chat-header__topic">Conversación del clan. Sé respetuoso.</span>
+        </div>
+        <div class="chat-header__actions">
+          <button class="chat-header__btn" title="Notificaciones"><img src="../assets/sprites/ui/icon_speaker.png"></button>
+          <button class="chat-header__btn" title="Pins"><img src="../assets/sprites/ui/rune.png"></button>
+          <button class="chat-header__btn" title="Miembros"><img src="../assets/sprites/ui/icon_hash.png"></button>
+          <span class="tag tag--amber">47 miembros · 12 en línea</span>
+        </div>
+      </header>
+
+      <div class="messages">
+
+        <div class="day-divider">
+          <span class="day-divider__label">Hoy · 10 de agosto</span>
+        </div>
+
+        <!-- Mensaje 1: Hjornvard (jarl, talking — está en voice) -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--talking">
+            <img src="../assets/sprites/characters/bust_talking.png" alt="Hjornvard">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Hjornvard</span>
+              <span class="msg-group__role msg-group__role--jarl">JARL</span>
+              <span class="msg-group__time">HOY · 14:32</span>
+            </div>
+            <div class="msg-group__body">
+              <p>Buenas, vikingos. <strong>Incursión este sábado 21:00</strong>, punto de encuentro en la fogata-del-consejo. Traed las armas afiladas y el estómago lleno.</p>
+              <p>Si alguien no puede, avisad acá con tiempo. No voy a esperar a nadie después de las 21:15.</p>
+            </div>
+            <div class="msg-reactions">
+              <span class="reaction reaction--mine">
+                <img src="../assets/sprites/ui/rune.png" class="reaction__icon">
+                <span class="reaction__count">7</span>
+              </span>
+              <span class="reaction">
+                <img src="../assets/sprites/ui/torch.png" class="reaction__icon">
+                <span class="reaction__count">4</span>
+              </span>
+              <span class="reaction">+ Agregar</span>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn" title="Reaccionar"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn" title="Responder"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn" title="Más"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Mensaje 2: Skadi -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--idle">
+            <img src="../assets/sprites/characters/bust_idle.png" alt="Skadi">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Skadi_v2</span>
+              <span class="msg-group__role">CAZADORA</span>
+              <span class="msg-group__time">HOY · 14:34</span>
+            </div>
+            <div class="msg-group__body">
+              <p>Yo estoy. ¿Llevamos el carro de asedio o vamos ligeros?</p>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Mensaje 3: Hjornvard reply (mismo autor — sin repetir bust) -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--talking">
+            <img src="../assets/sprites/characters/bust_talking.png" alt="Hjornvard">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Hjornvard</span>
+              <span class="msg-group__time">HOY · 14:36</span>
+            </div>
+            <div class="msg-group__body">
+              <div class="msg-reply-ref">
+                <span>↳ respondiendo a</span>
+                <span class="msg-reply-ref__name">Skadi_v2</span>
+                <span style="color:var(--vox-text-mute);">· "Yo estoy. ¿Llevamos..."</span>
+              </div>
+              <p>Ligeros. El terreno es escarpado y el carro se atasca. Además queremos llegar sin que nos escuchen.</p>
+              <p>Thrain, ¿tenés las hachas listas?</p>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Mensaje 4: Thrain con attachment -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--idle">
+            <img src="../assets/sprites/characters/bust_idle.png" alt="Thrain">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Thrain</span>
+              <span class="msg-group__role">HERRERO</span>
+              <span class="msg-group__time">HOY · 14:38</span>
+            </div>
+            <div class="msg-group__body">
+              <p>Listas. <code>12 hachas</code> y <code>6 lanzas</code>. Acabo de terminar el templado.</p>
+              <div class="msg-attachment">
+                <div class="msg-attachment__icon">
+                  <img src="../assets/sprites/ui/icon_hash.png">
+                </div>
+                <div class="msg-attachment__info">
+                  <div class="msg-attachment__name">inventario-arsenal-0810.csv</div>
+                  <div class="msg-attachment__meta">2.4 KB · CSV</div>
+                </div>
+              </div>
+            </div>
+            <div class="msg-reactions">
+              <span class="reaction reaction--mine">
+                <img src="../assets/sprites/ui/torch.png" class="reaction__icon">
+                <span class="reaction__count">3</span>
+              </span>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Mensaje 5: Brenna (muted, skald) con código -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--muted">
+            <img src="../assets/sprites/characters/bust_muted_arms.png" alt="Brenna">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Brenna_RK</span>
+              <span class="msg-group__role msg-group__role--skald">SKALD</span>
+              <span class="msg-group__time">HOY · 14:42</span>
+            </div>
+            <div class="msg-group__body">
+              <p>Compuse una saga breve para la incursión. Si alguien quiere recitarla en el camino:</p>
+              <div class="msg-codeblock">
+                <div class="msg-codeblock__header">SAGA · 4 ESTROFAS</div>
+                <div class="msg-codeblock__content"><span class="c">// Brunnhildr siga hugar,</span>
+<span class="c">// hjörva máli kveðr.</span>
+<span class="k">Hjornvard</span> ræðr rúnum,
+<span class="k">Skadi</span> sveipr bogna.
+<span class="s">"Fara skulu víkingr,</span>
+<span class="s">alda til valar."</span></div>
+              </div>
+              <p><em>Está en noruego antiguo moderno, no me hables de la métrica.</em></p>
+            </div>
+            <div class="msg-reactions">
+              <span class="reaction">
+                <img src="../assets/sprites/ui/rune.png" class="reaction__icon">
+                <span class="reaction__count">9</span>
+              </span>
+              <span class="reaction">
+                <img src="../assets/sprites/ui/torch.png" class="reaction__icon">
+                <span class="reaction__count">5</span>
+              </span>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Mensaje 6: Ylva (völva, muted) -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--muted">
+            <img src="../assets/sprites/characters/bust_muted_mouth.png" alt="Ylva">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Ylva</span>
+              <span class="msg-group__role">VÖLVA</span>
+              <span class="msg-group__time">HOY · 14:45</span>
+            </div>
+            <div class="msg-group__body">
+              <p>Tiré las runas esta mañana. <strong>No molestar al lobo</strong> que vive en el bosque de Hunn. Si lo ven, rodeadlo. No es presa, es guardián.</p>
+              <p>Por lo demás, la expedición será favorable. <a href="#">Ver registro de runas →</a></p>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Mensaje 7: Otrak -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--idle">
+            <img src="../assets/sprites/characters/bust_idle.png" alt="Otrak">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name">Otrak</span>
+              <span class="msg-group__role">BERSERKER</span>
+              <span class="msg-group__time">HOY · 14:47</span>
+            </div>
+            <div class="msg-group__body">
+              <p>Sin piel, sin honor. Llevo la primera línea. <strong>Sköl.</strong></p>
+            </div>
+            <div class="msg-reactions">
+              <span class="reaction reaction--mine">
+                <img src="../assets/sprites/ui/torch.png" class="reaction__icon">
+                <span class="reaction__count">6</span>
+              </span>
+            </div>
+          </div>
+          <div class="msg-group__actions">
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="msg-group__action-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+          </div>
+        </div>
+
+        <!-- Typing indicator -->
+        <div class="msg-group">
+          <div class="msg-group__bust msg-group__bust--talking">
+            <img src="../assets/sprites/characters/bust_talking.png" alt="Hjornvard">
+          </div>
+          <div class="msg-group__content">
+            <div class="msg-group__header">
+              <span class="msg-group__name" style="color: var(--vox-amber);">Hjornvard</span>
+              <span class="msg-group__time" style="color: var(--vox-amber);">ESCRIBIENDO...</span>
+            </div>
+            <div class="msg-group__body" style="color: var(--vox-text-dim); font-style: italic;">
+              <span style="display:inline-flex; gap:2px;">
+                <span style="width:4px; height:4px; background:var(--vox-amber); animation: vox-pulse-talking 800ms steps(2) infinite;"></span>
+                <span style="width:4px; height:4px; background:var(--vox-amber); animation: vox-pulse-talking 800ms steps(2) infinite 200ms;"></span>
+                <span style="width:4px; height:4px; background:var(--vox-amber); animation: vox-pulse-talking 800ms steps(2) infinite 400ms;"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Composer -->
+      <div class="composer">
+        <div class="composer__inner">
+          <div class="composer__toolbar">
+            <button class="composer__tool" title="Adjuntar"><img src="../assets/sprites/ui/icon_hash.png"></button>
+            <button class="composer__tool" title="GIF"><img src="../assets/sprites/ui/icon_speaker.png"></button>
+            <button class="composer__tool" title="Sticker"><img src="../assets/sprites/ui/rune.png"></button>
+            <button class="composer__tool" title="Emoji"><img src="../assets/sprites/ui/torch.png"></button>
+            <div class="composer__tool-sep"></div>
+            <button class="composer__tool" title="Código"><img src="../assets/sprites/ui/icon_settings.png"></button>
+            <button class="composer__tool" title="Mención"><img src="../assets/sprites/ui/icon_mic_on.png"></button>
+            <div class="composer__hint">
+              <kbd>Enter</kbd><span>enviar</span>
+              <kbd>Shift+Enter</kbd><span>nueva línea</span>
+            </div>
+          </div>
+          <div class="composer__input" contenteditable="true"></div>
+          <div class="composer__footer">
+            <span class="composer__charcount">0 / 2000</span>
+            <button class="composer__send">
+              <img src="../assets/sprites/ui/rune.png">
+              ENVIAR
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ====== COLUMNA 4: MEMBERS ====== -->
+    <aside class="members-panel">
+      <header class="members-panel__header">
+        <div class="members-panel__title">MIEMBROS · 47</div>
+      </header>
+      <div class="members-panel__body">
+        <div class="members-group">
+          <div class="members-group__label">
+            JARLS <span class="members-group__count">· 2</span>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust member-row__bust--talking">
+              <img src="../assets/sprites/characters/bust_talking.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Hjornvard</div>
+              <div class="member-row__role">JARL · ASCENDIDO</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Sigrid_the_Elder</div>
+              <div class="member-row__role">JARL · FUNDADORA</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="members-group">
+          <div class="members-group__label">
+            EN LÍNEA <span class="members-group__count">· 10</span>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust member-row__bust--muted">
+              <img src="../assets/sprites/characters/bust_muted_arms.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Brenna_RK</div>
+              <div class="member-row__role">SKALD</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Skadi_v2</div>
+              <div class="member-row__role">CAZADORA</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Thrain</div>
+              <div class="member-row__role">HERRERO</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust member-row__bust--muted">
+              <img src="../assets/sprites/characters/bust_muted_mouth.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Ylva</div>
+              <div class="member-row__role">VÖLVA</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Otrak</div>
+              <div class="member-row__role">BERSERKER</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Eirik_Steel</div>
+              <div class="member-row__role">BERSERKER</div>
+            </div>
+          </div>
+          <div class="member-row">
+            <div class="member-row__bust">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Vigdis_Ättr</div>
+              <div class="member-row__role">SKALD</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="members-group">
+          <div class="members-group__label">
+            DESCONECTADOS <span class="members-group__count">· 35</span>
+          </div>
+          <div class="member-row member-row--offline">
+            <div class="member-row__bust" style="opacity:0.4;">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Bjorn_Iron</div>
+              <div class="member-row__role">HACE 2 HORAS</div>
+            </div>
+          </div>
+          <div class="member-row member-row--offline">
+            <div class="member-row__bust" style="opacity:0.4;">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Sigrun_K</div>
+              <div class="member-row__role">AYER</div>
+            </div>
+          </div>
+          <div class="member-row member-row--offline">
+            <div class="member-row__bust" style="opacity:0.4;">
+              <img src="../assets/sprites/characters/bust_idle.png" alt="">
+            </div>
+            <div class="member-row__info">
+              <div class="member-row__name">Finn_Skald</div>
+              <div class="member-row__role">HACE 3 DÍAS</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+</body>
+</html>

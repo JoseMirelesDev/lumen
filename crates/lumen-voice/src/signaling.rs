@@ -141,6 +141,9 @@ impl SignalingClient {
                             // user with close 4000 "replaced".
                             use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
                             replaced = frame.code == CloseCode::Bad(4000u16);
+                            if replaced {
+                                eprintln!("lumen voice: ws closed by server (code 4000 = replaced)");
+                            }
                             break;
                         }
                         Message::Close(None) => break,

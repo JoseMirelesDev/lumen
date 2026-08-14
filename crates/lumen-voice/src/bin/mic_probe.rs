@@ -24,9 +24,10 @@ fn meter(lvl: f32, width: usize) -> String {
 async fn main() -> anyhow::Result<()> {
     let model = match env::args().nth(1).as_deref() {
         Some("ns-only") => SuppressorModel::NsOnly,
+        Some("fastenhancer-s") => SuppressorModel::FastEnhancerS,
         Some("fastenhancer") => SuppressorModel::FastEnhancerM,
         Some(other) => {
-            eprintln!("unknown model '{other}' — use fastenhancer | ns-only");
+            eprintln!("unknown model '{other}' — use fastenhancer-s | fastenhancer | ns-only");
             std::process::exit(2);
         }
         None => SuppressorModel::FastEnhancerM,

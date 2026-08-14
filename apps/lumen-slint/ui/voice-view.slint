@@ -1,98 +1,651 @@
-// Voice pane — port of apps/desktop/src/lib/components/VoiceView.svelte.
-// Pure view: participant tile grid + callbar; voice state arrives via
-// in-properties driven by src/voice.rs. The peers model is updated in place
-// by VoiceController (same VecModel, per-row row_changed) so tile animations
-// (speaking glow, level bar) stay continuous instead of resetting every frame.
+// Voice pane — the "ritual explosion" zone (mock 02-campfire). Two render
+// modes:
+//  · CampfireScene  (default, <= 10 users): 2D seats around an animated
+//    brazier. State is diegetic: talking = sprite pose swap + amber stepped
+//    border pulse + name-plate in amber/rust (mock .voice-seat__label);
+//    muted = dim + bronze edge. Scene HUD (title + status) top-left and a
+//    roster panel top-right (mock .scene-hud / .scene-roster).
+//  · CompactGrid    (auto > 10 users, or toggled): dense rows grouped by
+//    state (HABLANDO / EN ESCUCHA / MUTEADOS).
+//
+// Motion discipline: sprite swaps and pulses run on Timers (stepped), never
+// animation-tick() on the software renderer; state-change transitions are
+// short linear `animate`. All Timers gate on reduced-motion.
 
 import { AppTheme } from "theme.slint";
-import { Button, CheckBox, ComboBox, ScrollView } from "std-widgets.slint";
+import { ArtManifest } from "generated/art-manifest.slint";
+import { SceneElement, ParticleDef, SceneManifest } from "generated/scene-manifest.slint";
+import { CallBtn, ViewToggle } from "voice-parts.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Icons } from "icons.slint";
 import { PeerTile } from "types.slint";
-import { DangerButton } from "base.slint";
+import { Divider } from "primitives/layout.slint";
+import { Bust } from "primitives/identity.slint";
+import { StatusDot, StateChip, SectionHeader } from "primitives/chips.slint";
+import { VoxButton } from "primitives/buttons.slint";
+import { IconGlyph } from "primitives/icon.slint";
 
-component LevelBar inherits Rectangle {
-    in property <float> level;
-    height: 4px;
-    border-radius: 2px;
-    background: AppTheme.colors.bg;
-    Rectangle {
-        width: parent.width * min(1.0, root.level);
-        height: 100%;
-        border-radius: 2px;
-        background: AppTheme.colors.accent;
-        animate width { duration: 60ms; }
-    }
-}
-
-component PeerTileView inherits Rectangle {
-    in property <string> label;
-    in property <string> initial;
-    in property <float> level;
-    in property <bool> speaking;
-    in property <string> state;
+// ---------------------------------------------------------------------------
+// Seat — one character in the campfire scene. Name plate below the sprite
+// (mock .voice-seat__label), not a hover bubble.
+// ---------------------------------------------------------------------------
+component Seat inherits Rectangle {
+    in property <string> username;
+    in property <string> skin: "ivory";
+    in property <bool> talking;
     in property <bool> muted;
-    border-radius: AppTheme.radius;
-    border-width: root.speaking ? 2px : 0px;
-    border-color: AppTheme.colors.accent;
-    background: AppTheme.colors.bg-raised;
-    animate border-width { duration: 120ms; }
-    animate border-color { duration: 120ms; }
+    in property <bool> deafened;
+    in property <bool> reduced-motion: false;
+    // Reloj global de la escena (segundos) — pulse/breath derivados, sin timers.
+    in property <float> time: 0.0;
 
-    VerticalLayout {
-        alignment: start;
-        cross-axis-alignment: center;
-        padding-top: 14px; padding-bottom: 14px; padding-left: 8px; padding-right: 8px;
-        spacing: 6px;
-        Rectangle {
-            width: 56px;
-            height: 56px;
-            border-radius: 28px;
-            background: AppTheme.colors.bg-hover;
-            border-width: root.speaking ? 3px : 0px;
-            border-color: AppTheme.colors.accent;
-            animate border-width { duration: 120ms; }
-            opacity: root.muted ? 0.5 : 1.0;
-            animate opacity { duration: 150ms; }
-            // Static speaking glow. No `animation-tick()`: a continuous pulse
-            // re-renders every frame AND blurs on the CPU software renderer —
-            // a major CPU cost while talking (measured as the dominant spike).
-            // A static blur + the 120ms border/width anims give feedback on
-            // state change only (blur is 0 when not speaking → no glow).
-            drop-shadow-blur: root.speaking ? 8px : 0px;
-            drop-shadow-color: AppTheme.colors.accent;
-            drop-shadow-offset-x: 0px;
-            drop-shadow-offset-y: 0px;
-            animate drop-shadow-blur { duration: 60ms; }
-            Text {
-                text: root.initial;
-                color: AppTheme.colors.text;
-                font-size: 22px;
-                font-weight: 700;
-            }
+    width: 120px;
+    height: 168px;
+
+    function state() -> string {
+        if root.deafened { return "deafened"; }
+        if root.muted { return "muted"; }
+        if root.talking { return "talking"; }
+        return "idle";
+    }
+
+    // deafened chip — ear-slash in a hard square frame
+    if root.deafened : Rectangle {
+        x: root.width - 26px;
+        y: -4px;
+        width: 20px;
+        height: 20px;
+        background: AppTheme.colors.card;
+        border-width: 2px;
+        border-color: AppTheme.colors.bronze-dim;
+        IconGlyph {
+            glyph: Icons.ear-slash;
+            size: 12px;
+            text-color: AppTheme.colors.text-dim;
         }
+    }
+
+    body := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border-width: 2px;
+        border-color: root.state() == "talking"
+            ? (root.pulse-on ? AppTheme.colors.ice : AppTheme.colors.crimson)
+            : (root.state() == "muted" || root.state() == "deafened")
+                ? AppTheme.colors.bronze-dim
+                : transparent;
+    }
+
+    // pulse — borde en paso cada pulse/2 ms mientras habla (derivado del reloj)
+    property <bool> pulse-on: Math.mod(Math.floor(root.time * 1000.0 / (AppTheme.pulse / 2)), 2) == 0;
+
+    // breathing — 2px stepped y-offset cada breath/2 ms (derivado del reloj)
+    property <bool> breath-up: Math.mod(Math.floor(root.time * 1000.0 / (AppTheme.breath / 2)), 2) == 0;
+
+    Image {
+        source: root.char-img(root.state());
+        width: 96px;
+        height: 128px;
+        x: (root.width - 96px) * 0.5;
+        y: 6px + (root.breath-up ? 2px : 0px);
+        image-rendering: pixelated;
+        image-fit: contain;
+    }
+    // muted dim — overlay, not filter
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: AppTheme.colors.dim;
+        visible: root.state() == "muted" || root.state() == "deafened";
+    }
+
+    // name plate — mock .voice-seat__label (bg-deep chip under the sprite)
+    Rectangle {
+        x: (root.width - 108px) * 0.5;
+        y: 142px;
+        width: 108px;
+        height: 22px;
+        background: AppTheme.colors.bg-deep;
+        border-width: 1px;
+        border-color: root.state() == "talking" ? AppTheme.colors.crimson : AppTheme.colors.border-dim;
         HorizontalLayout {
-            alignment: start;
-            spacing: 6px;
-            Rectangle {
-                width: 10px;
-                height: 10px;
-                border-radius: 5px;
-                background: root.state == "connected"
-                    ? AppTheme.colors.online
-                    : (root.state == "failed" || root.state == "closed" || root.state == "disconnected")
-                        ? AppTheme.colors.danger
-                        : AppTheme.colors.state-mid;
-            }
+            width: 100%;
+            height: 100%;
+            padding-left: AppTheme.sp-1;
+            padding-right: AppTheme.sp-1;
+            alignment: center;
             Text {
-                text: root.label;
-                color: AppTheme.colors.text;
-                font-size: 12px;
+                text: root.username;
+                font-family: AppTheme.font-body;
+                font-size: AppTheme.font-xs;
+                font-weight: root.state() == "talking" ? 700 : 500;
+                color: root.state() == "talking" ? AppTheme.colors.ice : AppTheme.colors.text-hi;
+                vertical-alignment: center;
                 overflow: elide;
             }
         }
-        LevelBar { level: root.level; width: 80%; }
+    }
+
+    // Sprite resuelto por el manifiesto de build: PNG real del artista si
+    // existe para esta skin, si no placeholder SVG.
+    function char-img(state: string) -> image {
+        return ArtManifest.char(root.skin, state);
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// SceneProp — renderer genérico de un elemento de escena del manifiesto
+// (designs/art/scenes/*.json → ui/generated/scene-manifest.slint). Geometría
+// en px de diseño escalada al viewport; frames animados con un Timer por
+// elemento (estilo pixel-step del repo, nunca animation-tick). Añadir un
+// elemento (silla, arma, fogata) = entrada en el JSON + PNG, sin tocar la UI.
+// ---------------------------------------------------------------------------
+component SceneProp inherits Rectangle {
+    in property <SceneElement> el;
+    in property <float> scale: 1.0;
+    in property <bool> running: true;
+    in property <bool> reduced-motion: false;
+    in property <float> time: 0.0;
+
+    x: root.el.x * root.scale;
+    y: root.el.y * root.scale;
+    width: root.el.w * root.scale;
+    height: root.el.h * root.scale;
+
+    // glow (brasero): resplandor radial detrás del elemento, tamaño por dato
+    if root.el.glow.alpha > 0 : Rectangle {
+        x: -root.width * 0.9;
+        y: -root.height * 0.9;
+        width: root.width * 2.8;
+        height: root.height * 2.8;
+        background: @radial-gradient(circle, root.el.glow 0%, transparent 68%);
+    }
+
+    // Frame derivado del reloj global de la escena (un solo Property<float>,
+    // sin Timer por elemento): anim-ms en ms, time en segundos.
+    function frame() -> int {
+        if root.el.anim-ms <= 0 { return 0; }
+        return Math.mod(Math.floor(root.time * 1000.0 / Math.max(1, root.el.anim-ms)), root.el.imgs.length);
+    }
+
+    for img[i] in root.el.imgs: Image {
+        source: img;
+        visible: root.frame() == i;
+        transform-origin: { x: root.width / 2, y: root.height / 2 };
+        transform-scale-x: root.el.flip ? -1.0 : 1.0;
+        width: 100%;
+        height: 100%;
+        image-fit: fill;
+        image-rendering: pixelated;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ParticleField — un emisor de partículas del manifiesto. Movimiento
+// determinista y sin estado: cada partícula es una función pura de (tick,
+// índice, def) — sin alocaciones, un Timer global comparte el tick.
+// ---------------------------------------------------------------------------
+export component ParticleField inherits Rectangle {
+    in property <ParticleDef> def;
+    in property <float> scale: 1.0;
+    // Reloj global de la escena en segundos (único Property<float> compartido).
+    in property <float> time: 0.0;
+
+    function hash(i: int) -> float {
+        return Math.mod(Math.abs(Math.sin(i * 12.9898 * 1deg) * 43758.5453), 1.0);
+    }
+    function life(i: int) -> float {
+        return root.def.life-min + root.hash(i * 7 + 3) * (root.def.life-max - root.def.life-min);
+    }
+    function age(i: int) -> float {
+        return Math.mod(root.time, root.life(i));
+    }
+    // spawn rect + deriva + vaivén sinusoidal
+    function px(i: int) -> length {
+        let a = root.age(i);
+        let x0 = root.def.spawn-x + root.def.spawn-w * root.hash(i * 13 + 1);
+        let wob = root.def.sway * Math.sin((root.def.sway-freq * a * 57.2958 + root.hash(i * 5 + 2) * 360.0) * 1deg);
+        return (x0 + root.def.drift * a + wob) * root.scale;
+    }
+    // subida (rise) con gravedad; gravity < 0 frena y devuelve la partícula
+    function py(i: int) -> length {
+        let a = root.age(i);
+        let y0 = root.def.spawn-y + root.def.spawn-h * root.hash(i * 17 + 5);
+        let v = root.def.rise * a + 0.5 * root.def.gravity * a * a;
+        return (y0 - v) * root.scale;
+    }
+    function palpha(i: int) -> float {
+        let a = root.age(i);
+        let l = root.life(i);
+        return root.def.opacity-start + (root.def.opacity-end - root.def.opacity-start) * (a / l);
+    }
+    function psize(i: int) -> length {
+        return root.def.size * (0.7 + 0.6 * root.hash(i * 3 + 1)) * root.scale;
+    }
+
+    for i in root.def.inds: Image {
+        source: root.def.img;
+        x: root.px(i);
+        y: root.py(i);
+        width: root.psize(i);
+        height: root.psize(i);
+        opacity: root.palpha(i);
+        image-rendering: pixelated;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ParticleLayer — el reloj global de todos los emisores de la escena. Un solo
+// Property<float> (time, en segundos) que avanza con un único Timer; fuego,
+// asientos y partículas derivan de él por expresión (sin timers por elemento).
+// Se congela (y oculta) con reduced-motion; solo corre conectado a la llamada.
+// ---------------------------------------------------------------------------
+export component ParticleLayer inherits Rectangle {
+    in property <[ParticleDef]> defs;
+    in property <float> scale: 1.0;
+    in property <bool> running: true;
+    in property <bool> reduced-motion: false;
+    in property <float> time: 0.0;
+
+    visible: !root.reduced-motion;
+
+    for d in root.defs: ParticleField {
+        def: d;
+        scale: root.scale;
+        time: root.time;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CampfireScene — the ritual heart. Scene data-driven (SceneManifest) +
+// emitters + seats on a bottom arc, HUD title top-left, roster panel
+// top-right (mock .scene-hud/.scene-roster).
+// ---------------------------------------------------------------------------
+component CampfireScene inherits Rectangle {
+    in property <[PeerTile]> peers;
+    in property <string> local-user;
+    in property <string> local-skin: "ivory";
+    in property <float> local-level;
+    in property <bool> local-speaking;
+    in property <bool> local-muted;
+    in property <bool> local-deafened;
+    in property <string> channel-name;
+    in property <string> status;
+    in property <bool> status-connected;
+    in property <bool> connected: true; // roster + local seat hidden when not joined
+    in property <bool> reduced-motion: false;
+    in property <bool> particles-enabled: true;
+
+    background: AppTheme.colors.bg-deep;
+    preferred-height: 0px;
+
+    property <length> roster-w: Math.min(220px, root.width * 0.38);
+    // escala lienzo de diseño (SceneManifest.design-w) -> viewport
+    property <float> scene-scale: root.width / SceneManifest.design-w;
+
+    // Reloj de la escena: UN solo Property<float> (segundos) avanzado por UN
+    // timer; pulse/breath de los asientos derivan de él por expresión.
+    // NOTA (2026-08-12, perf): el reloj RÁPIDO (80 ms) se ELIMINÓ — quedó
+    // obsoleto cuando las partículas pasaron al sistema AnimationImage (frames
+    // horneados en el renderer, fuera del árbol). Su timer seguía disparando el
+    // redraw tracker (~12.5 renders/s vacíos ≈ 2.1% de un núcleo, medido) vía
+    // los SceneProp ocultos y el ParticleLayer sin uso que leen `root.time`.
+    // El reloj lento (200 ms) alimenta pulse/breath de los asientos.
+
+    // Reloj lento: asientos (pulse/breath). Se re-evalúan a su frecuencia
+    // nativa; frame/pulse/breath derivan de ESTE reloj.
+    property <float> slow-time: 0.0;
+    Timer {
+        running: root.connected && !root.reduced-motion;
+        interval: 200ms;
+        triggered() => { root.slow-time = root.slow-time + 0.2; }
+    }
+
+    // ember brazier glow + floor vignette — fondo ESTÁTICO que nunca cambia.
+    // Cacheado a textura (cache-rendering-hint): se rasteriza 1 vez y después
+    // se blitea. El fuego (SceneProp animado) y las partículas quedan FUERA.
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        cache-rendering-hint: true;
+        // ember brazier glow — radial, ritual zone only (calm zones stay flat)
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: @radial-gradient(circle, AppTheme.colors.glow-rose-start 0%, #D1635E08 40%, AppTheme.colors.glow-rose-end 70%);
+        }
+        // faint floor vignette
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: @radial-gradient(circle, AppTheme.colors.glow-deep-fade 55%, AppTheme.colors.bg-deep 100%);
+        }
+    }
+
+    // ---- escena data-driven (SceneManifest ← designs/art/scenes/campfire.json) ----
+    // Cada elemento se autoposiciona, anima y hace glow desde sus datos; los
+    // timers internos solo corren conectado y sin reduced-motion.
+    function e-visible(e: SceneElement) -> bool {
+        return e.min-w == 0px || e.min-w * root.scene-scale <= root.width;
+    }
+    // Elementos ESTÁTICOS de la escena (sin animación) quedan en Slint; el
+    // fuego (anim-ms > 0) se oculta — se renderiza en los frames RAM de
+    // particles.rs, fuera del árbol.
+    for e in SceneManifest.campfire: SceneProp {
+        el: e;
+        scale: root.scene-scale;
+        running: root.connected;
+        reduced-motion: root.reduced-motion;
+        time: root.slow-time;
+        visible: e.anim-ms == 0 && root.e-visible(e);
+    }
+
+    // ---- partículas (emisores del manifiesto: brasas, luciérnagas) ----
+    // ANIMATION-IMAGE: 1 solo AnimationImage cuyo frame rota cada tick desde
+    // Rust (timer sin notifier, sin bindings reactivos) — partial rendering ON.
+    // El frame lo cambia `slint::Window::set_animation_frame(ANIMATION_KEY, i)`:
+    // solo se repinta el rect de este item, el resto de la escena no se re-renderiza.
+    // Visible con partículas ON y conectado; reduced-motion (animación OFF) solo
+    // CONGELA el frame (el tick no avanza) — la llama estática sigue visible.
+    if root.connected && root.particles-enabled : AnimationImage {
+        animation-key: 1;
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        image-rendering: pixelated;
+    }
+
+    // ---- HUD (mock .scene-hud): channel name + status, top-left ----
+    Rectangle {
+        x: AppTheme.sp-4;
+        y: AppTheme.sp-3;
+        width: root.width >= 560px ? Math.min(260px, root.width * 0.45) : Math.min(320px, root.width - 32px);
+        height: 56px;
+        VerticalLayout {
+            spacing: AppTheme.sp-1;
+            Text {
+                text: root.channel-name;
+                font-family: AppTheme.font-display;
+                font-weight: 700;
+                font-size: 18px;
+                color: AppTheme.colors.text-hi;
+                overflow: elide;
+            }
+            Text {
+                text: root.status;
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                font-weight: 700;
+                letter-spacing: 1.3px;
+                color: root.status-connected ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                overflow: elide;
+            }
+        }
+    }
+
+    // ---- roster panel (mock .scene-roster), top-right ----
+    // Only while connected and scene width >= 560px (stacked/hidden on smaller scenes to avoid overlap).
+    if root.connected && root.width >= 560px : Rectangle {
+        x: root.width - root.roster-w - AppTheme.sp-4;
+        y: AppTheme.sp-3;
+        width: root.roster-w;
+        height: Math.min(384px, root.height - 28px);
+        background: AppTheme.colors.panel-translucent;
+        border-width: 1px;
+        border-color: AppTheme.colors.border-dim;
+        VerticalLayout {
+            padding: AppTheme.sp-3;
+            spacing: AppTheme.sp-2;
+            SectionHeader {
+                label: "EN LA FOGATA · \{root.peers.length + 1}";
+                row-height: 14px;
+                pad-left: 0px;
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: AppTheme.sp-2;
+                    // local user first, then peers
+                    HorizontalLayout {
+                        spacing: AppTheme.sp-2;
+                        cross-axis-alignment: center;
+                        Bust {
+                            skin: root.local-skin;
+                            state: root.local-muted || root.local-deafened ? "muted" : (root.local-speaking ? "talking" : "idle");
+                            width: 24px;
+                            height: 24px;
+                        }
+                        Text {
+                            text: root.local-user;
+                            font-family: AppTheme.font-body;
+                            font-size: AppTheme.font-sm;
+                            color: AppTheme.colors.text;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        StatusDot {
+                            shape: "disc";
+                            dot-color: root.local-muted ? AppTheme.colors.text-mute
+                                : root.local-speaking ? AppTheme.colors.ice
+                                : AppTheme.colors.bronze-hi;
+                        }
+                    }
+                    for p in root.peers: HorizontalLayout {
+                        spacing: AppTheme.sp-2;
+                        cross-axis-alignment: center;
+                        Bust {
+                            skin: p.skin;
+                            state: p.muted ? "muted" : (p.speaking ? "talking" : "idle");
+                            width: 24px;
+                            height: 24px;
+                        }
+                        Text {
+                            text: p.username;
+                            font-family: AppTheme.font-body;
+                            font-size: AppTheme.font-sm;
+                            color: p.muted ? AppTheme.colors.text-dim : AppTheme.colors.text;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        StatusDot {
+                            shape: "disc";
+                            dot-color: p.muted ? AppTheme.colors.text-mute
+                                : p.speaking ? AppTheme.colors.ice
+                                : AppTheme.colors.bronze-hi;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- seats: local first, then peers, on a shallow parabola arc ----
+    // When the roster is visible it owns the right ~roster-w+2*sp-4, so the
+    // seat arc must fit in the remaining area or the last seat collides with
+    // the panel (seen at 1100px with 4 users). Effective width excludes the
+    // roster + its right margin.
+    property <length> seat-area-w: root.width >= 560px
+        ? Math.max(100px, root.width - root.roster-w - AppTheme.sp-4 - AppTheme.sp-4)
+        : root.width;
+    function seat-x(i: int, n: int, w: length, h: length) -> length {
+        let aw = root.seat-area-w;
+        let cx = aw * (i + 1) / (n + 1);
+        let sx = cx - 60px;
+        return Math.max(4px, Math.min(aw - 124px, sx));
+    }
+    function seat-y(i: int, n: int, w: length, h: length) -> length {
+        let t = (i + 1) * 1.0 / (n + 1) - 0.5;
+        return Math.max(50px, Math.min(h - 172px, h * (0.42 + 0.35 * t * t) - 20px));
+    }
+    function seat-scale(i: int, n: int) -> float {
+        let t = (i + 1) * 1.0 / (n + 1) - 0.5;
+        return 0.85 + 0.25 * (1.0 - 4.0 * t * t);
+    }
+
+    property <int> total: root.peers.length + 1;
+    if root.connected : Seat {
+        x: root.seat-x(0, root.total, root.width, root.height);
+        y: root.seat-y(0, root.total, root.width, root.height);
+        transform-scale-x: root.seat-scale(0, root.total);
+        transform-scale-y: root.seat-scale(0, root.total);
+        username: root.local-user;
+        skin: root.local-skin;
+        talking: root.local-speaking;
+        muted: root.local-muted;
+        deafened: root.local-deafened;
+        reduced-motion: root.reduced-motion;
+        time: root.slow-time;
+    }
+    for p[i] in root.peers: Seat {
+        x: root.seat-x(i + 1, root.total, root.width, root.height);
+        y: root.seat-y(i + 1, root.total, root.width, root.height);
+        transform-scale-x: root.seat-scale(i + 1, root.total);
+        transform-scale-y: root.seat-scale(i + 1, root.total);
+        username: p.username;
+        skin: p.skin;
+        talking: p.speaking;
+        muted: p.muted;
+        deafened: false;
+        reduced-motion: root.reduced-motion;
+        time: root.slow-time;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CompactGrid — dense grouped rows (auto >10 users or toggled).
+// ---------------------------------------------------------------------------
+component CompactRow inherits Rectangle {
+    in property <string> username;
+    in property <string> skin: "ivory";
+    in property <float> level;
+    in property <bool> talking;
+    in property <bool> muted;
+    in property <bool> deafened;
+    in property <bool> reduced-motion: false;
+
+    height: 52px;
+    background: root.talking ? AppTheme.colors.surface : transparent;
+    border-width: 1px;
+    border-color: root.talking ? AppTheme.colors.talking-edge : (root.muted || root.deafened ? AppTheme.colors.muted-edge : transparent);
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        padding-left: AppTheme.sp-2;
+        padding-right: AppTheme.sp-3;
+        spacing: AppTheme.sp-3;
+        alignment: start;
+        cross-axis-alignment: center;
+
+        Bust {
+            skin: root.skin;
+            state: root.talking ? "talking" : (root.muted || root.deafened ? "muted" : "idle");
+            width: 48px;
+            height: 48px;
+        }
+
+        // identity
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.username;
+                font-family: AppTheme.font-body;
+                font-weight: root.talking ? 600 : 500;
+                font-size: AppTheme.font-sm;
+                color: root.talking ? AppTheme.colors.text-hi : (root.muted || root.deafened ? AppTheme.colors.text-dim : AppTheme.colors.text);
+                overflow: elide;
+            }
+            Text {
+                text: "warband";
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                color: AppTheme.colors.bronze-hi;
+            }
+        }
+
+        // Espectro real eliminado (Discord no lo muestra): indicador discreto
+        // que cambia con `talking` (bool) — no depende del level continuo, así
+        // el level stream a 10 Hz no invalida el árbol.
+        StatusDot {
+            shape: "disc";
+            dot-color: root.talking ? AppTheme.colors.ice : AppTheme.colors.bronze-hi;
+        }
+
+        StateChip {
+            label: root.talking ? "HABLANDO"
+                : (root.muted || root.deafened) ? "MUTEADO"
+                : "EN LLAMADA";
+            chip-color: root.talking ? AppTheme.colors.ice
+                : (root.muted || root.deafened) ? AppTheme.colors.rose
+                : AppTheme.colors.text-dim;
+        }
+
+        IconGlyph {
+            glyph: root.muted ? Icons.mic-slash : (root.talking ? Icons.speaker-high : Icons.mic);
+            size: 16px;
+            text-color: root.muted ? AppTheme.colors.rose : (root.talking ? AppTheme.colors.ice : AppTheme.colors.text-mute);
+        }
+        IconGlyph {
+            glyph: Icons.video-camera;
+            size: 16px;
+            text-color: AppTheme.colors.text-mute;
+            opacity: 0.35;
+        }
+    }
+}
+
+component CompactGrid inherits Rectangle {
+    in property <[PeerTile]> peers;
+    in property <string> local-user;
+    in property <string> local-skin: "ivory";
+    in property <float> local-level;
+    in property <bool> local-speaking;
+    in property <bool> local-muted;
+    in property <bool> local-deafened;
+    in property <bool> reduced-motion: false;
+
+    background: AppTheme.colors.bg;
+
+    ScrollView {
+        width: 100%;
+        height: 100%;
+        VerticalLayout {
+            padding-top: AppTheme.sp-3;
+            padding-bottom: AppTheme.sp-3;
+            padding-left: AppTheme.sp-5;
+            padding-right: AppTheme.sp-5;
+            spacing: AppTheme.sp-1;
+
+            // local user first, then peers in join order
+            CompactRow {
+                username: root.local-user;
+                skin: root.local-skin;
+                level: root.local-level;
+                talking: root.local-speaking;
+                muted: root.local-muted;
+                deafened: root.local-deafened;
+                reduced-motion: root.reduced-motion;
+            }
+            for p in root.peers: CompactRow {
+                username: p.username;
+                skin: p.skin;
+                level: p.level;
+                talking: p.speaking;
+                muted: p.muted;
+                deafened: false;
+                reduced-motion: root.reduced-motion;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VoiceView root
+// ---------------------------------------------------------------------------
 export component VoiceView inherits Rectangle {
     in property <string> channel-name;
     in property <bool> active;
@@ -104,146 +657,312 @@ export component VoiceView inherits Rectangle {
     in property <float> local-level;
     in property <bool> local-speaking;
     in property <string> local-user;
-    in property <string> local-initial;
+    in property <string> local-skin: "ivory";
     in property <[PeerTile]> peers;
-    // Noise-suppression model: "fastenhancer" | "ns-only" (see
-    // lumen_voice::audio::SuppressorModel::as_str). Applied on the next join.
-    in property <string> suppressor-model;
-    // Whether this CPU can run the FastEnhancer-M engine (AVX2+FMA3+F16C).
-    // When false and "fastenhancer" is selected, the model still runs as the
-    // user asked but the engine degrades to WebRTC NS — surfaced as a warning,
-    // never silent.
-    in property <bool> suppressor-model-available;
-    // AEC3 (echo cancellation). Speakers users need it on; headphones users
-    // should leave it off (this webrtc build corrupts the send when the
-    // render reference is fed).
-    in property <bool> aec-enabled;
-    callback aec-enabled-changed(bool);
+    in property <bool> reduced-motion: false;
+    in property <bool> particles-enabled: true;
     callback join();
     callback leave();
     callback toggle-mute();
     callback toggle-deafen();
-    callback suppressor-model-changed(string);
 
     background: AppTheme.colors.bg;
     horizontal-stretch: 1;
     vertical-stretch: 1;
 
+    // compact mode: manual toggle OR auto when the campfire gets crowded (>10 users)
+    property <bool> compact: false;
+    property <bool> auto-compact: root.peers.length + 1 > 10;
+
+    property <length> cta-w: Math.min(root.width - 32px, 300px);
+    property <length> cta-h: Math.min(root.height - 32px, 180px);
+
     VerticalLayout {
         width: 100%;
         height: 100%;
+
+        // --- header (mock .scene-header) ---
         Rectangle {
-            height: 48px;
+            height: AppTheme.header-height;
+            background: AppTheme.colors.bg-deep;
             HorizontalLayout {
-                padding-top: 12px; padding-bottom: 12px; padding-left: 16px; padding-right: 16px;
-                spacing: 8px;
+                padding-top: AppTheme.sp-2;
+                padding-bottom: AppTheme.sp-2;
+                padding-left: AppTheme.sp-4;
+                padding-right: AppTheme.sp-4;
+                spacing: AppTheme.sp-3;
+                cross-axis-alignment: center;
+                IconGlyph {
+                    glyph: Icons.fire;
+                    size: 18px;
+                    text-color: AppTheme.colors.rose;
+                }
                 Text {
                     text: root.channel-name;
-                    color: AppTheme.colors.text;
-                    font-size: 14px;
+                    font-family: AppTheme.font-display;
                     font-weight: 700;
+                    font-size: AppTheme.font-md;
+                    color: AppTheme.colors.text-hi;
                     overflow: elide;
                     horizontal-stretch: 1;
+                    vertical-alignment: center;
                 }
-                Text {
-                    text: root.status;
-                    color: root.status-connected ? AppTheme.colors.online : AppTheme.colors.text-dim;
-                    font-size: 12px;
+                ViewToggle {
+                    compact-active: root.compact || root.auto-compact;
+                    enabled: !root.auto-compact;
+                    toggled => { root.compact = !root.compact; }
                 }
-                if !root.active : Button {
-                    text: "Join voice";
-                    primary: true;
-                    clicked => { root.join(); }
+                // status chip — semantic: icon + state name + color
+                Rectangle {
+                    height: 24px;
+                    background: AppTheme.colors.card;
+                    border-width: 1px;
+                    border-color: root.status-connected ? AppTheme.colors.ice : AppTheme.colors.border;
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        padding-left: AppTheme.sp-2;
+                        padding-right: AppTheme.sp-2;
+                        spacing: AppTheme.sp-1;
+                        cross-axis-alignment: center;
+                        IconGlyph {
+                            glyph: root.status-connected ? Icons.waveform : Icons.warning;
+                            size: 13px;
+                            text-color: root.status-connected ? AppTheme.colors.ice : AppTheme.colors.text-mute;
+                        }
+                        Text {
+                            text: root.status;
+                            font-family: AppTheme.font-mono;
+                            font-size: AppTheme.font-xs;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            color: root.status-connected ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
             }
         }
-        Rectangle { height: 1px; background: AppTheme.colors.border; }
+        Divider { }
 
-        // Suppressor model select (applies on the next voice join).
-        HorizontalLayout {
-            padding-top: 8px; padding-bottom: 8px; padding-left: 16px; padding-right: 16px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: "Suppression:";
-                color: AppTheme.colors.text;
-                font-size: 12px;
-                vertical-alignment: center;
-            }
-            ComboBox {
-                model: ["FastEnhancer-M", "NS (WebRTC)"];
-                current-index: root.suppressor-model == "fastenhancer" ? 0 : 1;
-                selected(idx) => {
-                    root.suppressor-model-changed(idx == 0 ? "fastenhancer" : "ns-only");
-                }
-            }
-            CheckBox {
-                text: "Eco (AEC)";
-                checked: root.aec-enabled;
-                toggled => {
-                    root.aec-enabled-changed(self.checked);
-                }
-            }
-            if root.suppressor-model == "fastenhancer" && !root.suppressor-model-available : Text {
-                text: "FastEnhancer-M no es compatible con este CPU (requiere AVX2+FMA3). Se usará NS (WebRTC).";
-                color: AppTheme.colors.danger;
-                font-size: 11px;
-                wrap: word-wrap;
-                vertical-alignment: center;
-            }
-        }
-
+        // error banner
         if root.error != "" : HorizontalLayout {
-            padding-top: 4px; padding-bottom: 4px; padding-left: 16px; padding-right: 16px;
-            Text { text: root.error; color: AppTheme.colors.danger; font-size: 13px; wrap: word-wrap; }
-        }
-
-        ScrollView {
-            vertical-stretch: 1;
-            GridLayout {
-                padding: 20px;
-                spacing: 14px;
-                PeerTileView {
-                    row: 0; col: 0;
-                    label: root.local-user;
-                    initial: root.local-initial;
-                    level: root.local-level;
-                    speaking: root.local-speaking;
-                    state: "connected";
-                    muted: root.muted;
-                }
-                for p[i] in root.peers: PeerTileView {
-                    row: (i + 1) / 3;
-                    col: Math.mod(i + 1, 3);
-                    label: p.username;
-                    initial: p.initial;
-                    level: p.level;
-                    speaking: p.speaking;
-                    state: p.state;
-                    muted: p.muted;
+            padding-top: AppTheme.sp-1;
+            padding-bottom: AppTheme.sp-1;
+            padding-left: AppTheme.sp-4;
+            padding-right: AppTheme.sp-4;
+            Rectangle {
+                background: AppTheme.colors.surface;
+                border-width: 1px;
+                border-color: AppTheme.colors.rose;
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-top: AppTheme.sp-1;
+                    padding-bottom: AppTheme.sp-1;
+                    padding-left: AppTheme.sp-3;
+                    padding-right: AppTheme.sp-3;
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    IconGlyph {
+                        glyph: Icons.warning;
+                        size: 14px;
+                        text-color: AppTheme.colors.rose;
+                    }
+                    Text {
+                        text: root.error;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: AppTheme.colors.rose;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }
 
+        // --- main: campfire scene or compact grid, with a join CTA centered over it while disconnected ---
+        Rectangle {
+            vertical-stretch: 1;
+            if root.compact || root.auto-compact : CompactGrid {
+                width: 100%;
+                height: 100%;
+                peers: root.peers;
+                local-user: root.local-user;
+                local-skin: root.local-skin;
+                local-level: root.local-level;
+                local-speaking: root.local-speaking;
+                local-muted: root.muted;
+                local-deafened: root.deafened;
+                reduced-motion: root.reduced-motion;
+            }
+            if !root.compact && !root.auto-compact : CampfireScene {
+                width: 100%;
+                height: 100%;
+                peers: root.peers;
+                local-user: root.local-user;
+                local-skin: root.local-skin;
+                local-level: root.local-level;
+                local-speaking: root.local-speaking;
+                local-muted: root.muted;
+                local-deafened: root.deafened;
+                channel-name: root.channel-name;
+                status: root.status;
+                status-connected: root.status-connected;
+                connected: root.active;
+                reduced-motion: root.reduced-motion;
+                particles-enabled: root.particles-enabled;
+            }
+            if !root.active : Rectangle {
+                // join CTA — ritual gate, width clamped cleanly to parent
+                x: (root.width - root.cta-w) * 0.5;
+                y: (root.height - root.cta-h) * 0.5;
+                width: root.cta-w;
+                height: root.cta-h;
+                background: AppTheme.colors.surface;
+                border-width: 2px;
+                border-color: AppTheme.colors.ice;
+                VerticalLayout {
+                    padding-top: AppTheme.sp-3;
+                    padding-bottom: AppTheme.sp-3;
+                    padding-left: AppTheme.sp-4;
+                    padding-right: AppTheme.sp-4;
+                    spacing: AppTheme.sp-1;
+                    HorizontalLayout {
+                        alignment: center;
+                        IconGlyph {
+                            glyph: Icons.fire;
+                            size: 24px;
+                            text-color: AppTheme.colors.rose;
+                        }
+                    }
+                    Text {
+                        text: "ÚNETE A LA FOGATA";
+                        font-family: AppTheme.font-display;
+                        font-weight: 700;
+                        font-size: 18px;
+                        color: AppTheme.colors.text-hi;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "#" + root.channel-name;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: AppTheme.colors.text-dim;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        alignment: center;
+                        VoxButton {
+                            text: "UNIRSE";
+                            icon: Icons.phone;
+                            primary: true;
+                            clicked => { root.join(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- callbar (mock .voice-controls) ---
         if root.active : Rectangle {
-            height: 56px;
+            height: 68px;
+            background: AppTheme.colors.bg-deep;
             HorizontalLayout {
-                padding: 12px;
-                spacing: 10px;
-                alignment: center;
-                Button {
-                    text: root.muted ? "Muted" : "Mute";
-                    primary: root.muted;
+                padding-left: AppTheme.sp-4;
+                padding-right: AppTheme.sp-4;
+                spacing: AppTheme.sp-3;
+                cross-axis-alignment: center;
+
+                // channel info
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    spacing: 2px;
+                    Text {
+                        text: root.channel-name.to-uppercase();
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        color: AppTheme.colors.ice;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.status;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: AppTheme.colors.text-dim;
+                        overflow: elide;
+                    }
+                }
+                CallBtn {
+                    glyph: root.muted ? Icons.mic-slash : Icons.mic;
+                    label: "MIC";
+                    active: root.muted;
                     clicked => { root.toggle-mute(); }
                 }
-                Button {
-                    text: root.deafened ? "Deafened" : "Deafen";
-                    primary: root.deafened;
+                CallBtn {
+                    glyph: root.deafened ? Icons.ear-slash : Icons.headphones;
+                    label: "SOUND";
+                    active: root.deafened;
                     clicked => { root.toggle-deafen(); }
                 }
-                DangerButton {
-                    text: "Leave";
+                CallBtn {
+                    glyph: Icons.door-open;
+                    label: "LEAVE";
+                    danger: true;
                     clicked => { root.leave(); }
+                }
+
+                // permanent spacer — unconditional (no `if root.width`, so no
+                // layoutinfo feedback loop); soaks up leftover space, collapses
+                // when tight, keeps the 3 CallBtns on-screen at min width.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                }
+            }
+
+            // speaking bubble — absolute child of the callbar, OUT of the
+            // HorizontalLayout: its `if root.width` gate can't feed back into
+            // layoutinfo, so no binding loop. Vertically centered in the 68px
+            // bar, flush to the right edge.
+            // (decorative 1px separator dropped — it sat between info and
+            // buttons whose boundary is dynamic; spacing + button borders
+            // already separate the groups.)
+            if root.width >= 460px : Rectangle {
+                x: root.width - 140px - AppTheme.sp-4;
+                y: 21px;
+                width: 140px;
+                height: 26px;
+                background: AppTheme.colors.card;
+                border-width: 1px;
+                border-color: root.local-speaking ? AppTheme.colors.crimson : AppTheme.colors.border;
+                HorizontalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding-left: AppTheme.sp-2;
+                    padding-right: AppTheme.sp-2;
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+                    // Espectro real eliminado: indicador discreto (Discord no
+                    // muestra espectro) — el level stream ya no invalida nada.
+                    StatusDot {
+                        shape: "disc";
+                        dot-color: root.local-speaking ? AppTheme.colors.ice : AppTheme.colors.bronze-dim;
+                    }
+                    Text {
+                        text: "HABLANDO";
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        color: root.local-speaking ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }

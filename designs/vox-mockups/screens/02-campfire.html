@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox · Fogata del Consejo</title>
+  <link rel="stylesheet" href="../assets/vox-tokens.css">
+  <style>
+    /* Hereda el shell del primer mockup */
+    .vox-shell {
+      display: grid;
+      grid-template-columns: 76px 240px 1fr;
+      height: 100vh;
+      background: var(--vox-bg);
+    }
+
+    /* === Sidebar (resumido — estilos del primer mockup aplicados) === */
+    .clan-rail { background: var(--vox-bg-deep); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; align-items: center; padding: var(--vox-s-5) 0; gap: var(--vox-s-4); overflow-y: auto; }
+    .clan-rail__home { width: 48px; height: 48px; background: var(--vox-rust); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center; font-family: var(--vox-font-title); font-weight: 900; font-size: 22px; color: var(--vox-text-hi); cursor: pointer; position: relative; }
+    .clan-rail__home::after { content: ''; position: absolute; bottom: -3px; right: -3px; width: 12px; height: 12px; background: var(--vox-online); border: 2px solid var(--vox-bg-deep); }
+    .clan-rail__divider { width: 32px; height: 2px; background: var(--vox-border-dim); margin: var(--vox-s-1) 0; }
+    .clan-rail__list { display: flex; flex-direction: column; gap: var(--vox-s-3); width: 100%; align-items: center; }
+    .clan-pill { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); font-family: var(--vox-font-title); font-weight: 700; font-size: 18px; color: var(--vox-text); cursor: pointer; position: relative; transition: none; }
+    .clan-pill:hover { border-color: var(--vox-bronze-hi); background: var(--vox-card-hi); }
+    .clan-pill--active { border-color: var(--vox-amber); background: var(--vox-card-hi); }
+    .clan-pill--active::before { content: ''; position: absolute; left: -16px; top: 50%; transform: translateY(-50%); width: 4px; height: 32px; background: var(--vox-amber); }
+    .clan-pill__notif { position: absolute; bottom: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; background: var(--vox-rust); border: 2px solid var(--vox-bg-deep); color: var(--vox-text-hi); font-family: var(--vox-font-mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .clan-pill__add { width: 48px; height: 48px; background: transparent; border: 2px dashed var(--vox-border); color: var(--vox-text-dim); font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+    .clan-pill__add:hover { border-color: var(--vox-bronze-hi); color: var(--vox-bronze-hi); }
+
+    .channel-panel { background: var(--vox-surface); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; overflow: hidden; }
+    .channel-panel__header { padding: var(--vox-s-6) var(--vox-s-6) var(--vox-s-5); border-bottom: 1px solid var(--vox-border-dim); }
+    .channel-panel__clan-name { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-lg); color: var(--vox-text-hi); letter-spacing: var(--vox-ls-tight); line-height: var(--vox-lh-tight); }
+    .channel-panel__clan-tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-bronze-hi); margin-top: var(--vox-s-2); }
+    .channel-panel__body { flex: 1; overflow-y: auto; padding: var(--vox-s-4) 0; }
+    .channel-group { margin-bottom: var(--vox-s-5); }
+    .channel-group__header { display: flex; align-items: center; justify-content: space-between; padding: var(--vox-s-3) var(--vox-s-6); cursor: pointer; }
+    .channel-group__label { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); display: flex; align-items: center; gap: var(--vox-s-2); }
+    .channel-group__chevron { width: 8px; height: 8px; border-right: 2px solid var(--vox-text-dim); border-bottom: 2px solid var(--vox-text-dim); transform: rotate(-45deg); display: inline-block; }
+    .channel-list { list-style: none; }
+    .channel-item { display: flex; align-items: center; gap: var(--vox-s-4); padding: var(--vox-s-2) var(--vox-s-6); font-family: var(--vox-font-mono); font-size: var(--vox-text-sm); color: var(--vox-text-dim); border-left: 2px solid transparent; cursor: pointer; transition: none; position: relative; }
+    .channel-item:hover { color: var(--vox-text); background: var(--vox-bg); }
+    .channel-item--active { color: var(--vox-text-hi); background: var(--vox-card); border-left-color: var(--vox-amber); }
+    .channel-item__icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
+    .channel-item--active .channel-item__icon { opacity: 1; }
+    .channel-item__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .user-footer { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-5); display: flex; align-items: center; gap: var(--vox-s-4); }
+    .user-footer__bust { width: 32px; height: 32px; flex-shrink: 0; position: relative; }
+    .user-footer__bust img { width: 100%; height: 100%; }
+    .user-footer__bust::after { content: ''; position: absolute; bottom: -2px; right: -2px; width: 10px; height: 10px; background: var(--vox-online); border: 2px solid var(--vox-bg-deep); }
+    .user-footer__info { flex: 1; min-width: 0; }
+    .user-footer__name { font-family: var(--vox-font-body); font-weight: var(--vox-fw-semi); font-size: var(--vox-text-sm); color: var(--vox-text-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .user-footer__tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); letter-spacing: var(--vox-ls-mono); }
+    .user-footer__controls { display: flex; gap: var(--vox-s-2); }
+    .ctrl-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; cursor: pointer; transition: none; }
+    .ctrl-btn:hover { background: var(--vox-card); border-color: var(--vox-border); }
+    .ctrl-btn img { width: 16px; height: 16px; }
+    .ctrl-btn--active { background: var(--vox-card); border-color: var(--vox-border); }
+
+    /* === MAIN: SCENE === */
+    .scene-area {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      background: var(--vox-bg);
+    }
+
+    .scene-header {
+      height: 48px;
+      padding: 0 var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      background: var(--vox-bg-deep);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+    .scene-header__title {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+    }
+    .scene-header__icon {
+      width: 18px;
+      height: 18px;
+    }
+    .scene-header__name {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+    }
+    .scene-header__meta {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .scene-header__actions {
+      margin-left: auto;
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+
+    /* Toggle scene <-> lista compacta */
+    .view-toggle {
+      display: flex;
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+    }
+    .view-toggle__btn {
+      padding: var(--vox-s-2) var(--vox-s-4);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      transition: none;
+    }
+    .view-toggle__btn--active {
+      background: var(--vox-rust);
+      color: var(--vox-text-hi);
+    }
+
+    /* === SCENE: La fogata === */
+    .scene {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse 80% 60% at 50% 75%, rgba(224, 106, 62, 0.15) 0%, transparent 50%),
+        radial-gradient(ellipse 100% 100% at 50% 30%, var(--vox-indigo) 0%, var(--vox-bg) 60%, var(--vox-bg-deep) 100%);
+    }
+
+    /* Layered atmosphere */
+    .scene__stars {
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(1px 1px at 20% 10%, var(--vox-text) 50%, transparent),
+        radial-gradient(1px 1px at 35% 25%, var(--vox-text-dim) 50%, transparent),
+        radial-gradient(1px 1px at 70% 8%, var(--vox-text) 50%, transparent),
+        radial-gradient(1px 1px at 80% 30%, var(--vox-text-dim) 50%, transparent),
+        radial-gradient(1px 1px at 15% 35%, var(--vox-text-dim) 50%, transparent),
+        radial-gradient(1px 1px at 55% 15%, var(--vox-text) 50%, transparent),
+        radial-gradient(1px 1px at 90% 18%, var(--vox-text-dim) 50%, transparent),
+        radial-gradient(1px 1px at 45% 5%, var(--vox-text-dim) 50%, transparent);
+      opacity: 0.5;
+    }
+
+    /* Ground / floor */
+    .scene__ground {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 50%;
+      background:
+        linear-gradient(180deg, transparent 0%, rgba(12, 17, 28, 0.6) 60%, var(--vox-bg-deep) 100%),
+        repeating-linear-gradient(
+          90deg,
+          var(--vox-bg) 0,
+          var(--vox-bg) 4px,
+          var(--vox-bg-deep) 4px,
+          var(--vox-bg-deep) 8px
+        );
+    }
+
+    /* Distant mountains / silhouettes */
+    .scene__silhouette {
+      position: absolute;
+      bottom: 30%;
+      left: 0;
+      right: 0;
+      height: 80px;
+      background:
+        linear-gradient(135deg, transparent 49%, var(--vox-bg-deep) 50%) 0 0 / 120px 80px,
+        linear-gradient(45deg, transparent 49%, var(--vox-bg-deep) 50%) 60px 0 / 120px 80px;
+      opacity: 0.7;
+    }
+
+    /* Atmospheric grain */
+    .scene__grain {
+      position: absolute;
+      inset: 0;
+      background-image:
+        repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(255, 255, 255, 0.01) 2px, rgba(255, 255, 255, 0.01) 4px);
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    /* Vignette */
+    .scene__vignette {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 50%, transparent 30%, rgba(7, 10, 18, 0.7) 100%);
+      pointer-events: none;
+      z-index: 40;
+    }
+
+    /* === Campfire centerpiece === */
+    .campfire {
+      position: absolute;
+      left: 50%;
+      bottom: 30%;
+      transform: translateX(-50%);
+      width: 128px;
+      height: 96px;
+      z-index: 5;
+    }
+    .campfire__glow {
+      position: absolute;
+      left: 50%;
+      top: 40%;
+      transform: translate(-50%, -50%);
+      width: 400px;
+      height: 300px;
+      background: radial-gradient(ellipse, rgba(224, 106, 62, 0.4) 0%, rgba(180, 67, 46, 0.15) 30%, transparent 70%);
+      pointer-events: none;
+      animation: vox-glow-pulse 2.4s steps(4) infinite;
+      z-index: -1;
+    }
+    @keyframes vox-glow-pulse {
+      0%, 100% { opacity: 0.7; transform: translate(-50%, -50%) scale(1); }
+      25%      { opacity: 0.9; transform: translate(-50%, -50%) scale(1.05); }
+      50%      { opacity: 1;   transform: translate(-50%, -50%) scale(1.08); }
+      75%      { opacity: 0.8; transform: translate(-50%, -50%) scale(1.02); }
+    }
+
+    /* Sprite stack: 4 frames stacked, animating opacity */
+    .campfire__sprite {
+      position: relative;
+      width: 128px;
+      height: 96px;
+    }
+    .campfire__sprite img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .campfire__sprite img:nth-child(1) { animation: vox-campfire var(--vox-fire-frame) steps(1, end) infinite; }
+    .campfire__sprite img:nth-child(2) { animation: vox-campfire-2 var(--vox-fire-frame) steps(1, end) infinite; }
+    .campfire__sprite img:nth-child(3) { animation: vox-campfire-3 var(--vox-fire-frame) steps(1, end) infinite; }
+    .campfire__sprite img:nth-child(4) { animation: vox-campfire-4 var(--vox-fire-frame) steps(1, end) infinite; }
+
+    /* Embers floating up */
+    .campfire-embers {
+      position: absolute;
+      left: 50%;
+      top: 30%;
+      transform: translateX(-50%);
+      width: 80px;
+      height: 100px;
+      pointer-events: none;
+    }
+    .ember {
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      background: var(--vox-amber-hi);
+      bottom: 0;
+      animation: vox-ember-rise 1.6s steps(8) infinite;
+    }
+    .ember:nth-child(1) { left: 20%; animation-delay: 0s;   --drift: -4px; }
+    .ember:nth-child(2) { left: 50%; animation-delay: 0.4s; --drift: 2px; }
+    .ember:nth-child(3) { left: 70%; animation-delay: 0.8s; --drift: 6px; }
+    .ember:nth-child(4) { left: 30%; animation-delay: 1.2s; --drift: -2px; }
+    .ember:nth-child(5) { left: 60%; animation-delay: 0.2s; --drift: 4px; }
+
+    /* === Voice seats === */
+    .voice-seat {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--vox-s-1);
+      z-index: 3;
+    }
+    .voice-seat__sprite {
+      position: relative;
+      width: 96px;
+      height: 128px;
+      animation: vox-breath var(--vox-breath) steps(6) infinite;
+    }
+    .voice-seat__sprite img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    /* Talking state — outline del sprite, no halo */
+    .voice-seat--talking .voice-seat__sprite {
+      filter: drop-shadow(0 0 0 var(--vox-amber)) drop-shadow(0 0 2px var(--vox-amber));
+      animation: vox-breath var(--vox-breath) steps(6) infinite, vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    .voice-seat--talking .voice-seat__sprite::after {
+      content: '';
+      position: absolute;
+      inset: -2px;
+      border: 2px solid var(--vox-amber);
+      pointer-events: none;
+      animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    /* Muted — sin pose diferente ya está en el sprite, ligero dim */
+    .voice-seat--muted .voice-seat__sprite {
+      filter: brightness(0.7) saturate(0.6);
+    }
+    /* Idle — mas lento */
+    .voice-seat--idle .voice-seat__sprite {
+      animation-duration: 3000ms;
+    }
+
+    .voice-seat__label {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      letter-spacing: var(--vox-ls-mono);
+      color: var(--vox-text-hi);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-border-dim);
+      padding: 2px var(--vox-s-3);
+      white-space: nowrap;
+      text-transform: none;
+    }
+    .voice-seat--talking .voice-seat__label {
+      color: var(--vox-amber);
+      border-color: var(--vox-rust);
+    }
+    .voice-seat--muted .voice-seat__label {
+      color: var(--vox-text-dim);
+    }
+
+    /* Seat decorative elements */
+    .voice-seat__seat {
+      position: absolute;
+      bottom: -16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: -1;
+    }
+    .voice-seat__seat img {
+      image-rendering: pixelated;
+    }
+
+    /* Posiciones escalonadas — NO grid uniforme */
+    /* Layout: 6 asientos alrededor de la fogata */
+    .seat-1 { left: 8%;  bottom: 32%; transform: scale(0.85); }   /* lejano izq */
+    .seat-2 { left: 24%; bottom: 18%; }                              /* primer plano izq */
+    .seat-3 { right: 30%; bottom: 38%; transform: scale(0.9); }   /* lejano centro-der */
+    .seat-4 { right: 8%;  bottom: 28%; transform: scale(0.85); }   /* lejano der */
+    .seat-5 { left: 42%; bottom: 12%; transform: scale(1.05); }   /* primer plano centro */
+    .seat-6 { right: 18%; bottom: 10%; transform: scale(1.1); }   /* primer plano der */
+
+    /* Background torches */
+    .bg-torch {
+      position: absolute;
+      width: 24px;
+      height: 48px;
+      z-index: 2;
+    }
+    .bg-torch--1 { left: 6%; top: 20%; }
+    .bg-torch--2 { right: 6%; top: 22%; }
+    .bg-torch img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      animation: vox-breath 1800ms steps(3) infinite;
+    }
+
+    /* === Scene overlay HUD === */
+    .scene-hud {
+      position: absolute;
+      top: var(--vox-s-6);
+      left: var(--vox-s-6);
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-3);
+      z-index: 20;
+    }
+    .scene-hud__title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-xl);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+      line-height: 1;
+      text-shadow: 2px 2px 0 var(--vox-bg-deep);
+    }
+    .scene-hud__subtitle {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+    }
+
+    /* === Scene info panel (right side overlay) === */
+    .scene-roster {
+      position: absolute;
+      top: var(--vox-s-6);
+      right: var(--vox-s-6);
+      width: 240px;
+      background: rgba(20, 26, 40, 0.92);
+      border: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-5);
+      z-index: 20;
+      backdrop-filter: blur(4px);
+    }
+    .scene-roster__title {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      margin-bottom: var(--vox-s-4);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .scene-roster__list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-3);
+    }
+    .roster-item {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+    }
+    .roster-item__bust {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+    .roster-item__bust img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .roster-item__name {
+      flex: 1;
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .roster-item__state {
+      width: 8px;
+      height: 8px;
+      flex-shrink: 0;
+    }
+    .roster-item__state--talking { background: var(--vox-amber); animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite; }
+    .roster-item__state--muted   { background: var(--vox-text-mute); }
+    .roster-item__state--idle    { background: var(--vox-bronze-hi); }
+    .roster-item__role {
+      font-family: var(--vox-font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bronze-hi);
+    }
+
+    /* === Voice controls bar (bottom) === */
+    .voice-controls {
+      background: var(--vox-bg-deep);
+      border-top: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-4) var(--vox-s-6);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      flex-shrink: 0;
+      z-index: 30;
+    }
+    .voice-controls__info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 200px;
+    }
+    .voice-controls__channel {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+    }
+    .voice-controls__detail {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-dim);
+    }
+    .voice-controls__divider {
+      width: 1px;
+      height: 32px;
+      background: var(--vox-border-dim);
+    }
+    .voice-controls__buttons {
+      display: flex;
+      gap: var(--vox-s-2);
+    }
+    .voice-ctrl-btn {
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--vox-card);
+      border: 2px solid var(--vox-border);
+      cursor: pointer;
+      position: relative;
+      transition: none;
+    }
+    .voice-ctrl-btn:hover {
+      background: var(--vox-card-hi);
+      border-color: var(--vox-border-hi);
+    }
+    .voice-ctrl-btn--active {
+      background: var(--vox-rust);
+      border-color: var(--vox-amber);
+    }
+    .voice-ctrl-btn--danger {
+      background: var(--vox-rust);
+      border-color: var(--vox-amber);
+    }
+    .voice-ctrl-btn--danger:hover {
+      background: var(--vox-amber);
+    }
+    .voice-ctrl-btn img {
+      width: 20px;
+      height: 20px;
+      image-rendering: pixelated;
+    }
+    .voice-ctrl-btn__label {
+      position: absolute;
+      bottom: -16px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--vox-font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      white-space: nowrap;
+    }
+
+    .voice-controls__right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+    }
+    .voice-meter {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+      height: 20px;
+    }
+    .voice-meter__bar {
+      width: 3px;
+      background: var(--vox-border);
+    }
+    .voice-meter__bar--on {
+      background: var(--vox-amber);
+    }
+    .voice-meter__bar--1 { height: 6px; }
+    .voice-meter__bar--2 { height: 10px; }
+    .voice-meter__bar--3 { height: 14px; }
+    .voice-meter__bar--4 { height: 18px; }
+    .voice-meter__bar--5 { height: 20px; }
+
+    /* === Mockup meta === */
+    .mockup-meta {
+      position: fixed;
+      top: var(--vox-s-3);
+      right: var(--vox-s-5);
+      z-index: 9999;
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+    .mockup-meta__tag {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-rust);
+      padding: 4px 8px;
+    }
+    .mockup-meta__back {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text);
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+      padding: 4px 10px;
+      text-decoration: none;
+    }
+    .mockup-meta__back:hover {
+      border-color: var(--vox-amber);
+      color: var(--vox-amber);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="mockup-meta">
+    <span class="mockup-meta__tag">02 · FOGATA — VOICE CHANNEL</span>
+    <a href="../index.html" class="mockup-meta__back">← INDEX</a>
+  </div>
+
+  <div class="vox-shell">
+
+    <!-- ====== COLUMNA 1: CLANES ====== -->
+    <aside class="clan-rail">
+      <div class="clan-rail__home">V</div>
+      <div class="clan-rail__divider"></div>
+      <div class="clan-rail__list">
+        <div class="clan-pill clan-pill--active">A</div>
+        <div class="clan-pill">M<span class="clan-pill__notif">3</span></div>
+        <div class="clan-pill">R</div>
+        <div class="clan-pill">F<span class="clan-pill__notif">12</span></div>
+        <div class="clan-pill">S</div>
+        <div class="clan-pill">V</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="clan-pill__add">+</div>
+    </aside>
+
+    <!-- ====== COLUMNA 2: SALONES ====== -->
+    <aside class="channel-panel">
+      <header class="channel-panel__header">
+        <div class="channel-panel__clan-name">Askrinn</div>
+        <div class="channel-panel__clan-tag">Clan · 47 miembros</div>
+      </header>
+      <div class="channel-panel__body">
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label">
+              <span class="channel-group__chevron"></span>
+              Info
+            </span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item"><img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon"><span class="channel-item__name">anuncios</span></li>
+            <li class="channel-item"><img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon"><span class="channel-item__name">reglas</span></li>
+          </ul>
+        </div>
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label">
+              <span class="channel-group__chevron"></span>
+              Texto
+            </span>
+            <span class="channel-group__add">+</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item"><img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon"><span class="channel-item__name">general</span></li>
+            <li class="channel-item"><img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon"><span class="channel-item__name">off-topic</span><span class="channel-item__badge">5</span></li>
+            <li class="channel-item"><img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon"><span class="channel-item__name">raids-coord</span></li>
+          </ul>
+        </div>
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label">
+              <span class="channel-group__chevron"></span>
+              Voz
+            </span>
+            <span class="channel-group__add">+</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item channel-item--active">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">fogata-del-consejo</span>
+              <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-amber);">6/12</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">taller-de-herrería</span>
+              <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-text-dim);">2/4</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">afk · sala-de-descanso</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <footer class="user-footer">
+        <div class="user-footer__bust">
+          <img src="../assets/sprites/characters/bust_talking.png" alt="">
+        </div>
+        <div class="user-footer__info">
+          <div class="user-footer__name">Rúnvardr</div>
+          <div class="user-footer__tag">#0471 · ASCENDIDO</div>
+        </div>
+        <div class="user-footer__controls">
+          <button class="ctrl-btn ctrl-btn--active"><img src="../assets/sprites/ui/icon_mic_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_video_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- ====== COLUMNA 3: SCENE ====== -->
+    <main class="scene-area">
+
+      <header class="scene-header">
+        <div class="scene-header__title">
+          <img src="../assets/sprites/ui/icon_speaker.png" class="scene-header__icon">
+          <span class="scene-header__name">fogata-del-consejo</span>
+          <span class="scene-header__meta">· 6 alrededor · 12 max</span>
+        </div>
+        <div class="scene-header__actions">
+          <div class="view-toggle">
+            <button class="view-toggle__btn view-toggle__btn--active">FOGATA</button>
+            <button class="view-toggle__btn">LISTA</button>
+          </div>
+          <span class="tag tag--amber">● CONECTADO</span>
+        </div>
+      </header>
+
+      <!-- La escena pixel art -->
+      <div class="scene">
+        <div class="scene__stars"></div>
+        <div class="scene__silhouette"></div>
+        <div class="scene__ground"></div>
+
+        <!-- Background torches -->
+        <div class="bg-torch bg-torch--1"><img src="../assets/sprites/ui/torch.png" alt=""></div>
+        <div class="bg-torch bg-torch--2"><img src="../assets/sprites/ui/torch.png" alt=""></div>
+
+        <!-- HUD superior izq -->
+        <div class="scene-hud">
+          <div class="scene-hud__title">El Consejo</div>
+          <div class="scene-hud__subtitle">SESIÓN ABIERTA · 47 MIN</div>
+        </div>
+
+        <!-- Roster panel superior derecho -->
+        <div class="scene-roster">
+          <div class="scene-roster__title">
+            <span style="width:6px; height:6px; background:var(--vox-amber);"></span>
+            En la fogata · 6
+          </div>
+          <ul class="scene-roster__list">
+            <li class="roster-item">
+              <div class="roster-item__bust"><img src="../assets/sprites/characters/bust_talking.png" alt=""></div>
+              <div style="flex:1; min-width:0;">
+                <div class="roster-item__name">Hjornvard</div>
+                <div class="roster-item__role">JARL</div>
+              </div>
+              <span class="roster-item__state roster-item__state--talking"></span>
+            </li>
+            <li class="roster-item">
+              <div class="roster-item__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+              <div style="flex:1; min-width:0;">
+                <div class="roster-item__name">Skadi_v2</div>
+                <div class="roster-item__role">CAZADORA</div>
+              </div>
+              <span class="roster-item__state roster-item__state--idle"></span>
+            </li>
+            <li class="roster-item">
+              <div class="roster-item__bust"><img src="../assets/sprites/characters/bust_muted_arms.png" alt=""></div>
+              <div style="flex:1; min-width:0;">
+                <div class="roster-item__name">Brenna_RK</div>
+                <div class="roster-item__role">SKALD</div>
+              </div>
+              <span class="roster-item__state roster-item__state--muted"></span>
+            </li>
+            <li class="roster-item">
+              <div class="roster-item__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+              <div style="flex:1; min-width:0;">
+                <div class="roster-item__name">Thrain</div>
+                <div class="roster-item__role">HERRERO</div>
+              </div>
+              <span class="roster-item__state roster-item__state--idle"></span>
+            </li>
+            <li class="roster-item">
+              <div class="roster-item__bust"><img src="../assets/sprites/characters/bust_muted_mouth.png" alt=""></div>
+              <div style="flex:1; min-width:0;">
+                <div class="roster-item__name">Ylva</div>
+                <div class="roster-item__role">VÖLVA</div>
+              </div>
+              <span class="roster-item__state roster-item__state--muted"></span>
+            </li>
+            <li class="roster-item">
+              <div class="roster-item__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+              <div style="flex:1; min-width:0;">
+                <div class="roster-item__name">Otrak</div>
+                <div class="roster-item__role">BERSERKER</div>
+              </div>
+              <span class="roster-item__state roster-item__state--idle"></span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Campfire centerpiece -->
+        <div class="campfire">
+          <div class="campfire__glow"></div>
+          <div class="campfire__sprite">
+            <img src="../assets/sprites/campfire/frame_0.png" alt="">
+            <img src="../assets/sprites/campfire/frame_1.png" alt="">
+            <img src="../assets/sprites/campfire/frame_2.png" alt="">
+            <img src="../assets/sprites/campfire/frame_3.png" alt="">
+          </div>
+          <div class="campfire-embers">
+            <span class="ember"></span>
+            <span class="ember"></span>
+            <span class="ember"></span>
+            <span class="ember"></span>
+            <span class="ember"></span>
+          </div>
+        </div>
+
+        <!-- Voice seats — posiciones orgánicas -->
+        <!-- Seat 1: Hjornvard (talking) -->
+        <div class="voice-seat voice-seat--talking seat-1">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/talking.png" alt="Hjornvard hablando">
+          </div>
+          <span class="voice-seat__label">Hjornvard</span>
+        </div>
+
+        <!-- Seat 2: Skadi (idle) -->
+        <div class="voice-seat voice-seat--idle seat-2">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/idle.png" alt="Skadi">
+          </div>
+          <span class="voice-seat__label">Skadi_v2</span>
+        </div>
+
+        <!-- Seat 3: Brenna (muted, arms crossed) -->
+        <div class="voice-seat voice-seat--muted seat-3">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/muted_arms.png" alt="Brenna muteada">
+          </div>
+          <span class="voice-seat__label">Brenna_RK</span>
+        </div>
+
+        <!-- Seat 4: Thrain (idle) -->
+        <div class="voice-seat voice-seat--idle seat-4">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/idle.png" alt="Thrain">
+          </div>
+          <span class="voice-seat__label">Thrain</span>
+        </div>
+
+        <!-- Seat 5: Ylva (muted, hand over mouth) -->
+        <div class="voice-seat voice-seat--muted seat-5">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/muted_mouth.png" alt="Ylva muteada">
+          </div>
+          <span class="voice-seat__label">Ylva</span>
+        </div>
+
+        <!-- Seat 6: Otrak (idle) -->
+        <div class="voice-seat voice-seat--idle seat-6">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/idle.png" alt="Otrak">
+          </div>
+          <span class="voice-seat__label">Otrak</span>
+        </div>
+
+        <div class="scene__vignette"></div>
+        <div class="scene__grain"></div>
+      </div>
+
+      <!-- Voice controls -->
+      <footer class="voice-controls">
+        <div class="voice-controls__info">
+          <span class="voice-controls__channel">FOGATA-DEL-CONSEJO · 6/12</span>
+          <span class="voice-controls__detail">VOZ ACTIVA · 47:23 ·Región Boreal · 24ms</span>
+        </div>
+        <div class="voice-controls__divider"></div>
+        <div class="voice-controls__buttons">
+          <button class="voice-ctrl-btn voice-ctrl-btn--active" title="Micrófono activo">
+            <img src="../assets/sprites/ui/icon_mic_on.png" alt="">
+            <span class="voice-ctrl-btn__label">MIC</span>
+          </button>
+          <button class="voice-ctrl-btn" title="Audífonos">
+            <img src="../assets/sprites/ui/icon_headset.png" alt="">
+            <span class="voice-ctrl-btn__label">SOUND</span>
+          </button>
+          <button class="voice-ctrl-btn" title="Compartir cámara">
+            <img src="../assets/sprites/ui/icon_video_on.png" alt="">
+            <span class="voice-ctrl-btn__label">CAM</span>
+          </button>
+          <button class="voice-ctrl-btn" title="Compartir pantalla">
+            <img src="../assets/sprites/ui/icon_speaker.png" alt="">
+            <span class="voice-ctrl-btn__label">SCREEN</span>
+          </button>
+          <button class="voice-ctrl-btn voice-ctrl-btn--danger" title="Desconectar">
+            <img src="../assets/sprites/ui/icon_mic_off.png" alt="">
+            <span class="voice-ctrl-btn__label">LEAVE</span>
+          </button>
+        </div>
+        <div class="voice-controls__right">
+          <div class="voice-meter">
+            <span class="voice-meter__bar voice-meter__bar--1 voice-meter__bar--on"></span>
+            <span class="voice-meter__bar voice-meter__bar--2 voice-meter__bar--on"></span>
+            <span class="voice-meter__bar voice-meter__bar--3 voice-meter__bar--on"></span>
+            <span class="voice-meter__bar voice-meter__bar--4"></span>
+            <span class="voice-meter__bar voice-meter__bar--5"></span>
+          </div>
+          <span class="tag tag--amber">HABLANDO</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+</body>
+</html>

@@ -87,3 +87,71 @@ Errors: `{error: string}` with 4xx/5xx status. Validation errors use `422`.
 - `typing` indicators, presence, and peer state: DO memory only — never D1.
 - DO hibernates after every message (peer map persisted to `state.storage` key `peers`).
 - No app-level timers in the DO. Liveness = WS close events; a crashed tab is detected by the edge and surfaces as `peer-left` (may lag by the edge's TCP timeout).
+
+---
+
+## 6. Presence v2 (protocolo de presencia + chat real-time)
+
+**Status: contract** (implementado en Fase 3; spec detallada en
+`plans/backend-v2/protocol/presence-v2.md`). Complementa el v1 (que no cambia):
+un socket adicional por sesión, abierto al login, cerrado al logout.
+
+- URL: `wss://<worker>/api/presence?token=<jwt>` → `PresenceHubDO` (singleton
+  `"hub"`, ADR-003). El Worker resuelve servers/friends del usuario desde D1
+  (el cliente solo envía el token).
+- JSON text frames; tipos `PresenceClientMessage` / `PresenceServerMessage`
+  en `@lumen/protocol` (presence-v2).
+
+### Mensajes cliente → hub
+
+| type | fields | notas |
+|---|---|---|
+| `status` | `status` (online/idle/dnd) | broadcast a amigos |
+| `voice-join` | `channelId`, `serverId` | re-valida membership (R4); broadcast voice-update |
+| `voice-leave` | — | |
+| `chat` | `channelId`, `serverId`, `content`, `clientId`, `replyTo?`, `attachmentUrl?` | buffer durable + ACK + broadcast a suscritos; dedup por clientId |
+| `chat-edit` | `channelId`, `serverId`, `messageId`, `content`, `clientId` | author-only (ADR-0010); buffer o block (rewrite) |
+| `chat-delete` | `channelId`, `serverId`, `messageId`, `clientId` | idem |
+| `typing` | `channelId`, `serverId` | rate 3/5s, best-effort |
+| `subscribe`/`unsubscribe` | `channelId` | suscripción por attachment (tags inmutables post-accept, workerd#958) |
+| `reaction-toggle` | `channelId`, `serverId`, `messageId`, `emoji` | toggle + broadcast |
+| `dm-signal` | `to`, `kind` (offer/answer/ice), `sdp?`, `candidate?` | relay P2P para DataChannels (ADR-006) |
+| `ping` | — | `pong` |
+
+### Mensajes hub → cliente
+
+| type | fields |
+|---|---|
+| `ready` | `onlineFriends[]`, `servers[]` (onlineMembers + voiceChannels con peers) |
+| `friend-online`/`friend-offline`/`friend-status` | `userId`, … |
+| `member-online`/`member-offline` | `serverId`, `userId` |
+| `voice-update` | `serverId`, `channelId`, `peers[]` (occupancy sin entrar al canal) |
+| `typing` | `channelId`, `userId` |
+| `chat` | `channelId`, `message` (BufferedMessage) |
+| `chat-ack` | `clientId`, `messageId`, `createdAt` |
+| `chat-edit-ack`/`chat-delete-ack` | `clientId`, `messageId` |
+| `chat-edited`/`chat-deleted` | broadcast de invalidación |
+| `chat-error` | `clientId`, `code` |
+| `reaction` | `channelId`, `messageId`, `emoji`, `userId`, `added` |
+| `dm-offer`/`dm-answer`/`dm-ice` | `from`, … |
+| `pong` / `error` | — |
+
+### Persistencia (ADR-0004)
+
+Los mensajes se acumulan en el buffer del hub (`state.storage`, clave
+`buf:<channelId>`) y se flushean a `message_blocks` (50 por fila o alarm de
+5 min). El REST `GET /api/channels/:id/messages` es read-only: combina el
+block más reciente + el buffer pendiente, con paginación por cursor compuesto
+`before=<lastAt>,<id>` (1 read por página). **Todas las mutaciones de
+mensajes (send/edit/delete) van por el WS** (ADR-0010); el REST de escritura
+de mensajes fue eliminado en Fase 3.
+
+### REST (cambios sobre la tabla v1)
+
+- `POST /api/channels/:id/messages`, `PATCH/DELETE /api/messages/:id`:
+  **eliminados** (Fase 3) — usar el WS.
+- `GET /api/channels/:id/messages?before=<cursor>`: paginado (blocks + buffer).
+- `PUT /api/messages/:id/reactions/:emoji` (toggle) y
+  `GET /api/channels/:id/messages/reactions?messageIds=…` (agregado).
+- `PUT /api/uploads?filename=…` → `{url}` (R2 attachment, 25 MB).
+- `GET /api/presence`: WS upgrade (auth por token).

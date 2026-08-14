@@ -15,11 +15,23 @@ database_id = "15f21dc8-eada-45d9-b9df-2284c26554cf"
 migrations_dir = "migrations"
 
 [durable_objects]
-bindings = [{ name = "LUMEN_CHANNEL_DO", class_name = "LumenChannelDO" }]
+bindings = [
+  { name = "LUMEN_CHANNEL_DO", class_name = "LumenChannelDO" },
+  { name = "LUMEN_PRESENCE_DO", class_name = "PresenceHubDO" },
+]
+
+# Asset storage (avatars, server icons, attachments — Fase 4/6)
+[[r2_buckets]]
+binding = "LUMEN_R2"
+bucket_name = "lumen-assets"
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["LumenChannelDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PresenceHubDO"]
 
 [vars]
 APP_NAME = "lumen"

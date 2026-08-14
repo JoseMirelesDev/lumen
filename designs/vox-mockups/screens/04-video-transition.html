@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox · Transición a video</title>
+  <link rel="stylesheet" href="../assets/vox-tokens.css">
+  <style>
+    /* === SHARED SHELL === */
+    .vox-shell { display: grid; grid-template-columns: 76px 240px 1fr; height: 100vh; background: var(--vox-bg); }
+    .clan-rail { background: var(--vox-bg-deep); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; align-items: center; padding: var(--vox-s-5) 0; gap: var(--vox-s-4); overflow-y: auto; }
+    .clan-rail__home { width: 48px; height: 48px; background: var(--vox-rust); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center; font-family: var(--vox-font-title); font-weight: 900; font-size: 22px; color: var(--vox-text-hi); cursor: pointer; position: relative; }
+    .clan-rail__divider { width: 32px; height: 2px; background: var(--vox-border-dim); margin: var(--vox-s-1) 0; }
+    .clan-rail__list { display: flex; flex-direction: column; gap: var(--vox-s-3); width: 100%; align-items: center; }
+    .clan-pill { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); font-family: var(--vox-font-title); font-weight: 700; font-size: 18px; color: var(--vox-text); cursor: pointer; position: relative; transition: none; }
+    .clan-pill:hover { border-color: var(--vox-bronze-hi); background: var(--vox-card-hi); }
+    .clan-pill--active { border-color: var(--vox-amber); background: var(--vox-card-hi); }
+    .clan-pill--active::before { content: ''; position: absolute; left: -16px; top: 50%; transform: translateY(-50%); width: 4px; height: 32px; background: var(--vox-amber); }
+    .clan-pill__notif { position: absolute; bottom: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; background: var(--vox-rust); border: 2px solid var(--vox-bg-deep); color: var(--vox-text-hi); font-family: var(--vox-font-mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .clan-pill__add { width: 48px; height: 48px; background: transparent; border: 2px dashed var(--vox-border); color: var(--vox-text-dim); font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+    .channel-panel { background: var(--vox-surface); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; overflow: hidden; }
+    .channel-panel__header { padding: var(--vox-s-6) var(--vox-s-6) var(--vox-s-5); border-bottom: 1px solid var(--vox-border-dim); }
+    .channel-panel__clan-name { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-lg); color: var(--vox-text-hi); }
+    .channel-panel__clan-tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-bronze-hi); margin-top: var(--vox-s-2); }
+    .channel-panel__body { flex: 1; overflow-y: auto; padding: var(--vox-s-4) 0; }
+    .channel-group { margin-bottom: var(--vox-s-5); }
+    .channel-group__header { display: flex; align-items: center; justify-content: space-between; padding: var(--vox-s-3) var(--vox-s-6); cursor: pointer; }
+    .channel-group__label { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); display: flex; align-items: center; gap: var(--vox-s-2); }
+    .channel-group__chevron { width: 8px; height: 8px; border-right: 2px solid var(--vox-text-dim); border-bottom: 2px solid var(--vox-text-dim); transform: rotate(-45deg); display: inline-block; }
+    .channel-list { list-style: none; }
+    .channel-item { display: flex; align-items: center; gap: var(--vox-s-4); padding: var(--vox-s-2) var(--vox-s-6); font-family: var(--vox-font-mono); font-size: var(--vox-text-sm); color: var(--vox-text-dim); border-left: 2px solid transparent; cursor: pointer; transition: none; position: relative; }
+    .channel-item:hover { color: var(--vox-text); background: var(--vox-bg); }
+    .channel-item--active { color: var(--vox-text-hi); background: var(--vox-card); border-left-color: var(--vox-amber); }
+    .channel-item__icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
+    .channel-item--active .channel-item__icon { opacity: 1; }
+    .channel-item__name { flex: 1; }
+
+    .user-footer { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-5); display: flex; align-items: center; gap: var(--vox-s-4); }
+    .user-footer__bust { width: 32px; height: 32px; flex-shrink: 0; position: relative; }
+    .user-footer__bust img { width: 100%; height: 100%; }
+    .user-footer__bust::after { content: ''; position: absolute; bottom: -2px; right: -2px; width: 10px; height: 10px; background: var(--vox-online); border: 2px solid var(--vox-bg-deep); }
+    .user-footer__info { flex: 1; min-width: 0; }
+    .user-footer__name { font-family: var(--vox-font-body); font-weight: var(--vox-fw-semi); font-size: var(--vox-text-sm); color: var(--vox-text-hi); }
+    .user-footer__tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); }
+    .user-footer__controls { display: flex; gap: var(--vox-s-2); }
+    .ctrl-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; cursor: pointer; transition: none; }
+    .ctrl-btn:hover { background: var(--vox-card); border-color: var(--vox-border); }
+    .ctrl-btn img { width: 16px; height: 16px; }
+    .ctrl-btn--active { background: var(--vox-card); border-color: var(--vox-border); }
+
+    /* === SCENE AREA === */
+    .scene-area { display: flex; flex-direction: column; overflow: hidden; position: relative; background: var(--vox-bg); }
+    .scene-header { height: 48px; padding: 0 var(--vox-s-6); border-bottom: 1px solid var(--vox-border-dim); display: flex; align-items: center; gap: var(--vox-s-5); background: var(--vox-bg-deep); flex-shrink: 0; z-index: 10; }
+    .scene-header__title { display: flex; align-items: center; gap: var(--vox-s-4); }
+    .scene-header__icon { width: 18px; height: 18px; }
+    .scene-header__name { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-md); color: var(--vox-text-hi); }
+    .scene-header__meta { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); }
+    .scene-header__actions { margin-left: auto; display: flex; gap: var(--vox-s-3); align-items: center; }
+    .view-toggle { display: flex; background: var(--vox-card); border: 1px solid var(--vox-border); }
+    .view-toggle__btn { padding: var(--vox-s-2) var(--vox-s-4); font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); background: transparent; border: none; cursor: pointer; }
+    .view-toggle__btn--active { background: var(--vox-rust); color: var(--vox-text-hi); }
+
+    /* === SCENE === */
+    .scene {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(ellipse 80% 60% at 50% 75%, rgba(224, 106, 62, 0.15) 0%, transparent 50%),
+        radial-gradient(ellipse 100% 100% at 50% 30%, var(--vox-indigo) 0%, var(--vox-bg) 60%, var(--vox-bg-deep) 100%);
+    }
+    .scene__stars { position: absolute; inset: 0; background-image: radial-gradient(1px 1px at 20% 10%, var(--vox-text) 50%, transparent), radial-gradient(1px 1px at 35% 25%, var(--vox-text-dim) 50%, transparent), radial-gradient(1px 1px at 70% 8%, var(--vox-text) 50%, transparent), radial-gradient(1px 1px at 80% 30%, var(--vox-text-dim) 50%, transparent), radial-gradient(1px 1px at 15% 35%, var(--vox-text-dim) 50%, transparent), radial-gradient(1px 1px at 55% 15%, var(--vox-text) 50%, transparent); opacity: 0.5; }
+    .scene__silhouette { position: absolute; bottom: 30%; left: 0; right: 0; height: 80px; background: linear-gradient(135deg, transparent 49%, var(--vox-bg-deep) 50%) 0 0 / 120px 80px, linear-gradient(45deg, transparent 49%, var(--vox-bg-deep) 50%) 60px 0 / 120px 80px; opacity: 0.7; }
+    .scene__ground { position: absolute; bottom: 0; left: 0; right: 0; height: 50%; background: linear-gradient(180deg, transparent 0%, rgba(12, 17, 28, 0.6) 60%, var(--vox-bg-deep) 100%); }
+    .scene__vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 50%, transparent 30%, rgba(7, 10, 18, 0.7) 100%); pointer-events: none; z-index: 40; }
+    .scene__grain { position: absolute; inset: 0; background-image: repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(255, 255, 255, 0.01) 2px, rgba(255, 255, 255, 0.01) 4px); pointer-events: none; z-index: 50; }
+
+    /* === Campfire === */
+    .campfire { position: absolute; left: 50%; bottom: 30%; transform: translateX(-50%); width: 128px; height: 96px; z-index: 5; }
+    .campfire__glow { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); width: 400px; height: 300px; background: radial-gradient(ellipse, rgba(224, 106, 62, 0.4) 0%, rgba(180, 67, 46, 0.15) 30%, transparent 70%); pointer-events: none; animation: vox-glow-pulse 2.4s steps(4) infinite; z-index: -1; }
+    @keyframes vox-glow-pulse { 0%, 100% { opacity: 0.7; transform: translate(-50%, -50%) scale(1); } 25% { opacity: 0.9; transform: translate(-50%, -50%) scale(1.05); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.08); } 75% { opacity: 0.8; transform: translate(-50%, -50%) scale(1.02); } }
+    .campfire__sprite { position: relative; width: 128px; height: 96px; }
+    .campfire__sprite img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .campfire__sprite img:nth-child(1) { animation: vox-campfire var(--vox-fire-frame) steps(1, end) infinite; }
+    .campfire__sprite img:nth-child(2) { animation: vox-campfire-2 var(--vox-fire-frame) steps(1, end) infinite; }
+    .campfire__sprite img:nth-child(3) { animation: vox-campfire-3 var(--vox-fire-frame) steps(1, end) infinite; }
+    .campfire__sprite img:nth-child(4) { animation: vox-campfire-4 var(--vox-fire-frame) steps(1, end) infinite; }
+
+    .campfire-embers { position: absolute; left: 50%; top: 30%; transform: translateX(-50%); width: 80px; height: 100px; pointer-events: none; }
+    .ember { position: absolute; width: 4px; height: 4px; background: var(--vox-amber-hi); bottom: 0; animation: vox-ember-rise 1.6s steps(8) infinite; }
+    .ember:nth-child(1) { left: 20%; animation-delay: 0s; --drift: -4px; }
+    .ember:nth-child(2) { left: 50%; animation-delay: 0.4s; --drift: 2px; }
+    .ember:nth-child(3) { left: 70%; animation-delay: 0.8s; --drift: 6px; }
+    .ember:nth-child(4) { left: 30%; animation-delay: 1.2s; --drift: -2px; }
+    .ember:nth-child(5) { left: 60%; animation-delay: 0.2s; --drift: 4px; }
+
+    /* === Voice seat (sprite) === */
+    .voice-seat { position: absolute; display: flex; flex-direction: column; align-items: center; gap: var(--vox-s-1); z-index: 3; }
+    .voice-seat__sprite { position: relative; width: 96px; height: 128px; animation: vox-breath var(--vox-breath) steps(6) infinite; }
+    .voice-seat__sprite img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .voice-seat--talking .voice-seat__sprite::after { content: ''; position: absolute; inset: -2px; border: 2px solid var(--vox-amber); pointer-events: none; animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite; }
+    .voice-seat--muted .voice-seat__sprite { filter: brightness(0.7) saturate(0.6); }
+    .voice-seat__label { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-hi); background: var(--vox-bg-deep); border: 1px solid var(--vox-border-dim); padding: 2px var(--vox-s-3); white-space: nowrap; }
+    .voice-seat--talking .voice-seat__label { color: var(--vox-amber); border-color: var(--vox-rust); }
+    .voice-seat--muted .voice-seat__label { color: var(--vox-text-dim); }
+
+    /* === VIDEO TILE ===
+       Mantiene la posición del asiento pero cambia el contenido.
+       Marco pixel-art con esquinas duras + ticks de esquina tipo HUD.
+       El borde refleja el estado (igual que sprites). */
+    .video-tile {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--vox-s-1);
+      z-index: 4;
+    }
+    .video-tile__frame {
+      position: relative;
+      width: 128px;
+      height: 128px;
+      background: var(--vox-bg-deep);
+      border: 3px solid var(--vox-bronze);
+      /* Esquinas duras — anti-Discord */
+      overflow: hidden;
+    }
+    .video-tile__video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      image-rendering: pixelated;
+      filter: contrast(1.1) saturate(0.85) brightness(0.95);
+      /* Leve tint para integrar con la escena */
+    }
+    /* Corner ticks — marcadores HUD de juego */
+    .video-tile__frame::before,
+    .video-tile__frame::after {
+      content: '';
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      border: 2px solid var(--vox-text-hi);
+      z-index: 5;
+    }
+    .video-tile__frame::before {
+      top: 2px;
+      left: 2px;
+      border-right: none;
+      border-bottom: none;
+    }
+    .video-tile__frame::after {
+      bottom: 2px;
+      right: 2px;
+      border-left: none;
+      border-top: none;
+    }
+    /* Variant talking — borde ámbar pulsante (mismo lenguaje que sprites) */
+    .video-tile--talking .video-tile__frame {
+      border-color: var(--vox-amber);
+      animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    .video-tile--talking .video-tile__frame::before,
+    .video-tile--talking .video-tile__frame::after {
+      border-color: var(--vox-amber-hi);
+    }
+    /* Variant muted — sin video real, vuelve a sprite */
+    .video-tile--muted .video-tile__frame {
+      border-color: var(--vox-bronze-dim);
+      filter: brightness(0.7) saturate(0.6);
+    }
+    /* Label igual que voice-seat para coherencia */
+    .video-tile__label {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-hi);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-border-dim);
+      padding: 2px var(--vox-s-3);
+      white-space: nowrap;
+    }
+    .video-tile--talking .video-tile__label {
+      color: var(--vox-amber);
+      border-color: var(--vox-rust);
+    }
+    /* Badge "CÁMARA" */
+    .video-tile__badge {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      font-family: var(--vox-font-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bg-deep);
+      background: var(--vox-teal-hi);
+      padding: 1px 4px;
+      z-index: 6;
+    }
+    .video-tile--talking .video-tile__badge {
+      background: var(--vox-amber);
+    }
+
+    /* === Transition overlay (sprite → video) ===
+       Animación que simula la transición:
+       1. Sprite se "pixela" (efecto glitch)
+       2. Aparece el marco
+       3. Se carga el video */
+    .transition-tile {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--vox-s-1);
+      z-index: 5;
+    }
+    .transition-tile__frame {
+      position: relative;
+      width: 128px;
+      height: 128px;
+      border: 3px solid var(--vox-teal-hi);
+      overflow: hidden;
+      background: var(--vox-bg-deep);
+    }
+    .transition-tile__frame::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        repeating-linear-gradient(
+          0deg,
+          transparent 0,
+          transparent 4px,
+          rgba(90, 160, 170, 0.3) 4px,
+          rgba(90, 160, 170, 0.3) 5px
+        ),
+        repeating-linear-gradient(
+          90deg,
+          transparent 0,
+          transparent 4px,
+          rgba(90, 160, 170, 0.2) 4px,
+          rgba(90, 160, 170, 0.2) 5px
+        );
+      animation: vox-glitch 600ms steps(6) infinite;
+    }
+    @keyframes vox-glitch {
+      0%   { transform: translate(0, 0); opacity: 0.6; }
+      16%  { transform: translate(-2px, 1px); opacity: 0.9; }
+      33%  { transform: translate(2px, -1px); opacity: 0.5; }
+      50%  { transform: translate(-1px, -2px); opacity: 0.8; }
+      66%  { transform: translate(1px, 2px); opacity: 0.6; }
+      83%  { transform: translate(-2px, 0); opacity: 0.9; }
+      100% { transform: translate(0, 0); opacity: 0.7; }
+    }
+    .transition-tile__sprite {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 96px;
+      height: 128px;
+      opacity: 0.4;
+      filter: contrast(2) hue-rotate(180deg);
+    }
+    .transition-tile__sprite img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .transition-tile__label {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-teal-hi);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-teal);
+      padding: 2px var(--vox-s-3);
+      white-space: nowrap;
+    }
+    .transition-tile__progress {
+      position: absolute;
+      bottom: 4px;
+      left: 4px;
+      right: 4px;
+      height: 2px;
+      background: var(--vox-bg);
+      overflow: hidden;
+    }
+    .transition-tile__progress::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 65%;
+      height: 100%;
+      background: var(--vox-teal-hi);
+    }
+
+    /* Posiciones (mismas que mockup 02) */
+    .seat-1 { left: 8%;  bottom: 32%; transform: scale(0.85); }
+    .seat-2 { left: 24%; bottom: 18%; }
+    .seat-3 { right: 30%; bottom: 38%; transform: scale(0.9); }
+    .seat-4 { right: 8%;  bottom: 28%; transform: scale(0.85); }
+    .seat-5 { left: 42%; bottom: 12%; transform: scale(1.05); }
+    .seat-6 { right: 18%; bottom: 10%; transform: scale(1.1); }
+
+    .bg-torch { position: absolute; width: 24px; height: 48px; z-index: 2; }
+    .bg-torch--1 { left: 6%; top: 20%; }
+    .bg-torch--2 { right: 6%; top: 22%; }
+    .bg-torch img { width: 100%; height: 100%; image-rendering: pixelated; animation: vox-breath 1800ms steps(3) infinite; }
+
+    .scene-hud { position: absolute; top: var(--vox-s-6); left: var(--vox-s-6); display: flex; flex-direction: column; gap: var(--vox-s-3); z-index: 20; }
+    .scene-hud__title { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-xl); color: var(--vox-text-hi); letter-spacing: var(--vox-ls-tight); line-height: 1; text-shadow: 2px 2px 0 var(--vox-bg-deep); }
+    .scene-hud__subtitle { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); }
+
+    /* === Transition info panel === */
+    .video-info {
+      position: absolute;
+      top: var(--vox-s-6);
+      right: var(--vox-s-6);
+      width: 260px;
+      background: rgba(20, 26, 40, 0.92);
+      border: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-5);
+      z-index: 20;
+      backdrop-filter: blur(4px);
+    }
+    .video-info__title {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      margin-bottom: var(--vox-s-4);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .video-info__legend {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-3);
+    }
+    .video-info__legend-item {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      font-family: var(--vox-font-body);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-dim);
+    }
+    .video-info__legend-sample {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      border: 2px solid;
+      position: relative;
+    }
+    .video-info__legend-sample--sprite {
+      border-color: var(--vox-border);
+      background: var(--vox-bg-deep);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .video-info__legend-sample--sprite img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .video-info__legend-sample--video {
+      border-color: var(--vox-bronze);
+      background: linear-gradient(135deg, var(--vox-bg-deep), var(--vox-card));
+    }
+    .video-info__legend-sample--video::before,
+    .video-info__legend-sample--video::after {
+      content: '';
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      border: 1px solid var(--vox-text-hi);
+    }
+    .video-info__legend-sample--video::before { top: 1px; left: 1px; border-right: none; border-bottom: none; }
+    .video-info__legend-sample--video::after { bottom: 1px; right: 1px; border-left: none; border-top: none; }
+    .video-info__legend-sample--talking {
+      border-color: var(--vox-amber);
+      animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    .video-info__legend-sample--transition {
+      border-color: var(--vox-teal-hi);
+      background:
+        repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(90, 160, 170, 0.3) 2px, rgba(90, 160, 170, 0.3) 3px);
+    }
+    .video-info__legend-text { flex: 1; }
+    .video-info__legend-name {
+      color: var(--vox-text);
+      font-weight: var(--vox-fw-med);
+    }
+    .video-info__legend-detail {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      color: var(--vox-text-dim);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+    }
+
+    /* Voice controls */
+    .voice-controls { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-6); display: flex; align-items: center; gap: var(--vox-s-5); flex-shrink: 0; z-index: 30; }
+    .voice-controls__info { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+    .voice-controls__channel { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); }
+    .voice-controls__detail { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); }
+    .voice-controls__divider { width: 1px; height: 32px; background: var(--vox-border-dim); }
+    .voice-controls__buttons { display: flex; gap: var(--vox-s-2); }
+    .voice-ctrl-btn { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); cursor: pointer; position: relative; }
+    .voice-ctrl-btn:hover { background: var(--vox-card-hi); border-color: var(--vox-border-hi); }
+    .voice-ctrl-btn--active { background: var(--vox-rust); border-color: var(--vox-amber); }
+    .voice-ctrl-btn--danger { background: var(--vox-rust); border-color: var(--vox-amber); }
+    .voice-ctrl-btn img { width: 20px; height: 20px; }
+    .voice-ctrl-btn__label { position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%); font-family: var(--vox-font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); white-space: nowrap; }
+    .voice-controls__right { margin-left: auto; display: flex; align-items: center; gap: var(--vox-s-4); }
+    .voice-meter { display: flex; gap: 2px; align-items: flex-end; height: 20px; }
+    .voice-meter__bar { width: 3px; background: var(--vox-border); }
+    .voice-meter__bar--on { background: var(--vox-amber); }
+    .voice-meter__bar--1 { height: 6px; } .voice-meter__bar--2 { height: 10px; } .voice-meter__bar--3 { height: 14px; } .voice-meter__bar--4 { height: 18px; } .voice-meter__bar--5 { height: 20px; }
+
+    .mockup-meta { position: fixed; top: var(--vox-s-3); right: var(--vox-s-5); z-index: 9999; display: flex; gap: var(--vox-s-3); align-items: center; }
+    .mockup-meta__tag { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); background: var(--vox-bg-deep); border: 1px solid var(--vox-rust); padding: 4px 8px; }
+    .mockup-meta__back { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text); background: var(--vox-card); border: 1px solid var(--vox-border); padding: 4px 10px; text-decoration: none; }
+    .mockup-meta__back:hover { border-color: var(--vox-amber); color: var(--vox-amber); }
+
+    /* Faux video content (since we don't have real webcam) */
+    .faux-video-1 {
+      background:
+        radial-gradient(ellipse at 50% 35%, var(--vox-bronze-hi) 0%, var(--vox-bronze) 25%, var(--vox-bg-deep) 60%),
+        linear-gradient(180deg, var(--vox-bg-deep) 0%, var(--vox-bg) 100%);
+    }
+    .faux-video-2 {
+      background:
+        radial-gradient(ellipse at 50% 40%, var(--vox-rust) 0%, var(--vox-bronze-dim) 25%, var(--vox-bg-deep) 60%),
+        linear-gradient(180deg, var(--vox-bg-deep) 0%, var(--vox-bg) 100%);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="mockup-meta">
+    <span class="mockup-meta__tag">04 · TRANSICIÓN SPRITE ↔ VIDEO</span>
+    <a href="../index.html" class="mockup-meta__back">← INDEX</a>
+  </div>
+
+  <div class="vox-shell">
+
+    <!-- ====== COLUMNA 1: CLANES ====== -->
+    <aside class="clan-rail">
+      <div class="clan-rail__home">V</div>
+      <div class="clan-rail__divider"></div>
+      <div class="clan-rail__list">
+        <div class="clan-pill clan-pill--active">A</div>
+        <div class="clan-pill">M<span class="clan-pill__notif">3</span></div>
+        <div class="clan-pill">R</div>
+        <div class="clan-pill">F<span class="clan-pill__notif">12</span></div>
+        <div class="clan-pill">S</div>
+        <div class="clan-pill">V</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="clan-pill__add">+</div>
+    </aside>
+
+    <!-- ====== COLUMNA 2: SALONES ====== -->
+    <aside class="channel-panel">
+      <header class="channel-panel__header">
+        <div class="channel-panel__clan-name">Askrinn</div>
+        <div class="channel-panel__clan-tag">Clan · 47 miembros</div>
+      </header>
+      <div class="channel-panel__body">
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label"><span class="channel-group__chevron"></span>Voz</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item channel-item--active">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">fogata-del-consejo</span>
+              <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-amber);">6/12</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">taller-de-herrería</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <footer class="user-footer">
+        <div class="user-footer__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+        <div class="user-footer__info">
+          <div class="user-footer__name">Rúnvardr</div>
+          <div class="user-footer__tag">#0471 · ASCENDIDO</div>
+        </div>
+        <div class="user-footer__controls">
+          <button class="ctrl-btn ctrl-btn--active"><img src="../assets/sprites/ui/icon_mic_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_video_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- ====== COLUMNA 3: SCENE ====== -->
+    <main class="scene-area">
+
+      <header class="scene-header">
+        <div class="scene-header__title">
+          <img src="../assets/sprites/ui/icon_speaker.png" class="scene-header__icon">
+          <span class="scene-header__name">fogata-del-consejo</span>
+          <span class="scene-header__meta">· 6 alrededor · 2 con cámara · 1 en transición</span>
+        </div>
+        <div class="scene-header__actions">
+          <div class="view-toggle">
+            <button class="view-toggle__btn view-toggle__btn--active">FOGATA</button>
+            <button class="view-toggle__btn">LISTA</button>
+          </div>
+          <span class="tag tag--amber">● CONECTADO</span>
+        </div>
+      </header>
+
+      <div class="scene">
+        <div class="scene__stars"></div>
+        <div class="scene__silhouette"></div>
+        <div class="scene__ground"></div>
+
+        <div class="bg-torch bg-torch--1"><img src="../assets/sprites/ui/torch.png" alt=""></div>
+        <div class="bg-torch bg-torch--2"><img src="../assets/sprites/ui/torch.png" alt=""></div>
+
+        <div class="scene-hud">
+          <div class="scene-hud__title">El Consejo</div>
+          <div class="scene-hud__subtitle">MODO MIXTO · 2 CÁMARAS · 1 CARGANDO</div>
+        </div>
+
+        <!-- Legend / info panel -->
+        <div class="video-info">
+          <div class="video-info__title">
+            <span style="width:6px; height:6px; background:var(--vox-teal-hi);"></span>
+            LEYENDA DE ASIENTOS
+          </div>
+          <ul class="video-info__legend">
+            <li class="video-info__legend-item">
+              <div class="video-info__legend-sample video-info__legend-sample--sprite">
+                <img src="../assets/sprites/characters/bust_idle.png" alt="">
+              </div>
+              <div class="video-info__legend-text">
+                <div class="video-info__legend-name">Sprite</div>
+                <div class="video-info__legend-detail">Sin cámara · default</div>
+              </div>
+            </li>
+            <li class="video-info__legend-item">
+              <div class="video-info__legend-sample video-info__legend-sample--video"></div>
+              <div class="video-info__legend-text">
+                <div class="video-info__legend-name">Video tile</div>
+                <div class="video-info__legend-detail">Marco bronce · esquinas duras</div>
+              </div>
+            </li>
+            <li class="video-info__legend-item">
+              <div class="video-info__legend-sample video-info__legend-sample--video video-info__legend-sample--talking"></div>
+              <div class="video-info__legend-text">
+                <div class="video-info__legend-name">Video + talking</div>
+                <div class="video-info__legend-detail">Mismo borde ámbar que sprites</div>
+              </div>
+            </li>
+            <li class="video-info__legend-item">
+              <div class="video-info__legend-sample video-info__legend-sample--transition"></div>
+              <div class="video-info__legend-text">
+                <div class="video-info__legend-name">En transición</div>
+                <div class="video-info__legend-detail">Sprite → video · ~600ms</div>
+              </div>
+            </li>
+          </ul>
+          <div style="margin-top: var(--vox-s-5); padding-top: var(--vox-s-4); border-top: 1px solid var(--vox-border-dim);">
+            <div style="font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); margin-bottom: var(--vox-s-2);">
+              Regla clave
+            </div>
+            <div style="font-family: var(--vox-font-body); font-size: var(--vox-text-xs); color: var(--vox-text); line-height: var(--vox-lh-snug);">
+              El asiento <strong style="color: var(--vox-amber);">no se mueve</strong> al activar cámara.
+              Solo cambia el contenido del tile.
+            </div>
+          </div>
+        </div>
+
+        <!-- Campfire -->
+        <div class="campfire">
+          <div class="campfire__glow"></div>
+          <div class="campfire__sprite">
+            <img src="../assets/sprites/campfire/frame_0.png" alt="">
+            <img src="../assets/sprites/campfire/frame_1.png" alt="">
+            <img src="../assets/sprites/campfire/frame_2.png" alt="">
+            <img src="../assets/sprites/campfire/frame_3.png" alt="">
+          </div>
+          <div class="campfire-embers">
+            <span class="ember"></span>
+            <span class="ember"></span>
+            <span class="ember"></span>
+            <span class="ember"></span>
+            <span class="ember"></span>
+          </div>
+        </div>
+
+        <!-- Seat 1: Hjornvard — VIDEO + TALKING -->
+        <div class="video-tile video-tile--talking seat-1">
+          <div class="video-tile__frame">
+            <div class="video-tile__video faux-video-1"></div>
+            <span class="video-tile__badge">CAM</span>
+          </div>
+          <span class="video-tile__label">Hjornvard</span>
+        </div>
+
+        <!-- Seat 2: Skadi — SPRITE idle (sin cámara) -->
+        <div class="voice-seat voice-seat--idle seat-2">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/idle.png" alt="Skadi">
+          </div>
+          <span class="voice-seat__label">Skadi_v2</span>
+        </div>
+
+        <!-- Seat 3: Brenna — SPRITE muted (arms crossed) -->
+        <div class="voice-seat voice-seat--muted seat-3">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/muted_arms.png" alt="Brenna muteada">
+          </div>
+          <span class="voice-seat__label">Brenna_RK</span>
+        </div>
+
+        <!-- Seat 4: Thrain — VIDEO sin talking -->
+        <div class="video-tile seat-4">
+          <div class="video-tile__frame">
+            <div class="video-tile__video faux-video-2"></div>
+            <span class="video-tile__badge">CAM</span>
+          </div>
+          <span class="video-tile__label">Thrain</span>
+        </div>
+
+        <!-- Seat 5: Ylva — EN TRANSICIÓN sprite → video -->
+        <div class="transition-tile seat-5">
+          <div class="transition-tile__frame">
+            <div class="transition-tile__sprite">
+              <img src="../assets/sprites/characters/idle.png" alt="">
+            </div>
+            <div class="transition-tile__progress"></div>
+          </div>
+          <span class="transition-tile__label">Ylva · CARGANDO CAM</span>
+        </div>
+
+        <!-- Seat 6: Otrak — SPRITE idle -->
+        <div class="voice-seat voice-seat--idle seat-6">
+          <div class="voice-seat__sprite">
+            <img src="../assets/sprites/characters/idle.png" alt="Otrak">
+          </div>
+          <span class="voice-seat__label">Otrak</span>
+        </div>
+
+        <div class="scene__vignette"></div>
+        <div class="scene__grain"></div>
+      </div>
+
+      <footer class="voice-controls">
+        <div class="voice-controls__info">
+          <span class="voice-controls__channel">FOGATA-DEL-CONSEJO · 6/12</span>
+          <span class="voice-controls__detail">VOZ + VIDEO · 47:23 · REGIÓN BOREAL · 24ms</span>
+        </div>
+        <div class="voice-controls__divider"></div>
+        <div class="voice-controls__buttons">
+          <button class="voice-ctrl-btn voice-ctrl-btn--active"><img src="../assets/sprites/ui/icon_mic_on.png"><span class="voice-ctrl-btn__label">MIC</span></button>
+          <button class="voice-ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"><span class="voice-ctrl-btn__label">SOUND</span></button>
+          <button class="voice-ctrl-btn voice-ctrl-btn--active"><img src="../assets/sprites/ui/icon_video_on.png"><span class="voice-ctrl-btn__label">CAM</span></button>
+          <button class="voice-ctrl-btn"><img src="../assets/sprites/ui/icon_speaker.png"><span class="voice-ctrl-btn__label">SCREEN</span></button>
+          <button class="voice-ctrl-btn voice-ctrl-btn--danger"><img src="../assets/sprites/ui/icon_mic_off.png"><span class="voice-ctrl-btn__label">LEAVE</span></button>
+        </div>
+        <div class="voice-controls__right">
+          <div class="voice-meter">
+            <span class="voice-meter__bar voice-meter__bar--1 voice-meter__bar--on"></span>
+            <span class="voice-meter__bar voice-meter__bar--2 voice-meter__bar--on"></span>
+            <span class="voice-meter__bar voice-meter__bar--3 voice-meter__bar--on"></span>
+            <span class="voice-meter__bar voice-meter__bar--4"></span>
+            <span class="voice-meter__bar voice-meter__bar--5"></span>
+          </div>
+          <span class="tag tag--amber">HABLANDO</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+</body>
+</html>

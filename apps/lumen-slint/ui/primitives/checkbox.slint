@@ -1,0 +1,74 @@
+// Lumen primitives — checkbox module.
+import { AppTheme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { IconGlyph } from "icon.slint";
+
+export component VoxCheckBox inherits Rectangle {
+    in property <string> text: "";
+    in-out property <bool> checked: false;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    height: 24px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: AppTheme.sp-2;
+        alignment: start;
+        cross-axis-alignment: center;
+
+        box := Rectangle {
+            width: 18px;
+            height: 18px;
+            background: root.checked ? AppTheme.colors.card-hi : AppTheme.colors.bg-deep;
+            border-width: 1px;
+            border-color: fs.has-focus ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border);
+            border-radius: AppTheme.radius-1;
+
+            // focus ring — ice, pixel style
+            Rectangle {
+                x: -2px; y: -2px;
+                width: parent.width + 4px; height: parent.height + 4px;
+                border-width: 2px;
+                border-color: AppTheme.colors.ice;
+                border-radius: AppTheme.radius-1;
+                visible: fs.has-focus;
+            }
+
+            if root.checked : IconGlyph {
+                glyph: Icons.check;
+                size: 14px;
+                text-color: AppTheme.colors.ice;
+            }
+        }
+
+        if root.text != "" : Text {
+            text: root.text;
+            font-family: AppTheme.font-mono;
+            font-size: AppTheme.font-xs;
+            color: root.enabled ? AppTheme.colors.text : AppTheme.colors.text-mute;
+            vertical-alignment: center;
+        }
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                root.checked = !root.checked;
+                root.toggled(root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}

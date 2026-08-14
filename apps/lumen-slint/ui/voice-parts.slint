@@ -1,0 +1,172 @@
+// Voice parts — callbar controls and the scene view toggle. Reusable by
+// the DM call UI and the voice channel screen.
+
+import { AppTheme } from "theme.slint";
+import { Icons } from "icons.slint";
+import { IconGlyph } from "primitives/icon.slint";
+
+// Call button — mock .voice-ctrl-btn: 44px square, 2px border, mono label
+// underneath. Active = bronze fill + bronze-dim border (muted/sound); danger = crimson fill + ice border (LEAVE).
+// ---------------------------------------------------------------------------
+export component CallBtn inherits VerticalLayout {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    spacing: AppTheme.sp-1;
+    btn-box := Rectangle {
+        width: 44px;
+        height: 44px;
+        background: !root.enabled
+            ? AppTheme.colors.card
+            : ta.pressed
+                ? (root.danger ? AppTheme.colors.crimson-hi : (root.active ? AppTheme.colors.bronze-hi : AppTheme.colors.card-hi))
+                : (root.danger ? AppTheme.colors.crimson : (root.active ? AppTheme.colors.bronze-hi : (ta.has-hover ? AppTheme.colors.card-hi : AppTheme.colors.card)));
+        border-width: 2px;
+        border-color: !root.enabled
+            ? AppTheme.colors.border-dim
+            : (root.danger ? AppTheme.colors.ice : (root.active ? AppTheme.colors.bronze-dim : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border)));
+
+        // focus ring
+        Rectangle {
+            x: -2px; y: -2px;
+            width: parent.width + 4px; height: parent.height + 4px;
+            border-width: 2px;
+            border-color: AppTheme.colors.ice;
+            visible: fs.has-focus;
+        }
+
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: root.enabled ? pointer : default;
+            clicked => {
+                fs.focus();
+                root.clicked();
+            }
+            IconGlyph {
+                glyph: root.glyph;
+                size: 20px;
+                text-color: !root.enabled
+                    ? AppTheme.colors.text-mute
+                    : (root.danger ? AppTheme.colors.text-hi : (root.active ? AppTheme.colors.bg-deep : (ta.has-hover ? AppTheme.colors.text-hi : AppTheme.colors.text-dim)));
+            }
+        }
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Text {
+        text: root.label;
+        font-family: AppTheme.font-mono;
+        font-size: AppTheme.font-xs;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: root.enabled ? AppTheme.colors.text-dim : AppTheme.colors.text-mute;
+        horizontal-alignment: center;
+    }
+}
+
+// ViewToggle — mock .view-toggle: two mono uppercase segments, active = rust.
+// ---------------------------------------------------------------------------
+export component ViewToggle inherits Rectangle {
+    in property <bool> compact-active;
+    in property <bool> enabled: true;
+    callback toggled();
+
+    height: 32px;
+    width: 140px;
+    background: AppTheme.colors.card;
+    border-width: 1px;
+    border-color: root.enabled ? AppTheme.colors.border : AppTheme.colors.border-dim;
+    opacity: root.enabled ? 1.0 : 0.5;
+
+    // focus ring
+    Rectangle {
+        x: -2px; y: -2px;
+        width: parent.width + 4px; height: parent.height + 4px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        visible: fs.has-focus;
+    }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0;
+        Rectangle {
+            width: 70px;
+            height: 100%;
+            background: !root.compact-active
+                ? AppTheme.colors.crimson
+                : (ta1.has-hover && root.enabled ? AppTheme.colors.card-hi : transparent);
+            ta1 := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: root.enabled ? pointer : default;
+                clicked => {
+                    if root.enabled && root.compact-active {
+                        fs.focus();
+                        root.toggled();
+                    }
+                }
+                Text {
+                    text: "FOGATA";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                    color: !root.compact-active ? AppTheme.colors.text-hi : (ta1.has-hover && root.enabled ? AppTheme.colors.text : AppTheme.colors.text-dim);
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            width: 70px;
+            height: 100%;
+            background: root.compact-active
+                ? AppTheme.colors.crimson
+                : (ta2.has-hover && root.enabled ? AppTheme.colors.card-hi : transparent);
+            ta2 := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: root.enabled ? pointer : default;
+                clicked => {
+                    if root.enabled && !root.compact-active {
+                        fs.focus();
+                        root.toggled();
+                    }
+                }
+                Text {
+                    text: "LISTA";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                    color: root.compact-active ? AppTheme.colors.text-hi : (ta2.has-hover && root.enabled ? AppTheme.colors.text : AppTheme.colors.text-dim);
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

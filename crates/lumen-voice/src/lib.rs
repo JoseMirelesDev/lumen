@@ -15,6 +15,7 @@
 
 pub mod audio;
 pub mod client;
+pub mod dm;
 pub mod event;
 pub mod rtp;
 pub mod signaling;

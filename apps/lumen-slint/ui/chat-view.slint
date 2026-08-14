@@ -1,10 +1,262 @@
-// Chat view — port of apps/desktop/src/lib/components/ChatView.svelte.
-// Pure view: header + scrollable message list + composer.
+// Text chat — the "structural calm" zone (mock 05-text-chat). Message rows:
+// 48px square bust (skin by author hash) on the first message of a run, then
+// indented continuation; author in Cinzel 16px (mock .msg-group__name),
+// timestamp in mono 11px dim, body in Inter 14px. Composer = card box
+// (mock .composer__inner) with a recessed line edit + rust/crimson ENVIAR.
 
 import { AppTheme } from "theme.slint";
-import { Button, LineEdit, ScrollView } from "std-widgets.slint";
-import { MessageItem } from "types.slint";
-import { HeaderBar, Divider } from "base.slint";
+import { Icons } from "icons.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
+import { MessageItem, MemberItem } from "types.slint";
+import { HeaderBar, Divider } from "primitives/layout.slint";
+import { Bust } from "primitives/identity.slint";
+import { VoxLineEdit } from "primitives/inputs.slint";
+import { IconGlyph } from "primitives/icon.slint";
+
+// DM Call Button — 34px height, full states (default, hover, pressed, focus)
+component DmCallButton inherits Rectangle {
+    in property <bool> active: false;
+    callback clicked();
+
+    width: 96px;
+    height: 34px;
+    background: transparent;
+
+    // focus ring — 2px ice border when focused
+    Rectangle {
+        x: -2px; y: -2px;
+        width: parent.width + 4px; height: parent.height + 4px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        visible: fs.has-focus;
+    }
+
+    body := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: ta.pressed
+            ? AppTheme.colors.bg-pressed
+            : (root.active
+                ? (ta.has-hover ? AppTheme.colors.crimson-hi : AppTheme.colors.crimson)
+                : (ta.has-hover ? AppTheme.colors.card-hi : AppTheme.colors.card));
+        border-width: 1px;
+        border-color: root.active ? AppTheme.colors.ice : AppTheme.colors.border;
+        border-radius: AppTheme.radius-1;
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: AppTheme.sp-1;
+            cross-axis-alignment: center;
+            IconGlyph {
+                glyph: root.active ? Icons.phone-slash : Icons.phone;
+                size: 14px;
+                text-color: root.active ? AppTheme.colors.text-hi : AppTheme.colors.text-dim;
+            }
+            Text {
+                text: root.active ? "Colgar" : "Llamar";
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                font-weight: 700;
+                letter-spacing: 0.8px;
+                color: root.active ? AppTheme.colors.text-hi : AppTheme.colors.text-dim;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                fs.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+// Send button — mock .composer__send: crimson fill, 2px ice border, mono
+// uppercase label, hover -> crimson-hi (4.4:1 AA text contrast). FocusScope + ring.
+component SendButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 92px;
+    height: 36px;
+    background: transparent;
+
+    // focus ring — 2px ice border when focused
+    Rectangle {
+        x: -2px; y: -2px;
+        width: parent.width + 4px; height: parent.height + 4px;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        visible: fs.has-focus;
+    }
+
+    body := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: !root.enabled
+            ? AppTheme.colors.surface
+            : (ta.pressed
+                ? AppTheme.colors.bg-pressed
+                : (ta.has-hover ? AppTheme.colors.crimson-hi : AppTheme.colors.crimson));
+        border-width: 2px;
+        border-color: root.enabled
+            ? (ta.has-hover ? AppTheme.colors.rose : AppTheme.colors.ice)
+            : AppTheme.colors.border-dim;
+        border-radius: AppTheme.radius-1;
+
+        Text {
+            text: root.label;
+            font-family: AppTheme.font-mono;
+            font-size: AppTheme.font-xs;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: root.enabled ? AppTheme.colors.text-hi : AppTheme.colors.text-mute;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => {
+                fs.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+// Per-message copy button — revealed on row hover (visible bound by the row's
+// TouchArea), top-right. icons.slint has no copy/clipboard glyph, so the
+// contract fallback Icons.link is used; click swaps to Icons.check for 1.2s
+// (channel-list invite-copied pattern).
+component CopyButton {
+    width: 26px;
+    height: 26px;
+    callback clicked();
+    out property <bool> hovered: ta.has-hover;
+    property <bool> copied: false;
+    Timer {
+        running: root.copied;
+        interval: 1200ms;
+        triggered() => { root.copied = false; }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.copied = true;
+            root.clicked();
+        }
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: root.copied
+                ? AppTheme.colors.card-hi
+                : (ta.has-hover ? AppTheme.colors.card-hi : transparent);
+            border-radius: AppTheme.radius-1;
+            IconGlyph {
+                glyph: root.copied ? Icons.check : Icons.link;
+                size: 15px;
+                text-color: root.copied ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+            }
+        }
+    }
+}
+
+// Per-message hover actions: edit (pencil) and delete (x) for own messages.
+// 26px hit target; `danger` tint the hover background rose so delete never
+// reads as a neutral action next to edit.
+component MsgActionBtn {
+    in property <string> glyph;
+    in property <brush> color: AppTheme.colors.text-dim;
+    in property <bool> danger: false;
+    callback clicked();
+    out property <bool> hovered: ta.has-hover;
+    width: 26px;
+    height: 26px;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: root.danger
+                ? (ta.has-hover ? AppTheme.colors.rose : transparent)
+                : (ta.has-hover ? AppTheme.colors.card-hi : transparent);
+            border-radius: AppTheme.radius-1;
+            IconGlyph {
+                glyph: root.glyph;
+                size: 15px;
+                text-color: root.danger
+                    ? (ta.has-hover ? AppTheme.colors.bg-deep : AppTheme.colors.rose)
+                    : root.color;
+            }
+        }
+    }
+}
+
+// Toggle de la lista de miembros — ícono users + contador, estado activo
+// cuando el panel está abierto (Vox: chip cuadrado, borde ice cuando activo).
+component MembersButton {
+    in property <int> count: 0;
+    in property <bool> active: false;
+    callback clicked();
+    width: 40px;
+    height: 34px;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: root.active
+                ? AppTheme.colors.card
+                : (ta.has-hover ? AppTheme.colors.card : transparent);
+            border-width: 1px;
+            border-color: root.active
+                ? AppTheme.colors.ice
+                : (ta.has-hover ? AppTheme.colors.border : transparent);
+            border-radius: AppTheme.radius-1;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 3px;
+                IconGlyph {
+                    glyph: Icons.users-three;
+                    size: 16px;
+                    text-color: root.active ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                }
+                Text {
+                    text: root.count;
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    font-weight: 700;
+                    color: root.active ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                }
+            }
+        }
+    }
+}
 
 export component ChatView inherits Rectangle {
     in property <string> title;
@@ -12,9 +264,45 @@ export component ChatView inherits Rectangle {
     in property <bool> dm-call;
     in property <[MessageItem]> messages;
     in property <string> error;
+    in property <string> typing-label: "";
+    // Fase 3: online members overlay (collapsible, sobre el chat).
+    in property <[MemberItem]> members;
+    in-out property <bool> members-visible: false;
+    in property <bool> can-create: false;
+    callback toggle-members();
+    callback member-action(string, string);
     callback send-message(string);
     callback toggle-dm-call();
-    property <string> draft;
+    callback link-clicked(string);
+    callback copy-message(string);
+    // Fase 2: ("delete" | "edit", message id) — own-message actions.
+    callback message-action(string, string);
+    in-out property <string> draft: "";
+    // scroll to the last message ONLY when the list grows (send / incoming).
+    // The model is rebuilt on every push, so `changed messages` fires for
+    // edits and patches too — auto-scrolling on those would yank the user
+    // away from history ("se borran los mensajes anteriores" = se pierde la
+    // posición de scroll). Track the previous row count; only a strict
+    // growth queues the scroll. viewport-height is only valid AFTER the
+    // layout pass, so re-set it on a one-shot timer once the new row is laid
+    // out.
+    property <bool> scroll-pending: false;
+    property <int> prev-count: 0;
+    changed messages => {
+        if root.messages.length > root.prev-count {
+            root.scroll-pending = true;
+        }
+        root.prev-count = root.messages.length;
+    }
+    Timer {
+        interval: 40ms;
+        running: root.scroll-pending;
+        triggered() => {
+            root.scroll-pending = false;
+            // clamp: content shorter than the viewport must sit at 0
+            msg-list.viewport-y = min(0px, -(msg-list.viewport-height - msg-list.height));
+        }
+    }
 
     background: AppTheme.colors.bg;
     horizontal-stretch: 1;
@@ -23,58 +311,208 @@ export component ChatView inherits Rectangle {
     VerticalLayout {
         width: 100%;
         height: 100%;
+
         HeaderBar {
-            pad-x: AppTheme.sp-4;
+            IconGlyph {
+                glyph: root.is-dm ? Icons.at : Icons.hash;
+                size: 18px;
+                text-color: AppTheme.colors.ice;
+            }
             Text {
-                text: (root.is-dm ? "DM" : "#") + " " + root.title;
-                color: AppTheme.colors.text;
-                font-size: AppTheme.font-base;
+                text: root.title;
+                font-family: AppTheme.font-display;
                 font-weight: 700;
+                font-size: AppTheme.font-md;
+                color: AppTheme.colors.text-hi;
                 overflow: elide;
                 horizontal-stretch: 1;
+                vertical-alignment: center;
             }
-            if root.is-dm : Button {
-                text: root.dm-call ? "Leave" : "Call";
-                primary: root.dm-call;
+            MembersButton {
+                count: root.members.length;
+                active: root.members-visible;
+                clicked => { root.toggle-members(); }
+            }
+            if root.is-dm : DmCallButton {
+                active: root.dm-call;
                 clicked => { root.toggle-dm-call(); }
             }
         }
         Divider { }
 
-        if root.messages.length > 0 : ScrollView {
+        // Always instantiated (no length guard): the auto-scroll timer needs
+        // a stable handle; an empty model renders as an empty list under the
+        // empty-state text below.
+        msg-list := ListView {
             vertical-stretch: 1;
-            VerticalLayout {
-                alignment: start;
-                padding-top: AppTheme.sp-3;
-                padding-bottom: AppTheme.sp-3;
-                padding-left: AppTheme.sp-4;
-                padding-right: AppTheme.sp-4;
-                spacing: 10px;
-                for m in root.messages: VerticalLayout {
-                    spacing: 2px;
+            for m in root.messages: msg-row := Rectangle {
+                width: 100%;
+                background: row-ta.has-hover || cb.hovered ? AppTheme.colors.bg-hover : transparent;
+                row-ta := TouchArea {
+                    width: 100%;
                     HorizontalLayout {
                         alignment: start;
-                        spacing: AppTheme.sp-2;
-                        Text {
-                            text: m.author;
-                            color: m.mine ? AppTheme.colors.accent : AppTheme.colors.text;
-                            font-size: AppTheme.font-md;
-                            font-weight: 700;
+                        spacing: AppTheme.sp-3;
+                        padding-top: AppTheme.sp-1;
+                        padding-bottom: AppTheme.sp-1;
+                        padding-left: AppTheme.sp-5;
+                        padding-right: AppTheme.sp-5;
+                        if m.first-in-run : Bust {
+                            skin: m.skin;
+                            state: "idle";
+                            width: 48px;
+                            height: 48px;
                         }
-                        Text { text: m.time; color: AppTheme.colors.text-dim; font-size: AppTheme.font-xs; }
+                        VerticalLayout {
+                            spacing: AppTheme.sp-1;
+                            padding-top: m.first-in-run ? 0px : AppTheme.sp-1;
+                            // Continuations indent past the bust (48px + 12px
+                            // spacing) instead of carrying a fixed 48px spacer:
+                            // the row then sizes to its real content height
+                            // (short messages get short rows).
+                            padding-left: m.first-in-run ? 0px : 60px;
+                            horizontal-stretch: 1;
+                            if m.first-in-run : HorizontalLayout {
+                                spacing: AppTheme.sp-2;
+                                Text {
+                                    text: m.author;
+                                    font-family: AppTheme.font-display;
+                                    font-weight: 700;
+                                    font-size: AppTheme.font-md;
+                                    color: m.mine ? AppTheme.colors.ice : AppTheme.colors.text-hi;
+                                }
+                                Text {
+                                    text: m.time;
+                                    font-family: AppTheme.font-mono;
+                                    font-size: AppTheme.font-xs;
+                                    color: AppTheme.colors.text-dim;
+                                    vertical-alignment: center;
+                                }
+                                if m.edited : Text {
+                                    text: "(editado)";
+                                    font-family: AppTheme.font-mono;
+                                    font-size: AppTheme.font-xs;
+                                    color: AppTheme.colors.text-mute;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            if !m.deleted : TextInput {
+                                text: m.content;
+                                read-only: true;
+                                font-family: AppTheme.font-body;
+                                font-size: AppTheme.font-base;
+                                color: AppTheme.colors.text;
+                                wrap: word-wrap;
+                            }
+                            // Clickable link — plain mono Text + TouchArea.
+                            // Text has no markup/link support in 1.17 (that
+                            // moved to StyledText, whose `<a href>` markup
+                            // would need URL escaping); the TouchArea keeps
+                            // the URL literal, fires root.link-clicked, and
+                            // the body TextInput above keeps text selection.
+                            if m.link-url != "" : link-box := Rectangle {
+                                Text {
+                                    text: m.link-url;
+                                    font-family: AppTheme.font-mono;
+                                    font-size: AppTheme.font-sm;
+                                    color: link-ta.has-hover ? AppTheme.colors.ice-hi : AppTheme.colors.ice;
+                                    overflow: elide;
+                                }
+                                link-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.link-clicked(m.link-url); }
+                                }
+                            }
+                            // Link preview card — card bg/border, link icon,
+                            // resolved title (only when both are present).
+                            if m.link-url != "" && m.link-title != "" : Rectangle {
+                                background: AppTheme.colors.card;
+                                border-width: 1px;
+                                border-color: AppTheme.colors.border;
+                                border-radius: AppTheme.radius-1;
+                                HorizontalLayout {
+                                    spacing: AppTheme.sp-2;
+                                    padding: AppTheme.sp-2;
+                                    IconGlyph {
+                                        glyph: Icons.link;
+                                        size: 14px;
+                                        text-color: AppTheme.colors.ice;
+                                    }
+                                    Text {
+                                        text: m.link-title;
+                                        font-family: AppTheme.font-body;
+                                        font-size: AppTheme.font-sm;
+                                        color: AppTheme.colors.text;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            // Soft-deleted message: placeholder instead of the
+                            // content (migration 0003 / Fase 2).
+                            if m.deleted : Text {
+                                text: "Mensaje eliminado";
+                                font-family: AppTheme.font-body;
+                                font-size: AppTheme.font-base;
+                                font-italic: true;
+                                color: AppTheme.colors.text-mute;
+                                wrap: word-wrap;
+                            }
+                        }
                     }
-                    Text {
-                        text: m.content;
-                        color: AppTheme.colors.text;
-                        font-size: AppTheme.font-base;
-                        wrap: word-wrap;
+                    // Copy + own-message actions — declared AFTER the content
+                    // so they paint on top of the whole row (Z) and their own
+                    // TouchAreas win over row-ta's in their region. Visible
+                    // while the cursor is over the row OR the button itself —
+                    // without the OR, entering the button turns off
+                    // row-ta.has-hover and it disappears (flicker loop).
+                    // Orden de derecha a izquierda (26px targets):
+                    //   copy · [12px gap] · delete (rose) · edit · report
+                    // El gap aísla la acción destructiva del resto.
+                    if !m.mine : rep-btn := MsgActionBtn {
+                        glyph: Icons.warning;
+                        color: AppTheme.colors.rose;
+                        x: row-ta.width - 94px - AppTheme.sp-5;
+                        y: AppTheme.sp-1;
+                        visible: !m.deleted && (row-ta.has-hover || rep-btn.hovered);
+                        clicked => { root.message-action("report", m.id); }
+                    }
+                    if m.mine : edit-btn := MsgActionBtn {
+                        glyph: Icons.pencil-simple;
+                        x: row-ta.width - 94px - AppTheme.sp-5;
+                        y: AppTheme.sp-1;
+                        visible: !m.deleted && (row-ta.has-hover || edit-btn.hovered);
+                        clicked => { root.message-action("edit", m.id); }
+                    }
+                    if m.mine : del-btn := MsgActionBtn {
+                        glyph: Icons.x;
+                        color: AppTheme.colors.rose;
+                        danger: true;
+                        x: row-ta.width - 64px - AppTheme.sp-5;
+                        y: AppTheme.sp-1;
+                        visible: !m.deleted && (row-ta.has-hover || del-btn.hovered);
+                        clicked => { root.message-action("delete", m.id); }
+                    }
+                    cb := CopyButton {
+                        x: row-ta.width - 26px - AppTheme.sp-5;
+                        y: AppTheme.sp-1;
+                        visible: !m.deleted && (row-ta.has-hover || cb.hovered);
+                        clicked => { root.copy-message(m.id); }
                     }
                 }
             }
         }
         if root.messages.length == 0 : Rectangle {
             vertical-stretch: 1;
-            Text { text: "No messages yet."; color: AppTheme.colors.text-dim; font-size: AppTheme.font-md; }
+            Text {
+                text: "No messages yet — the hall is quiet.";
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-sm;
+                color: AppTheme.colors.text-mute;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
 
         if root.error != "" : HorizontalLayout {
@@ -82,29 +520,172 @@ export component ChatView inherits Rectangle {
             padding-bottom: AppTheme.sp-1;
             padding-left: AppTheme.sp-4;
             padding-right: AppTheme.sp-4;
-            Text { text: root.error; color: AppTheme.colors.danger; font-size: AppTheme.font-md; wrap: word-wrap; }
+            Text {
+                text: root.error;
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                color: AppTheme.colors.rose;
+                wrap: word-wrap;
+            }
         }
 
-        Divider { }
+        // --- composer (mock .composer__inner: card box + ENVIAR) ---
         Rectangle {
+            background: AppTheme.colors.bg;
             VerticalLayout {
-                padding-top: AppTheme.sp-3;
-                padding-bottom: AppTheme.sp-3;
-                padding-left: AppTheme.sp-4;
-                padding-right: AppTheme.sp-4;
-                HorizontalLayout {
-                    spacing: AppTheme.sp-2;
-                    LineEdit {
-                        text <=> root.draft;
-                        placeholder-text: "Message " + root.title;
-                        horizontal-stretch: 1;
-                        accepted => { root.send-message(root.draft); root.draft = ""; }
+                padding-left: AppTheme.sp-5;
+                padding-right: AppTheme.sp-5;
+                padding-top: AppTheme.sp-2;
+                padding-bottom: AppTheme.sp-4;
+                // Fase 3: typing indicator ("X está escribiendo…").
+                if root.typing-label != "" : Rectangle {
+                    height: 14px;
+                    Text {
+                        text: root.typing-label;
+                        font-family: AppTheme.font-mono;
+                        font-size: AppTheme.font-xs;
+                        color: AppTheme.colors.text-mute;
                     }
-                    Button {
-                        text: "Send";
-                        primary: true;
-                        enabled: root.draft != "";
-                        clicked => { root.send-message(root.draft); root.draft = ""; }
+                }
+                Rectangle {
+                    background: AppTheme.colors.card;
+                    border-width: 1px;
+                    border-color: AppTheme.colors.border;
+                    HorizontalLayout {
+                        padding: AppTheme.sp-2;
+                        spacing: AppTheme.sp-2;
+                        cross-axis-alignment: center;
+                        VoxLineEdit {
+                            text <=> root.draft;
+                            placeholder: (root.is-dm ? "Mensaje a @" : "Mensaje a #") + root.title;
+                            flat: true;
+                            max-lines: 5;
+                            horizontal-stretch: 1;
+                            accepted(text) => { root.send-message(text); root.draft = ""; }
+                        }
+                        SendButton {
+                            label: "ENVIAR";
+                            enabled: root.draft != "";
+                            clicked => { root.send-message(root.draft); root.draft = ""; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- overlay de miembros (EN LÍNEA) — flota sobre el chat, colapsable.
+    // Posicionado top-right del área de chat, por encima de la lista de
+    // mensajes (declarado después → pinta arriba). Se cierra con el toggle
+    // del header o la X.
+    if root.members-visible : Rectangle {
+        x: root.width - 250px - AppTheme.sp-4;
+        y: AppTheme.sp-3;
+        width: 250px;
+        height: Math.min(root.height - 64px, 340px);
+        background: AppTheme.colors.bg-deep;
+        border-width: 2px;
+        border-color: AppTheme.colors.bronze-dim;
+        border-radius: AppTheme.radius-2;
+
+        VerticalLayout {
+            padding: AppTheme.sp-3;
+            spacing: AppTheme.sp-2;
+            HorizontalLayout {
+                spacing: AppTheme.sp-2;
+                cross-axis-alignment: center;
+                IconGlyph {
+                    glyph: Icons.users-three;
+                    size: 14px;
+                    text-color: AppTheme.colors.bronze-hi;
+                }
+                Text {
+                    text: "EN LÍNEA · \{root.members.length}";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    font-weight: 700;
+                    letter-spacing: 1.2px;
+                    color: AppTheme.colors.bronze-hi;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                m-close := TouchArea {
+                    width: 20px;
+                    height: 20px;
+                    mouse-cursor: pointer;
+                    clicked => { root.members-visible = false; }
+                    Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        background: m-close.has-hover ? AppTheme.colors.card-hi : transparent;
+                        border-radius: AppTheme.radius-1;
+                        IconGlyph {
+                            glyph: Icons.x;
+                            size: 13px;
+                            text-color: m-close.has-hover ? AppTheme.colors.ice : AppTheme.colors.text-dim;
+                        }
+                    }
+                }
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                vertical-scrollbar-policy: always-off;
+                VerticalLayout {
+                    min-width: 0px;
+                    spacing: AppTheme.sp-1;
+                    for m in root.members: HorizontalLayout {
+                        spacing: AppTheme.sp-2;
+                        cross-axis-alignment: center;
+                        Bust {
+                            skin: m.skin;
+                            state: "idle";
+                            width: 24px;
+                            height: 24px;
+                        }
+                        Text {
+                            text: m.username;
+                            font-family: AppTheme.font-body;
+                            font-size: AppTheme.font-sm;
+                            color: AppTheme.colors.text;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+                        // kick/ban (owner only) — mismas acciones que la lista
+                        if root.can-create : m-kick := TouchArea {
+                            width: 22px;
+                            height: 22px;
+                            mouse-cursor: pointer;
+                            clicked => { root.member-action("kick", m.id); }
+                            Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                background: m-kick.has-hover ? AppTheme.colors.card-hi : transparent;
+                                border-radius: AppTheme.radius-1;
+                                IconGlyph {
+                                    glyph: Icons.door-open;
+                                    size: 14px;
+                                    text-color: m-kick.has-hover ? AppTheme.colors.rose : AppTheme.colors.text-dim;
+                                }
+                            }
+                        }
+                        if root.can-create : m-ban := TouchArea {
+                            width: 22px;
+                            height: 22px;
+                            mouse-cursor: pointer;
+                            clicked => { root.member-action("ban", m.id); }
+                            Rectangle {
+                                width: 100%;
+                                height: 100%;
+                                background: m-ban.has-hover ? AppTheme.colors.card-hi : transparent;
+                                border-radius: AppTheme.radius-1;
+                                IconGlyph {
+                                    glyph: Icons.shield;
+                                    size: 14px;
+                                    text-color: m-ban.has-hover ? AppTheme.colors.rose : AppTheme.colors.text-dim;
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -74,6 +74,11 @@ async fn main() -> anyhow::Result<()> {
     let no_mic = args.iter().any(|a| a == "--no-mic");
     let no_output = args.iter().any(|a| a == "--no-output");
     let stun_only = args.iter().any(|a| a == "--stun-only");
+    let aec_off = args.iter().any(|a| a == "--aec-off");
+    // --model=ns-only|fastenhancer (single mode): the suppressor model to run.
+    // Defaults to the client default (FastEnhancerM) — matching the app's
+    // persisted settings requires passing --model=ns-only explicitly.
+    let model = args.iter().find_map(|a| a.strip_prefix("--model=").map(|s| s.to_string()));
     // --input=path (single token: the value must ride with the flag so it is
     // not mistaken for a positional arg).
     let input_wav = args.iter().find_map(|a| a.strip_prefix("--input=").map(|s| s.to_string()));
@@ -94,8 +99,21 @@ async fn main() -> anyhow::Result<()> {
         let (backend, tok, user, ch) = (&pos[0], &pos[1], &pos[2], &pos[3]);
         let ice = ice_servers(backend, tok, stun_only).await?;
         let (c, mut ev) = VoiceClient::new();
+        if let Some(m) = model.as_deref() {
+            use lumen_voice::audio::SuppressorModel;
+            let m = match m {
+                "ns-only" => SuppressorModel::NsOnly,
+                "fastenhancer-s" => SuppressorModel::FastEnhancerS,
+                "fastenhancer" => SuppressorModel::FastEnhancerM,
+                other => anyhow::bail!("unknown --model '{other}' — use ns-only | fastenhancer-s | fastenhancer"),
+            };
+            c.set_suppressor_model(m);
+        }
+        if aec_off {
+            c.set_aec_enabled_now(false);
+        }
         c.join(join_args(backend, tok, user, ch, ice, !no_mic && input_wav.is_none(), input_wav.clone(), !no_output)).await.map_err(anyhow::Error::msg)?;
-        println!("[{user}] joined (mic={}, wav={}, flip_model_at={flip_model_at:?}) running 60 s...", !no_mic && input_wav.is_none(), input_wav.is_some());
+        println!("[{user}] joined (mic={}, wav={}, model={model:?}, flip_model_at={flip_model_at:?}) running 60 s...", !no_mic && input_wav.is_none(), input_wav.is_some());
         let mut printed = std::collections::HashSet::new();
         let start = std::time::Instant::now();
         let mut flipped = false;
@@ -108,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
                         let cur = c.suppressor_model();
                         let nxt = match cur {
                             SuppressorModel::FastEnhancerM => SuppressorModel::NsOnly,
+                            SuppressorModel::FastEnhancerS => SuppressorModel::NsOnly,
                             SuppressorModel::NsOnly => SuppressorModel::FastEnhancerM,
                         };
                         c.set_suppressor_model(nxt);

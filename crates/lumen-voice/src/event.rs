@@ -71,4 +71,7 @@ pub enum VoiceEvent {
     Signaling { state: SignalingState },
     /// `voice://error` — `code` present only when the signaling layer reported it.
     Error { code: Option<String>, message: String },
+    /// A message from a peer's "chat" data channel (Fase 3, ADR-006): bytes
+    /// are JSON text — `{ "type": "typing" | "chat", "content": "..." }`.
+    DataChannelMessage { peer_id: String, data: Vec<u8> },
 }

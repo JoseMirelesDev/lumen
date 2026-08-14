@@ -1,12 +1,13 @@
-// Login / register view — port of apps/desktop/src/lib/components/Login.svelte.
-// Pure view: renders state and emits callbacks; all logic lives in Rust.
-// The card is centered via nested layouts (VerticalLayout alignment: center),
-// NOT via y: (parent.height - self.height)/2 — an element without an explicit
-// height in a non-layout parent stretches to fill it, which makes that
-// formula evaluate to y=0 (card pinned to the top).
+// Login / register — the gate. Cinzel wordmark, hard-corner card (no rounded
+// Material look), pixel inputs, crimson primary. The ember radial wash is the
+// single ritual accent on this screen (it IS the welcome moment).
 
 import { AppTheme } from "theme.slint";
-import { Button, LineEdit } from "std-widgets.slint";
+import { Icons } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
+import { VoxButton } from "primitives/buttons.slint";
+import { VoxLineEdit } from "primitives/inputs.slint";
+import { IconGlyph } from "primitives/icon.slint";
 
 export component Login inherits Rectangle {
     in property <bool> busy;
@@ -18,86 +19,167 @@ export component Login inherits Rectangle {
     callback submit(string, string);
     callback toggle-mode();
     callback backend-changed(string);
+    callback oauth(string);
 
     background: AppTheme.colors.bg;
 
-    VerticalLayout {
+    // ritual glow behind the card
+    Rectangle {
         width: 100%;
         height: 100%;
-        alignment: center;
-        cross-axis-alignment: center;
+        background: @radial-gradient(circle, AppTheme.colors.glow-rose-start 0%, AppTheme.colors.glow-rose-end 55%);
+    }
 
-        Rectangle {
-            width: AppTheme.login-width;
-            background: AppTheme.colors.bg-raised;
-            border-radius: AppTheme.radius;
+    // Shadow behind card
+    Rectangle {
+        width: Math.min(AppTheme.login-width, parent.width - 24px);
+        height: Math.min(AppTheme.card-max-height, parent.height - 24px);
+        x: (parent.width - self.width) / 2 + AppTheme.shadow-offset;
+        y: (parent.height - self.height) / 2 + AppTheme.shadow-offset;
+        background: AppTheme.colors.bg-deep;
+        border-radius: AppTheme.radius-2;
+    }
+
+    // Explicitly sized card centered on parent
+    Rectangle {
+        width: Math.min(AppTheme.login-width, parent.width - 24px);
+        height: Math.min(AppTheme.card-max-height, parent.height - 24px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: AppTheme.colors.surface;
+        border-width: 1px;
+        border-color: AppTheme.colors.border;
+        border-radius: AppTheme.radius-2;
+
+        ScrollView {
+            width: 100%;
+            height: 100%;
+
             VerticalLayout {
-                padding: 32px;
+                // Pin the layout to the ScrollView viewport: Flickable computes
+                // viewport-width = max(flickable.width, layout.min-width), so
+                // unconstrained content (e.g. a long backend URL in the input)
+                // inflates min-width → horizontal overflow + scrollbar.
+                min-width: 0px;
+                padding: AppTheme.sp-5;
                 spacing: AppTheme.sp-3;
+                alignment: center;
 
-                Text {
-                    text: "Lumen";
-                    font-size: AppTheme.font-hero;
-                    font-weight: 700;
-                    color: AppTheme.colors.text;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: AppTheme.sp-2;
+                    cross-axis-alignment: center;
+
+                    IconGlyph {
+                        glyph: Icons.fire;
+                        size: 26px;
+                        text-color: AppTheme.colors.rose;
+                    }
+                    Text {
+                        text: "Lumen";
+                        font-family: AppTheme.font-display;
+                        font-weight: 900;
+                        font-size: AppTheme.font-hero;
+                        color: AppTheme.colors.text-hi;
+                    }
                 }
                 Text {
-                    text: "ultralight voice for small groups";
-                    font-size: AppTheme.font-md;
+                    text: "ultralight voice for small warbands";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.bronze-hi;
+                    horizontal-alignment: center;
+                }
+                Rectangle { height: AppTheme.sp-2; }
+                Text {
+                    text: "Usuario";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
                     color: AppTheme.colors.text-dim;
                 }
-                Text {
-                    text: "Username";
-                    font-size: AppTheme.font-sm;
-                    color: AppTheme.colors.text-dim;
-                }
-                LineEdit {
+                user_fs := VoxLineEdit {
                     text <=> root.username;
+                    placeholder: "Nombre de usuario";
+                    error: root.error != "";
+                    autofocus: true;
+                    accepted(text) => { root.submit(root.username, root.password); }
                 }
                 Text {
-                    text: "Password";
-                    font-size: AppTheme.font-sm;
+                    text: "Contraseña";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
                     color: AppTheme.colors.text-dim;
                 }
-                LineEdit {
+                VoxLineEdit {
                     text <=> root.password;
-                    input-type: InputType.password;
-                    accepted => { root.submit(root.username, root.password); }
+                    placeholder: "Contraseña";
+                    password: true;
+                    error: root.error != "";
+                    accepted(text) => { root.submit(root.username, root.password); }
                 }
-                Text {
-                    visible: root.error != "";
+                if root.error != "" : Text {
                     text: root.error;
-                    font-size: AppTheme.font-md;
-                    color: AppTheme.colors.danger;
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.rose;
                     wrap: word-wrap;
                 }
-                Button {
-                    text: root.is-register ? "Create account" : "Sign in";
-                    enabled: !root.busy;
+                VoxButton {
+                    horizontal-stretch: 1;
+                    text: root.is-register ? "Crear cuenta" : "Iniciar sesión";
+                    icon: root.is-register ? Icons.pencil-simple : Icons.door-open;
                     primary: true;
+                    loading: root.busy;
+                    enabled: !root.busy && root.username != "" && root.password != "";
                     clicked => { root.submit(root.username, root.password); }
                 }
-                Button {
-                    text: root.is-register ? "Have an account? Sign in" : "No account? Register";
+                VoxButton {
+                    horizontal-stretch: 1;
+                    text: root.is-register ? "¿Tienes cuenta? Inicia sesión" : "¿Sin cuenta? Regístrate";
+                    compact: true;
                     visible: !root.busy;
                     clicked => { root.toggle-mode(); }
                 }
-                // Backend URL
-                VerticalLayout {
-                    spacing: 6px;
-                    Text {
-                        text: "Backend URL";
-                        font-size: AppTheme.font-xs;
-                        font-weight: 700;
-                        color: AppTheme.colors.text-dim;
-                    }
-                    LineEdit {
-                        text <=> root.backend-url;
-                    }
-                    Button {
-                        text: "Apply";
-                        clicked => { root.backend-changed(root.backend-url); }
-                    }
+                // Fase 4: OAuth social (abre el browser externo).
+                Rectangle { height: AppTheme.sp-2; }
+                Text {
+                    text: "O CONTINÚA CON";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    letter-spacing: 1px;
+                    color: AppTheme.colors.text-mute;
+                    horizontal-alignment: center;
+                }
+                VoxButton {
+                    horizontal-stretch: 1;
+                    text: "Continuar con Google";
+                    compact: true;
+                    visible: !root.busy;
+                    clicked => { root.oauth("google"); }
+                }
+                VoxButton {
+                    horizontal-stretch: 1;
+                    text: "Continuar con GitHub";
+                    compact: true;
+                    visible: !root.busy;
+                    clicked => { root.oauth("github"); }
+                }
+                Rectangle { height: AppTheme.sp-1; }
+                Text {
+                    text: "URL del servidor";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-dim;
+                }
+                VoxLineEdit {
+                    text <=> root.backend-url;
+                    placeholder: "https://...";
+                }
+                VoxButton {
+                    horizontal-stretch: 1;
+                    text: "Aplicar";
+                    compact: true;
+                    clicked => { root.backend-changed(root.backend-url); }
                 }
             }
         }

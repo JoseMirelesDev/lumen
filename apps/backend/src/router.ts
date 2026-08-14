@@ -35,7 +35,10 @@ interface RouteDef {
 
 function compilePath(template: string): { pattern: RegExp; paramNames: string[] } {
   const paramNames: string[] = [];
-  const source = template.replace(/:[A-Za-z]+/g, (m) => {
+  const source = template.replace(/:[A-Za-z]+\+/g, (m) => {
+    paramNames.push(m.slice(1, -1)); // :path+ → captures multiple segments
+    return "(.+)";
+  }).replace(/:[A-Za-z]+/g, (m) => {
     paramNames.push(m.slice(1));
     return "([^/]+)";
   });
@@ -60,6 +63,14 @@ export class Router {
 
   post(path: string, authed: boolean, handler: RouteHandler): void {
     this.add("POST", path, authed, handler);
+  }
+
+  put(path: string, authed: boolean, handler: RouteHandler): void {
+    this.add("PUT", path, authed, handler);
+  }
+
+  patch(path: string, authed: boolean, handler: RouteHandler): void {
+    this.add("PATCH", path, authed, handler);
   }
 
   delete(path: string, authed: boolean, handler: RouteHandler): void {

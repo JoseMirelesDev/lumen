@@ -1,0 +1,578 @@
+/* ============================================================
+   VOX UI — Design System Tokens
+   Estética: Hyper Light Drifter × Viking pixel art
+   Principio: calma estructural + explosión ritual
+   ============================================================ */
+
+/* --- Web fonts --- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Cinzel:wght@500;700;900&display=swap');
+
+:root {
+  /* === PALETA — Fondos === */
+  --vox-bg:           #0C111C;   /* fondo base */
+  --vox-bg-deep:      #070A12;   /* más profundo, casi negro */
+  --vox-surface:      #141A28;   /* superficie elevada */
+  --vox-card:         #232A3E;   /* cards, inputs */
+  --vox-card-hi:      #2B334A;   /* card hover */
+  --vox-border:       #363C54;   /* bordes estándar */
+  --vox-border-dim:   #1F2536;   /* bordes sutiles */
+  --vox-border-hi:    #4A5273;   /* bordes activos */
+
+  /* === PALETA — Texto === */
+  --vox-text:         #E7E1D4;   /* marfil — texto primario */
+  --vox-text-hi:      #F0E6D8;   /* marfil claro */
+  --vox-text-dim:     #8A88A4;   /* texto secundario */
+  --vox-text-mute:    #5C5E78;   /* texto apagado */
+
+  /* === PALETA — Acentos cálidos (energía vikinga) === */
+  --vox-rust:         #B4432E;   /* óxido — base energía */
+  --vox-amber:        #E06A3E;   /* ámbar — energía activa */
+  --vox-amber-hi:     #F0B464;   /* ámbar claro — peak */
+  --vox-ember:        #FF8855;   /* brasa — glow */
+  --vox-bronze:       #8A7355;   /* bronce — secundario cálido */
+  --vox-bronze-hi:    #C9A876;   /* bronce claro */
+  --vox-bronze-dim:   #5A4D38;   /* bronce oscuro */
+
+  /* === PALETA — Acentos fríos (contraste HLDrifter) === */
+  --vox-teal:         #3C6E78;   /* teal frío */
+  --vox-teal-hi:      #5AA0AA;   /* teal claro */
+  --vox-indigo:       #2A3458;   /* índigo profundo */
+
+  /* === PALETA — Estados === */
+  --vox-online:       #6FAA6E;   /* online — verde apagado */
+  --vox-idle:         #C9A876;   /* idle — bronce */
+  --vox-dnd:          #B4432E;   /* no molestar — óxido */
+  --vox-offline:      #5C5E78;   /* offline — mute */
+
+  /* === TIPOGRAFÍA === */
+  --vox-font-body:    'Inter', -apple-system, sans-serif;
+  --vox-font-mono:    'JetBrains Mono', 'Courier New', monospace;
+  --vox-font-title:   'Cinzel', 'Times New Roman', serif;
+
+  /* tamaños */
+  --vox-text-xs:      11px;
+  --vox-text-sm:      13px;
+  --vox-text-base:    14px;
+  --vox-text-md:      16px;
+  --vox-text-lg:      20px;
+  --vox-text-xl:      28px;
+  --vox-text-2xl:     40px;
+
+  /* pesos */
+  --vox-fw-reg:       400;
+  --vox-fw-med:       500;
+  --vox-fw-semi:      600;
+  --vox-fw-bold:      700;
+  --vox-fw-black:     900;
+
+  /* line-height */
+  --vox-lh-tight:     1.15;
+  --vox-lh-snug:      1.3;
+  --vox-lh-base:      1.5;
+  --vox-lh-loose:     1.7;
+
+  /* letter-spacing — mono en mayúsculas */
+  --vox-ls-wide:      0.12em;
+  --vox-ls-mono:      0.06em;
+  --vox-ls-tight:     -0.01em;
+
+  /* === ESPACIADO — escala base 4px === */
+  --vox-s-0:   0;
+  --vox-s-1:   2px;
+  --vox-s-2:   4px;
+  --vox-s-3:   6px;
+  --vox-s-4:   8px;
+  --vox-s-5:   12px;
+  --vox-s-6:   16px;
+  --vox-s-7:   20px;
+  --vox-s-8:   24px;
+  --vox-s-9:   32px;
+  --vox-s-10:  40px;
+  --vox-s-11:  48px;
+  --vox-s-12:  64px;
+  --vox-s-13:  96px;
+
+  /* === BORDES — duros, no redondeados === */
+  --vox-radius-0:    0;          /* principio anti-Discord: esquinas duras por defecto */
+  --vox-radius-1:    2px;        /* mínimo, solo para inputs pequeños */
+  --vox-radius-2:    4px;        /* raro, solo cards grandes */
+  --vox-radius-pill: 999px;      /* solo chips pequeños de estado */
+
+  --vox-border-1:    1px;
+  --vox-border-2:    2px;
+  --vox-border-3:    3px;
+
+  /* === SOMBRAS — pixel-art-style, offset duro === */
+  --vox-shadow-1:    2px 2px 0 var(--vox-bg-deep);
+  --vox-shadow-2:    4px 4px 0 var(--vox-bg-deep);
+  --vox-shadow-3:    6px 6px 0 var(--vox-bg-deep);
+  --vox-shadow-inset: inset 0 0 0 1px var(--vox-border-dim);
+
+  /* glow solo para elementos rituales (fogata, talking) */
+  --vox-glow-amber:  0 0 0 2px var(--vox-amber), 0 0 12px rgba(224, 106, 62, 0.6);
+  --vox-glow-rust:   0 0 0 2px var(--vox-rust), 0 0 8px rgba(180, 67, 46, 0.5);
+  --vox-glow-ember:  0 0 20px rgba(255, 136, 85, 0.4);
+
+  /* === ANIMACIÓN — pixel-step, NO easing suave === */
+  /* pasos de 80-120ms para sensación de sprite de juego */
+  --vox-step-fast:   80ms;
+  --vox-step-base:   120ms;
+  --vox-step-slow:   200ms;
+  --vox-breath:      2400ms;  /* respiración idle */
+  --vox-fire-frame:  140ms;   /* cada frame de fogata */
+  --vox-pulse:       600ms;   /* pulso de talking */
+
+  /* === Z-INDEX === */
+  --vox-z-base:      1;
+  --vox-z-overlay:   10;
+  --vox-z-modal:     100;
+  --vox-z-tooltip:   1000;
+}
+
+/* ============================================================
+   RESET / BASE
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  background: var(--vox-bg);
+  color: var(--vox-text);
+  font-family: var(--vox-font-body);
+  font-size: var(--vox-text-base);
+  line-height: var(--vox-lh-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* pixelated rendering para sprites */
+img, canvas {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+input, textarea {
+  font-family: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--vox-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--vox-border);
+  border: 2px solid var(--vox-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vox-border-hi);
+}
+
+/* ============================================================
+   UTILIDADES — Tipografía
+   ============================================================ */
+.t-mono {
+  font-family: var(--vox-font-mono);
+  letter-spacing: var(--vox-ls-mono);
+}
+.t-mono-upper {
+  font-family: var(--vox-font-mono);
+  text-transform: uppercase;
+  letter-spacing: var(--vox-ls-wide);
+}
+.t-title {
+  font-family: var(--vox-font-title);
+  letter-spacing: var(--vox-ls-tight);
+}
+.t-dim   { color: var(--vox-text-dim); }
+.t-mute  { color: var(--vox-text-mute); }
+.t-amber { color: var(--vox-amber); }
+.t-rust  { color: var(--vox-rust); }
+.t-bronze{ color: var(--vox-bronze-hi); }
+.t-teal  { color: var(--vox-teal-hi); }
+
+/* ============================================================
+   ANIMACIONES — pixel-step
+   ============================================================ */
+
+/* Fogata: cycle de 4 frames vía opacity (los 4 sprites stacked) */
+@keyframes vox-campfire {
+  0%   { opacity: 1; }
+  24%  { opacity: 1; }
+  25%  { opacity: 0; }
+  49%  { opacity: 0; }
+  50%  { opacity: 0; }
+  74%  { opacity: 0; }
+  75%  { opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes vox-campfire-2 {
+  0%, 24%   { opacity: 0; }
+  25%, 49%  { opacity: 1; }
+  50%, 74%  { opacity: 0; }
+  75%, 100% { opacity: 0; }
+}
+@keyframes vox-campfire-3 {
+  0%, 49%   { opacity: 0; }
+  50%, 74%  { opacity: 1; }
+  75%, 100% { opacity: 0; }
+}
+@keyframes vox-campfire-4 {
+  0%, 74%   { opacity: 0; }
+  75%, 100% { opacity: 1; }
+}
+
+/* Respiración idle — 2px arriba/abajo, sin easing */
+@keyframes vox-breath {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2px); }
+}
+
+/* Pulso de "talking" — borde óxido-ámbar, parpadeo a saltos */
+@keyframes vox-pulse-talking {
+  0%, 49%   {
+    box-shadow: 0 0 0 2px var(--vox-amber), 0 0 8px rgba(224, 106, 62, 0.5);
+  }
+  50%, 100% {
+    box-shadow: 0 0 0 2px var(--vox-amber-hi), 0 0 14px rgba(240, 180, 100, 0.8);
+  }
+}
+
+/* Sprite swap de pose de talking — intercambio a saltos */
+@keyframes vox-talk-swap {
+  0%, 49%  { opacity: 1; }
+  50%, 100%{ opacity: 0; }
+}
+@keyframes vox-talk-swap-2 {
+  0%, 49%  { opacity: 0; }
+  50%, 100%{ opacity: 1; }
+}
+
+/* Ember flicker — partículas de brasa flotando */
+@keyframes vox-ember-rise {
+  0%   { transform: translateY(0) translateX(0); opacity: 0; }
+  20%  { opacity: 1; }
+  100% { transform: translateY(-30px) translateX(var(--drift, 4px)); opacity: 0; }
+}
+
+/* Rune flicker */
+@keyframes vox-rune-flicker {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.9; }
+}
+
+/* Scan-line atmospheric effect (sutil, opcional en scenes rituales) */
+@keyframes vox-scanline {
+  0%   { background-position: 0 0; }
+  100% { background-position: 0 4px; }
+}
+
+/* ============================================================
+   LAYOUT — App shell 3 columnas
+   ============================================================ */
+.vox-app {
+  display: grid;
+  grid-template-columns: 72px 240px 1fr;
+  height: 100vh;
+  width: 100vw;
+  background: var(--vox-bg);
+}
+
+.vox-app--with-panel {
+  grid-template-columns: 72px 240px 1fr 320px;
+}
+
+/* ============================================================
+   COMPONENTES BASE
+   ============================================================ */
+
+/* --- Pixel border — utilidad para borde tipo "selección de juego" --- */
+.pixel-border {
+  position: relative;
+  border: 2px solid var(--vox-border);
+}
+.pixel-border::before,
+.pixel-border::after {
+  content: '';
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--vox-text-hi);
+}
+.pixel-border::before { top: -2px; left: -2px; }
+.pixel-border::after  { bottom: -2px; right: -2px; }
+
+.pixel-border--amber::before,
+.pixel-border--amber::after {
+  background: var(--vox-amber);
+}
+
+/* --- Sprite frame stack — para animación de fogata --- */
+.sprite-stack {
+  position: relative;
+  display: inline-block;
+}
+.sprite-stack > img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+}
+.sprite-stack > img:first-child {
+  position: relative;
+}
+
+/* --- Voice seat — asiento en la fogata --- */
+.voice-seat {
+  position: relative;
+  display: inline-block;
+}
+.voice-seat__sprite {
+  position: relative;
+  z-index: 2;
+}
+/* Indicador de talking — borde del sprite (no halo) */
+.voice-seat--talking .voice-seat__sprite {
+  outline: 2px solid var(--vox-amber);
+  outline-offset: -1px;
+  animation: vox-pulse-talking var(--vox-pulse) steps(1, end) infinite;
+}
+/* Indicador de muted — solo el cambio de pose, sin overlay */
+.voice-seat--muted .voice-seat__sprite {
+  filter: brightness(0.85) saturate(0.7);
+}
+
+/* --- Channel item — sidebar de salones --- */
+.channel-item {
+  display: flex;
+  align-items: center;
+  gap: var(--vox-s-4);
+  padding: var(--vox-s-2) var(--vox-s-5);
+  font-family: var(--vox-font-mono);
+  font-size: var(--vox-text-sm);
+  color: var(--vox-text-dim);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: none;
+}
+.channel-item:hover {
+  color: var(--vox-text);
+  background: var(--vox-surface);
+}
+.channel-item--active {
+  color: var(--vox-text-hi);
+  background: var(--vox-card);
+  border-left-color: var(--vox-amber);
+}
+.channel-item--voice {
+  /* los canales de voz tienen indicador visual distinto */
+}
+.channel-item__icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.channel-item--active .channel-item__icon {
+  opacity: 1;
+}
+
+/* --- Clan pill — sidebar de clanes --- */
+.clan-pill {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--vox-card);
+  border: 2px solid var(--vox-border);
+  font-family: var(--vox-font-title);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--vox-text);
+  cursor: pointer;
+  position: relative;
+  transition: none;
+}
+.clan-pill:hover {
+  border-color: var(--vox-bronze-hi);
+  background: var(--vox-card-hi);
+}
+.clan-pill--active {
+  border-color: var(--vox-amber);
+  background: var(--vox-card-hi);
+}
+.clan-pill--active::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 32px;
+  background: var(--vox-amber);
+}
+
+/* --- Status dot — minimal, no sobre-cargar --- */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+  background: var(--vox-offline);
+}
+.status-dot--online { background: var(--vox-online); }
+.status-dot--idle   { background: var(--vox-idle); }
+.status-dot--dnd    { background: var(--vox-dnd); }
+
+/* --- Button — hard edges, pixel shadow --- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vox-s-3);
+  padding: var(--vox-s-3) var(--vox-s-5);
+  font-family: var(--vox-font-mono);
+  font-size: var(--vox-text-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--vox-ls-wide);
+  color: var(--vox-text);
+  background: var(--vox-card);
+  border: 2px solid var(--vox-border);
+  cursor: pointer;
+  transition: none;
+}
+.btn:hover {
+  background: var(--vox-card-hi);
+  border-color: var(--vox-border-hi);
+}
+.btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+.btn--primary {
+  background: var(--vox-rust);
+  border-color: var(--vox-amber);
+  color: var(--vox-text-hi);
+}
+.btn--primary:hover {
+  background: var(--vox-amber);
+}
+.btn--ghost {
+  background: transparent;
+  border-color: var(--vox-border-dim);
+}
+
+/* --- Tag / chip --- */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vox-s-2);
+  padding: 2px var(--vox-s-3);
+  font-family: var(--vox-font-mono);
+  font-size: var(--vox-text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--vox-ls-wide);
+  background: var(--vox-card);
+  color: var(--vox-text-dim);
+  border: 1px solid var(--vox-border);
+}
+.tag--amber {
+  color: var(--vox-amber);
+  border-color: var(--vox-rust);
+}
+.tag--bronze {
+  color: var(--vox-bronze-hi);
+  border-color: var(--vox-bronze-dim);
+}
+
+/* --- Atmospheric overlay — vignette + grain --- */
+.atmosphere {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.atmosphere::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 50% 65%, rgba(224, 106, 62, 0.15) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 50%, transparent 30%, rgba(7, 10, 18, 0.6) 100%);
+}
+.atmosphere::after {
+  /* grain sutil — pattern pixelado */
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(255, 255, 255, 0.012) 2px,
+      rgba(255, 255, 255, 0.012) 4px
+    );
+  opacity: 0.6;
+}
+
+/* --- Pixel divider --- */
+.divider {
+  height: 1px;
+  background: var(--vox-border-dim);
+}
+.divider--dashed {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--vox-border-dim) 0,
+    var(--vox-border-dim) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+
+/* --- Accessibility: prefers-reduced-motion --- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  /* Pausar animaciones de fogata y personajes */
+  .sprite-stack > img,
+  .voice-seat--talking .voice-seat__sprite,
+  .campfire-embers > * {
+    animation: none !important;
+  }
+  /* En modo reduced motion, mostrar solo el frame 0 */
+  .sprite-stack > img:not(:first-child) {
+    display: none;
+  }
+}
+
+/* --- Focus visible — accesible, pixel-style --- */
+:focus-visible {
+  outline: 2px solid var(--vox-amber);
+  outline-offset: 2px;
+}

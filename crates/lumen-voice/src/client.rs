@@ -36,6 +36,8 @@ use rtc::rtp_transceiver::rtp_sender::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use bytes::BytesMut;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelMessage};
 use webrtc::media_stream::track_local::TrackLocal;
 use webrtc::media_stream::track_local::static_rtp::TrackLocalStaticRTP;
 use webrtc::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
@@ -311,6 +313,16 @@ struct VoiceSession {
     /// Handle of the signaling run_loop task; awaited in stop() so the session
     /// (and its cpal output stream) is fully dropped before a re-join starts.
     run: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Signaling endpoint + identity, kept for in-place reconnects: when the
+    /// WS drops (network/server hiccup, NOT eviction) the run_loop reconnects
+    /// with these same credentials while the mic, output stream and the
+    /// send/playout/levels tasks stay alive. `Replaced` still tears the whole
+    /// session down.
+    ws_url: String,
+    token: String,
+    channel_id: String,
+    user_id: String,
+    username: String,
 }
 
 impl VoiceSession {
@@ -432,10 +444,31 @@ impl VoiceSession {
                 // model is watched so the UI ComboBox applies live, not on
                 // re-join (see the per-frame check below).
                 let mut current_model = *suppressor_model.read();
-                let mut ns = crate::audio::NoiseSuppressor::with_model(current_model);
+                let mut current_aec = aec_enabled.load(Ordering::SeqCst);
+                let mut ns =
+                    crate::audio::NoiseSuppressor::with_model_and_aec(current_model, current_aec);
                 let mut frame_idx = 0u64;
                 let mut loop_exit = None;
+                // H1 silence path: on NS-confirmed silence, skip the opus
+                // encode and resend the last encoded silence packet (RTP
+                // seq/ts still advance per frame, so the remote just decodes
+                // the same near-silence — no gap, no edge cut). The cached
+                // packet is refreshed periodically so CNG state can't go
+                // stale, and any frame with speech (post-NS/GC2 detector) or
+                // a loud raw frame re-encodes immediately.
+                let mut silence_pkt: Option<Vec<u8>> = None;
+                let mut silence_streak: u32 = 0;
+                // Per-stage µs attribution (diag-gated; ~60 ns/frame overhead
+                // when off): rms/shed → NS chain → opus encode → fan-out.
+                let timing = diag::enabled();
+                let mut t0 = std::time::Instant::now();
+                let mut t1 = std::time::Instant::now();
+                let mut t2 = std::time::Instant::now();
+                let mut t3 = std::time::Instant::now();
                 while let Some(mut frame) = mic_rx.recv().await {
+                    if timing {
+                        t0 = std::time::Instant::now();
+                    }
                     // Live model switch: applies immediately, not on re-join.
                     // Recreating the suppressor resets its streaming state
                     // (AEC3/FE reconverge in a few hundred ms — an acceptable
@@ -443,9 +476,11 @@ impl VoiceSession {
                     // this single thread is safe for the FastEnhancer C global
                     // engine (fe_free then fe_init).
                     let m = *suppressor_model.read();
-                    if m != current_model {
-                        ns = crate::audio::NoiseSuppressor::with_model(m);
+                    let a = aec_enabled.load(Ordering::SeqCst);
+                    if m != current_model || a != current_aec {
+                        ns = crate::audio::NoiseSuppressor::with_model_and_aec(m, a);
                         current_model = m;
+                        current_aec = a;
                     }
                     if stopping.load(Ordering::SeqCst) {
                         loop_exit = Some("stopping");
@@ -492,6 +527,9 @@ impl VoiceSession {
                         }
                     }
                     local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
+                    if timing {
+                        t1 = std::time::Instant::now(); // render+shed+rms done
+                    }
                     // Always-transmit (Discord/Krisp-style): `process_gated`
                     // runs the full chain (AEC3 + denoiser + leveler + limiter)
                     // and ALWAYS returns `Some(cleaned)` — every denoised frame
@@ -507,6 +545,9 @@ impl VoiceSession {
                         // Some); kept as a defensive no-op.
                         continue;
                     };
+                    if timing {
+                        t2 = std::time::Instant::now(); // NS done
+                    }
                     if diag::enabled() && frame_idx % 25 == 0 {
                         diag::log(
                             "proc",
@@ -516,16 +557,50 @@ impl VoiceSession {
                                 "model": current_model.as_str(),
                                 "fe": ns.neural_available(),
                                 "aec": aec_enabled.load(Ordering::SeqCst),
+                                "shed_us": t1.duration_since(t0).as_micros(),
+                                "ns_us": t2.duration_since(t1).as_micros(),
                             }),
                         );
                     }
                     frame_idx += 1;
-                    let encoded = match encoder.lock().await.encode(&cleaned) {
-                        Ok(e) => e,
-                        Err(_) => continue,
+                    let rms_raw = f32::from_bits(local_level.load(Ordering::SeqCst));
+                    let speech = ns.speech_detected() || rms_raw > 0.01;
+                    let (reuse, new_streak) =
+                        crate::audio::silence_reuse_decision(speech, silence_streak, silence_pkt.is_some());
+                    silence_streak = new_streak;
+                    let (encoded, reused) = if reuse {
+                        (silence_pkt.as_ref().unwrap().clone(), true)
+                    } else {
+                        let e = match encoder.lock().await.encode(&cleaned) {
+                            Ok(e) => e,
+                            Err(_) => continue,
+                        };
+                        if speech {
+                            silence_pkt = None;
+                        } else {
+                            // First/second silence frame (and the ~8 s
+                            // refresh): encode fresh and cache for reuse.
+                            silence_pkt = Some(e.clone());
+                        }
+                        (e, false)
                     };
+                    if timing {
+                        t3 = std::time::Instant::now(); // encode done
+                    }
                     for peer in peers.lock().values() {
                         let _ = peer.send_tx.send(encoded.clone());
+                    }
+                    if timing && frame_idx % 25 == 0 {
+                        diag::log(
+                            "proc_t",
+                            &serde_json::json!({
+                                "enc_us": t3.duration_since(t2).as_micros(),
+                                "frame_us": std::time::Instant::now().duration_since(t0).as_micros(),
+                                "pkt_len": encoded.len(),
+                                "reused": reused,
+                                "streak": silence_streak,
+                            }),
+                        );
                     }
                 }
                 // If we get here, the mic channel closed OR stopping was set.
@@ -539,14 +614,16 @@ impl VoiceSession {
             });
         }
 
-        // Levels: emit ~10 Hz so the UI can drive metering.
+        // Levels: emit ~12.5 Hz (80 ms) so the UI can drive metering AND the
+        // campfire AnimationImage can ride these renders at its baked cadence
+        // (12.5 Hz = 80 ms/frame) without scheduling its own redraws.
         {
             let peers = peers.clone();
             let local_level = local_level.clone();
             let events = events.clone();
             let stopping = stopping.clone();
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_millis(100));
+                let mut ticker = tokio::time::interval(Duration::from_millis(80));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     if stopping.load(Ordering::SeqCst) {
@@ -590,6 +667,7 @@ impl VoiceSession {
                         break;
                     }
                     ticker.tick().await;
+                    let tick_t0 = std::time::Instant::now();
                     acc.fill(0);
                     let mut talking = 0usize;
                     let mut n_expand = 0u32;
@@ -636,6 +714,8 @@ impl VoiceSession {
                         talking += 1;
                     }
                     if diag::enabled() {
+                        let tick_us = tick_t0.elapsed().as_micros();
+                        let (ring_frames, shed) = output.stats();
                         if let Some(nq) = snapshot.iter().next().and_then(|p| p.neteq.try_lock()) {
                             let st = nq.get_statistics();
                             diag::log(
@@ -649,6 +729,26 @@ impl VoiceSession {
                                     "target_ms": st.target_delay_ms,
                                     "pps": st.packets_per_sec,
                                     "waiting_ms": st.network.mean_waiting_time_ms,
+                                    "peers": snapshot.len(),
+                                    "talking": talking,
+                                    "tick_us": tick_us,
+                                    "ring_frames": ring_frames,
+                                    "shed": shed,
+                                }),
+                            );
+                        } else {
+                            diag::log(
+                                "mix",
+                                &serde_json::json!({
+                                    "expand": n_expand,
+                                    "normal": n_normal,
+                                    "cng": n_cng,
+                                    "other": n_other,
+                                    "peers": snapshot.len(),
+                                    "talking": talking,
+                                    "tick_us": tick_us,
+                                    "ring_frames": ring_frames,
+                                    "shed": shed,
                                 }),
                             );
                         }
@@ -685,7 +785,13 @@ impl VoiceSession {
             signal_tx: Mutex::new(Some(signal_tx)),
             stopping,
             run: tokio::sync::Mutex::new(None),
+            ws_url,
+            token: args.token,
+            channel_id: args.channel_id,
+            user_id: args.user_id,
+            username: args.username,
         });
+        diag::log("session_start", &serde_json::json!({"channel": session.channel_id}));
 
         let loop_session = Arc::clone(&session);
         *session.run.lock().await = Some(tokio::spawn(async move {
@@ -694,17 +800,34 @@ impl VoiceSession {
         Ok(session)
     }
 
-    /// Drive the signaling loop until the session closes (stop() or socket end).
+    /// Drive the signaling loop until the session closes (stop() or server
+    /// eviction) — or reconnect IN PLACE when the socket merely drops: the
+    /// session (mic, output stream, send/playout/levels tasks) survives, only
+    /// the WS is replaced. The host never sees a Signaling::Closed for a
+    /// plain drop, so it must not schedule its own re-join (a second session
+    /// would reopen the streams and break the mic). `Replaced` still tears
+    /// everything down.
     async fn run_loop(self: Arc<Self>, mut signal_rx: mpsc::UnboundedReceiver<SignalEvent>) {
         let mut replaced = false;
         loop {
+            let mut reconnect = false;
             tokio::select! {
                 event = signal_rx.recv() => {
                     let Some(event) = event else { break };
                     match event {
                         SignalEvent::Closed { replaced: r } => {
-                            replaced = r;
-                            break;
+                            if r {
+                                replaced = true;
+                                break;
+                            }
+                            // Socket died (network hiccup, server dropped the
+                            // idle WS). Reconnect in place.
+                            diag::log("ws_closed", &serde_json::json!({"replaced": false}));
+                            let _ = self.events.send(VoiceEvent::Debug {
+                                peer_id: None,
+                                message: "signaling ws closed — reconnecting in place".to_string(),
+                            });
+                            reconnect = true;
                         }
                         _ => self.handle_event(event).await,
                     }
@@ -715,8 +838,90 @@ impl VoiceSession {
                     }
                 }
             }
+            if reconnect {
+                match self.reconnect().await {
+                    Some(new_rx) => signal_rx = new_rx,
+                    None => break, // stop() raced the reconnect — tear down
+                }
+            }
         }
         self.teardown(replaced).await;
+    }
+
+    /// Re-establish the signaling socket with the same credentials, backing
+    /// off 2 s → 30 s. The session (mic, output, send/playout/levels) is NOT
+    /// touched; only the WS is replaced. Stale peers are closed first — the
+    /// DO evicted us when the socket dropped, so the old connections are
+    /// half-dead and the re-join recreates the current set from the fresh
+    /// peer list (Joined/PeerJoined/Offer). Returns the new inbound stream,
+    /// or None when the session was stopped (a leave racing the reconnect).
+    async fn reconnect(&self) -> Option<mpsc::UnboundedReceiver<SignalEvent>> {
+        // Close the stale peers once. They stay in the map so the Joined
+        // re-sync (handle_event) can tell the host which ones are gone for
+        // good — it emits PeerLeft for those and clears the survivors so the
+        // upcoming offers recreate fresh connections.
+        {
+            let stale: Vec<Peer> = self.peers.lock().values().cloned().collect();
+            for peer in stale {
+                peer.stop.store(true, Ordering::SeqCst);
+                let _ = peer.pc.close().await;
+            }
+        }
+        let mut delay = Duration::from_secs(2);
+        loop {
+            if self.stopping.load(Ordering::SeqCst) {
+                return None;
+            }
+            match SignalingClient::connect(
+                &self.ws_url,
+                &self.token,
+                &self.channel_id,
+                &self.user_id,
+                &self.username,
+            )
+            .await
+            {
+                Ok((signal, rx)) => {
+                    if self.stopping.load(Ordering::SeqCst) {
+                        // leave() raced the connect: close the fresh socket so
+                        // no ghost connection lingers on the DO.
+                        let _ = signal.tx.send(SignalOut::Close);
+                        return None;
+                    }
+                    *self.signal_tx.lock() = Some(signal.tx);
+                    diag::log(
+                        "reconnect_ok",
+                        &serde_json::json!({"backoff_ms": delay.as_millis() as u64}),
+                    );
+                    let _ = self.events.send(VoiceEvent::Debug {
+                        peer_id: None,
+                        message: "signaling ws reconnected".to_string(),
+                    });
+                    return Some(rx);
+                }
+                Err(err) => {
+                    diag::log(
+                        "reconnect_err",
+                        &serde_json::json!({"err": err.to_string(), "backoff_ms": delay.as_millis() as u64}),
+                    );
+                    // Wait out the backoff, but bail promptly on stop() so a
+                    // leave() never blocks for the full window.
+                    let sleep = tokio::time::sleep(delay);
+                    tokio::pin!(sleep);
+                    loop {
+                        tokio::select! {
+                            _ = &mut sleep => break,
+                            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                                if self.stopping.load(Ordering::SeqCst) {
+                                    return None;
+                                }
+                            }
+                        }
+                    }
+                    delay = (delay * 2).min(Duration::from_secs(30));
+                }
+            }
+        }
     }
 
     async fn handle_event(&self, event: SignalEvent) {
@@ -729,6 +934,25 @@ impl VoiceSession {
                     peer_id: None,
                     message: format!("joined channel as peer {peer_id}"),
                 });
+                // Re-sync the local peer set with the server's fresh list.
+                // No-op on the first join (empty map); after an in-place
+                // reconnect this drops peers that left while our socket was
+                // down (PeerLeft → the host removes the tile) and clears the
+                // stale survivors — already closed by reconnect() — so the
+                // upcoming offers recreate fresh connections.
+                let live: Vec<&str> = peers.iter().map(|p| p.peer_id.as_str()).collect();
+                let held: Vec<String> = self.peers.lock().keys().cloned().collect();
+                for id in held {
+                    let still_live = live.iter().any(|l| *l == id);
+                    let removed = self.peers.lock().remove(&id);
+                    if let Some(peer) = removed {
+                        peer.stop.store(true, Ordering::SeqCst);
+                        let _ = peer.pc.close().await;
+                        if !still_live {
+                            let _ = self.events.send(VoiceEvent::PeerLeft { peer_id: id });
+                        }
+                    }
+                }
                 // Existing peers will offer to us; announce them for the UI.
                 for p in peers {
                     let _ = self.events.send(VoiceEvent::PeerJoined {
@@ -745,7 +969,7 @@ impl VoiceSession {
                     username: p.username.clone(),
                 });
                 if !self.peers.lock().contains_key(&p.peer_id) {
-                    let peer = match self.create_peer(&p.peer_id, &p.user_id, &signal_tx).await {
+                    let peer = match self.create_peer(&p.peer_id, &p.user_id, &signal_tx, true).await {
                         Ok(peer) => peer,
                         Err(err) => {
                             diag::log("peer_err", &serde_json::json!({"where": "create_peer", "err": err.to_string()}));
@@ -792,11 +1016,15 @@ impl VoiceSession {
     }
 
     /// Create a peer connection for `peer_id`. The caller decides who offers.
+    /// `create_dc` = true only on the offerer side: the offerer's "chat"
+    /// data channel rides the offer SDP; the answerer receives it via
+    /// `on_data_channel` (ADR-006).
     async fn create_peer(
         &self,
         peer_id: &str,
         user_id: &str,
         signal_tx: &mpsc::UnboundedSender<SignalOut>,
+        create_dc: bool,
     ) -> Result<Peer> {
         let mut media_engine = MediaEngine::default();
         media_engine.register_default_codecs()?;
@@ -877,6 +1105,27 @@ impl VoiceSession {
         );
         let sender = pc.add_track(Arc::clone(&track) as Arc<dyn TrackLocal>).await?;
 
+        // In-call chat data channel (ADR-006): typing + messages ride P2P.
+        let dc = if create_dc {
+            let dc = pc.create_data_channel("chat", None).await?;
+            let dc_poller = dc.clone();
+            let events = self.events.clone();
+            let peer_id = peer_id.to_string();
+            tokio::spawn(async move {
+                while let Some(ev) = dc_poller.poll().await {
+                    if let DataChannelEvent::OnMessage(msg) = ev {
+                        let _ = events.send(VoiceEvent::DataChannelMessage {
+                            peer_id: peer_id.clone(),
+                            data: msg.data.to_vec(),
+                        });
+                    }
+                }
+            });
+            Some(dc)
+        } else {
+            None
+        };
+
         let (send_tx, send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         spawn_send_worker(track, sender.clone(), ssrc, send_rx, stop.clone());
 
@@ -884,6 +1133,7 @@ impl VoiceSession {
             peer_id: peer_id.to_string(),
             user_id: user_id.to_string(),
             pc,
+            dc,
             sender,
             send_tx,
             neteq,
@@ -900,7 +1150,7 @@ impl VoiceSession {
     ) {
         // Create the peer if the offer precedes any peer-joined message.
         if !self.peers.lock().contains_key(from) {
-            match self.create_peer(from, "", signal_tx).await {
+            match self.create_peer(from, "", signal_tx, false).await {
                 Ok(peer) => {
                     self.peers.lock().insert(from.to_string(), peer);
                 }
@@ -991,7 +1241,25 @@ impl VoiceSession {
         }
     }
 
+    /// Send bytes over a peer's "chat" data channel (in-call chat, ADR-006).
+    async fn send_data_channel(&self, peer_id: &str, data: &[u8]) -> std::result::Result<(), String> {
+        let peer = self.peers.lock().get(peer_id).cloned();
+        let Some(peer) = peer else {
+            return Err("unknown peer".into());
+        };
+        let Some(dc) = peer.dc.as_ref() else {
+            return Err("peer has no data channel".into());
+        };
+        dc.send(BytesMut::from(data))
+            .await
+            .map_err(|e| format!("data channel send: {e}"))
+    }
+
     async fn teardown(&self, replaced: bool) {
+        diag::log(
+            "teardown",
+            &serde_json::json!({"replaced": replaced, "reason": "run_loop_exit"}),
+        );
         self.stopping.store(true, Ordering::SeqCst);
         let peers: Vec<Peer> = self.peers.lock().drain().map(|(_, p)| p).collect();
         for peer in peers {
@@ -1043,6 +1311,8 @@ struct Peer {
     peer_id: String,
     user_id: String,
     pc: Arc<dyn PeerConnection>,
+    /// Local "chat" data channel (ADR-006, Fase 3) — Some on the offerer.
+    dc: Option<Arc<dyn DataChannel>>,
     #[allow(dead_code)]
     sender: Arc<dyn RtpSender>,
     send_tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -1060,6 +1330,7 @@ impl Clone for Peer {
             peer_id: self.peer_id.clone(),
             user_id: self.user_id.clone(),
             pc: self.pc.clone(),
+            dc: self.dc.clone(),
             sender: self.sender.clone(),
             send_tx: self.send_tx.clone(),
             neteq: self.neteq.clone(),
@@ -1233,5 +1504,125 @@ impl PeerConnectionEventHandler for PeerHandler {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    /// In-place reconnect contract: when the signaling WS drops for a reason
+    /// OTHER than eviction (replaced=false), the run_loop re-establishes it
+    /// with the same credentials WITHOUT tearing down the session — no
+    /// `VoiceEvent::Signaling` (the host must not schedule its own re-join),
+    /// the session keeps running, and a second WS connection is established.
+    /// `Replaced` (eviction) is the only path that tears down.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_drop_reconnects_in_place_without_teardown() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conns = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let conns_srv = conns.clone();
+        let joined = serde_json::json!({"type": "joined", "peerId": "me", "peers": []}).to_string();
+
+        // Mini DO: accept a join, reply `joined`, then DROP the first socket
+        // (no close frame → the client reports replaced=false). The second
+        // connection (the in-place reconnect) is held until the client closes
+        // it in stop().
+        let srv = tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { break };
+                let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { break };
+                let _ = ws
+                    .send(Message::Text(joined.clone().into()))
+                    .await;
+                // Consume a few messages (join, pings) so the socket stays
+                // alive long enough for the client to process `joined`.
+                let mut n = 0u32;
+                loop {
+                    let Some(Ok(msg)) = ws.next().await else { break };
+                    if msg.is_close() {
+                        break;
+                    }
+                    n += 1;
+                    if n >= 2 {
+                        break;
+                    }
+                }
+                conns_srv.fetch_add(1, Ordering::SeqCst);
+                if first {
+                    first = false;
+                    // Simulated network/server drop: the socket dies with no
+                    // close frame → replaced=false → in-place reconnect.
+                    drop(ws);
+                } else {
+                    // Reconnected connection: keep it open until the client
+                    // leaves (stop() sends Close).
+                    while ws.next().await.is_some() {}
+                    break;
+                }
+            }
+        });
+
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel::<VoiceEvent>();
+        let args = VoiceJoinArgs {
+            backend_url: format!("ws://{addr}"),
+            token: "test-token".into(),
+            channel_id: "ch-test".into(),
+            user_id: "u-test".into(),
+            username: "tester".into(),
+            ice_servers: vec![],
+            open_mic: false,
+            input_wav: None,
+            open_output: false,
+        };
+        let session = VoiceSession::start(
+            events_tx,
+            args,
+            Arc::new(parking_lot::RwLock::new(crate::audio::SuppressorModel::NsOnly)),
+            false,
+        )
+        .await
+        .expect("headless session starts");
+
+        // First join established, then the server dropped the socket.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while conns.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("session reconnected to the signaling server");
+
+        // The session survived the drop: run_loop alive, no teardown, and the
+        // host never got a Signaling event (it must not re-join → the streams
+        // and session stay untouched).
+        assert!(!session.run_ended().await, "session must survive a plain WS drop");
+        tokio::time::sleep(Duration::from_millis(200)).await; // let events settle
+        let mut drained = Vec::new();
+        while let Ok(ev) = events_rx.try_recv() {
+            drained.push(ev);
+        }
+        let signaling: Vec<&VoiceEvent> = drained
+            .iter()
+            .filter(|ev| matches!(ev, VoiceEvent::Signaling { .. }))
+            .collect();
+        assert!(
+            signaling.is_empty(),
+            "no Signaling event may be emitted for a plain drop: {signaling:?}"
+        );
+        // The reconnect re-sent join and got `joined` again.
+        let joins = drained
+            .iter()
+            .filter(|ev| matches!(ev, VoiceEvent::Debug { message, .. } if message.starts_with("joined channel as peer")))
+            .count();
+        assert_eq!(joins, 2, "reconnect must re-join and receive `joined` again");
+
+        session.stop().await;
+        srv.abort();
     }
 }

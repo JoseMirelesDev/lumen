@@ -1,0 +1,40 @@
+// Lumen primitives — meters module.
+import { AppTheme } from "../theme.slint";
+
+// VoiceMeter — live voice spectrum, PIXEL-ART: 5 chunky bars with heights on
+// a hard 4px grid (each step is a full "pixel" square, no fractional bars),
+// 2px floor so silence is visible. Quantized, never analog-smooth.
+export component VoiceMeter inherits Rectangle {
+    in property <float> level;   // 0..1 (RMS at ~10 Hz)
+    in property <bool> active: false; // speaking gate
+    in property <bool> reduced-motion: false;
+    width: 30px;
+    height: 22px;
+    background: transparent;
+
+    // 4px-grid bar height. q counts full 4px pixels; the center bar can be
+    // one pixel taller than its neighbors for a peak profile.
+    // Silence threshold 0.05: room-noise RMS (~0.02-0.04) must NOT animate —
+    // only real speech drives the bars (aligned with SPEAK_ON in voice.rs).
+    function bar-height(i: int) -> length {
+        if !root.active || root.level <= 0.05 { return 4px; }
+        // perceptual: sqrt maps quiet speech into visible pixels, then floor
+        // to whole pixels on a 4px grid (max 4 pixels = 16px).
+        let p = Math.floor(Math.sqrt(root.level) * 4.0) + 1; // 1..4 pixels
+        let bonus = i == 2 ? 1 : 0; // center peak
+        return Math.min(p + bonus, 4) * 4px;
+    }
+
+    HorizontalLayout {
+        width: 100%;
+        height: 100%;
+        alignment: center;           // main axis: center the cluster
+        cross-axis-alignment: end;   // cross axis: bottom-align bars
+        spacing: 3px;
+        for i in 5: Rectangle {
+            width: 4px;
+            height: root.bar-height(i);
+            background: root.active ? AppTheme.colors.ice : AppTheme.colors.bronze-dim;
+        }
+    }
+}

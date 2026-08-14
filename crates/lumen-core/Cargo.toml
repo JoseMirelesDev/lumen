@@ -15,3 +15,6 @@ reqwest.workspace = true
 directories.workspace = true
 url.workspace = true
 parking_lot.workspace = true
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+rand.workspace = true

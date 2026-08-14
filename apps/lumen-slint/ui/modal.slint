@@ -1,74 +1,173 @@
-// Reusable modal card: dimmed full-window overlay + centered card with a
-// single text field and Cancel/submit buttons. Used for create-server,
-// join-server and create-channel dialogs (hosted at AppWindow level).
+// Reusable modal card — hard-corner, pixel shadow, mono labels, Vox widgets.
+// Used for create-server, join-server and create-channel dialogs.
+// Inherits the overlay skeleton (backdrop, Escape, click-outside, shadow,
+// centered card + event swallow) from VoxOverlay; only the card content
+// (icon header, hint, input, kind toggle, actions) lives here. Content is
+// vertically centered in the card so a small dialog never floats empty.
 
 import { AppTheme } from "theme.slint";
-import { Button, LineEdit } from "std-widgets.slint";
+import { Icons } from "icons.slint";
+import { VoxButton } from "primitives/buttons.slint";
+import { VoxLineEdit } from "primitives/inputs.slint";
+import { IconGlyph } from "primitives/icon.slint";
+import { VoxOverlay } from "primitives/overlay.slint";
+import { Divider } from "primitives/layout.slint";
 
-export component ModalCard inherits Rectangle {
+export component ModalCard inherits VoxOverlay {
     in property <string> title;
+    in property <string> hint: "";
+    in property <string> icon: Icons.hash;
     in property <string> placeholder;
     in property <string> button-label;
     in property <bool> show-kind;
+    /// Fase 2: confirm dialogs hide the input row entirely.
+    in property <bool> show-input: true;
+    /// Fase 2: destructive primary action (error styling).
+    in property <bool> danger: false;
     callback cancel();
     callback submit-kind(string, string);
-    property <string> value;
-    property <string> kind: "text";
+    in-out property <string> value;
+    in-out property <string> kind: "text";
 
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.6);
+    // VoxOverlay's close() (Escape/backdrop) routes to our cancel callback
+    close() => { root.cancel(); }
+    card-height: root.show-input ? 240px : 190px;
 
-    Rectangle {
-        width: 300px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        background: AppTheme.colors.bg-raised;
-        border-radius: AppTheme.radius;
+    // Anchored composition: header pinned top, input + actions grouped at the
+    // bottom, the flexible spacer between them absorbs the card's slack. No
+    // floaty centered gap around the controls (white space is purposeful).
+    VerticalLayout {
+        padding: AppTheme.sp-5;
+        spacing: AppTheme.sp-3;
 
-        VerticalLayout {
-            padding: 20px;
-            spacing: 12px;
-
+        // icon + title header — cabecera del tablón
+        HorizontalLayout {
+            alignment: center;
+            spacing: AppTheme.sp-2;
+            cross-axis-alignment: center;
+            IconGlyph {
+                glyph: root.icon;
+                size: 26px;
+                text-color: AppTheme.colors.rose;
+            }
             Text {
                 text: root.title;
-                font-size: 16px;
+                font-family: AppTheme.font-display;
                 font-weight: 700;
-                color: AppTheme.colors.text;
+                font-size: AppTheme.font-lg;
+                letter-spacing: 0.5px;
+                color: AppTheme.colors.text-hi;
+                vertical-alignment: center;
             }
-            LineEdit {
-                text <=> root.value;
-                placeholder-text: root.placeholder;
-                accepted => { root.submit-kind(root.value, root.kind); }
-            }
-            if root.show-kind : HorizontalLayout {
-                spacing: 14px;
-                Button {
-                    text: "Text";
-                    primary: root.kind == "text";
-                    clicked => { root.kind = "text"; }
-                }
-                Button {
-                    text: "Voice";
-                    primary: root.kind == "voice";
-                    clicked => { root.kind = "voice"; }
-                }
-            }
-            HorizontalLayout {
-                spacing: 10px;
-                alignment: end;
-                Button {
-                    text: "Cancel";
-                    
-                    clicked => { root.cancel(); }
-                }
-                Button {
-                    text: root.button-label;
-                    enabled: root.value != "";
-                    primary: true;
-                    clicked => { root.submit-kind(root.value, root.kind); }
+        }
+        Divider { }
+        if root.hint != "" : Text {
+            text: root.hint;
+            font-family: AppTheme.font-mono;
+            font-size: AppTheme.font-xs;
+            color: AppTheme.colors.text-dim;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        // flexible space — pushes the input/actions group to the bottom
+        Rectangle { vertical-stretch: 1; }
+        if root.show-input : VoxLineEdit {
+            text <=> root.value;
+            placeholder: root.placeholder;
+            autofocus: true;
+            accepted(text) => {
+                if text != "" {
+                    root.submit-kind(text, root.kind);
                 }
             }
+        }
+        if root.show-kind : HorizontalLayout {
+            alignment: center;
+            spacing: AppTheme.sp-2;
+            VoxButton {
+                text: "Texto";
+                icon: Icons.chat-text;
+                compact: true;
+                fixed-type: true;
+                primary: root.kind == "text";
+                clicked => { root.kind = "text"; }
+            }
+            VoxButton {
+                text: "Voz";
+                icon: Icons.speaker-high;
+                compact: true;
+                fixed-type: true;
+                primary: root.kind == "voice";
+                clicked => { root.kind = "voice"; }
+            }
+        }
+        HorizontalLayout {
+            spacing: AppTheme.sp-2;
+            alignment: center;
+            VoxButton {
+                text: "Cancelar";
+                compact: true;
+                clicked => { root.cancel(); }
+            }
+            VoxButton {
+                text: root.button-label;
+                primary: !root.danger;
+                error: root.danger;
+                compact: true;
+                enabled: !root.show-input || root.value != "";
+                clicked => { root.submit-kind(root.value, root.kind); }
+            }
+        }
+    }
+}
+
+// MenuCard — small action list (server actions, Fase 2). Inherits the same
+// overlay skeleton; each row fires `action(label)`.
+export component MenuCard inherits VoxOverlay {
+    in property <string> title;
+    in property <bool> can-manage: false; // owner → manage/delete, not leave
+    callback cancel();
+    callback action(string);
+    close() => { root.cancel(); }
+    card-width: AppTheme.modal-width;
+    card-height: 230px;
+
+    VerticalLayout {
+        padding: AppTheme.sp-4;
+        spacing: AppTheme.sp-2;
+        Text {
+            text: root.title;
+            font-family: AppTheme.font-display;
+            font-weight: 700;
+            font-size: AppTheme.font-md;
+            color: AppTheme.colors.text-hi;
+            horizontal-alignment: center;
+        }
+        Divider { }
+        VoxButton {
+            text: "Renombrar servidor";
+            icon: Icons.pencil-simple;
+            width-override: 220px;
+            clicked => { root.action("rename"); }
+        }
+        VoxButton {
+            text: "Nueva invitación";
+            icon: Icons.link;
+            width-override: 220px;
+            clicked => { root.action("invite"); }
+        }
+        if !root.can-manage : VoxButton {
+            text: "Abandonar servidor";
+            icon: Icons.door-open;
+            width-override: 220px;
+            clicked => { root.action("leave"); }
+        }
+        if root.can-manage : VoxButton {
+            text: "Eliminar servidor";
+            icon: Icons.x;
+            error: true;
+            width-override: 220px;
+            clicked => { root.action("delete"); }
         }
     }
 }

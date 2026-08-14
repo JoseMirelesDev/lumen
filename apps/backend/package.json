@@ -23,7 +23,7 @@
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.65.0",
     "vitest": "^3.0.0",
-    "wrangler": "^4.0.0",
+    "wrangler": "^4.123.0",
     "ws": "^8.18.0"
   }
 }

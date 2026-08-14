@@ -1,63 +1,185 @@
-// Lumen visual identity — port of apps/desktop/src/app.css + the component
-// spacing of the original Svelte UI. The single source for every view:
-// colors, spacing grid, layout constants and typography. Views consume these
-// tokens (and the primitives in base.slint) instead of repeating literals.
+/* Hallmark · macrostructure: Campfire Scene · tone: medieval-war ritual ·
+ * anchor hue: crimson (hue ~8°) + gold (hue ~46°) · pre-emit critique:
+ * P4 H4 E4 S5 R4 V5
+ *
+ * Vox — Lumen visual identity, medieval-war edition.
+ * Port of designs/vox-mockups (Vox design system) with the viking-orange
+ * energy accent re-anchored to a crimson + heraldic-gold pair ("hordas y
+ * legiones", not vikingos). Single source of truth for every view: colors,
+ * fonts, spacing, radii, motion. Views consume these tokens (and the
+ * primitives in base.slint) — never inline literals.
+ *
+ * Palette sanity (WCAG AA on bg #0C111C / card #232A3E):
+ *   ivory #E7E1D4  14.5:1 / 10.9:1  · text-dim #9A98B4 6.8:1 / 5.1:1
+ *   gold  #86B9CE   9.7:1 /  7.4:1  · ember #D1635E    5.0:1 / 3.8:1
+ *   crimson #9E312A 2.6:1 (fills/borders only, never small text)
+ *   teal-hi #5AA0AA 6.3:1 · bronze-hi #C9A876 8.1:1 · fel #7FC96E 9.4:1 (ritual)
+ */
+
+/* Font embedding: `import "…"` registers each face; Slint matches
+ * font-family + font-weight against the loaded faces. Static weights were
+ * instanced from the OFL variable fonts (scripts/gen fonts step, docs).
+ * Phosphor is MIT (@phosphor-icons/web regular) — glyphs in ui/icons.slint. */
+import "../fonts/Cinzel-Medium.ttf";
+import "../fonts/Cinzel-Bold.ttf";
+import "../fonts/Cinzel-Black.ttf";
+import "../fonts/Inter-Regular.ttf";
+import "../fonts/Inter-Medium.ttf";
+import "../fonts/Inter-SemiBold.ttf";
+import "../fonts/JetBrainsMono-Regular.ttf";
+import "../fonts/JetBrainsMono-Medium.ttf";
+import "../fonts/JetBrainsMono-Bold.ttf";
 
 export struct Theme {
-    bg: color,
-    bg-raised: color,
-    bg-list: color,
-    bg-rail: color,
+    // --- surfaces (dark navy-charcoal family, unchanged from Vox) ---
+    bg: color,          // app base
+    bg-deep: color,     // deepest (rail, scene floor)
+    surface: color,     // raised (panels)
+    card: color,        // cards, inputs, rows
+    card-hi: color,     // card hover
     bg-hover: color,
     bg-active: color,
     bg-pressed: color,
-    border: color,
-    text: color,
-    text-dim: color,
-    accent: color,
-    danger: color,
+    border: color,      // standard borders
+    border-dim: color,  // subtle borders
+    border-hi: color,   // active borders
+    dim: color,         // dim overlay (muted/deafened states)
+    backdrop: color,    // overlay dim behind modals/panels
+    panel-translucent: color, // floating panels over the scene
+    talking-edge: color, // talking row/seat edge (alpha)
+    muted-edge: color,  // muted row/seat edge (alpha)
+    error-tint: color,  // destructive/error button tint
+    // --- text ---
+    text: color,        // ivory
+    text-hi: color,     // bright ivory
+    text-dim: color,    // secondary (lifted for AA on card)
+    text-mute: color,   // muted
+    // --- energy: medieval war (crimson + steel-ice), replaces viking orange
+    // and the amber/gold era. Crimson = fills, borders, dnd (never small
+    // text); rose = the only red that passes 4.5:1 on bg (energy text);
+    // ice = peak/active/focus — cold steel, reads against the ember-less
+    // palette the way heraldic metal did on banners.
+    crimson: color,     // energy base — fills, borders, dnd (never small text)
+    crimson-hi: color,  // brighter crimson for hover fills
+    rose: color,        // bright energy — the only crimson-family that passes
+                        // 4.5:1 on bg; used where energy text must read
+    ice: color,         // peak/active — talking peak, focus ring, accents
+    ice-hi: color,      // brightest peak
+    bronze: color,      // secondary warm (unchanged)
+    bronze-hi: color,   // bronze highlight
+    bronze-dim: color,  // muted bronze (muted-state edges)
+    // --- cold contrast (Hyper Light Drifter family, unchanged) ---
+    teal: color,
+    teal-hi: color,
+    indigo: color,
+    fel: color,         // RESERVED ritual accent (Legion nod) — rare events only
+    // --- ritual glow / shadows (alpha stops shared by login + voice) ---
+    glow-rose-start: color, // radial gradient start — rose at ~8% alpha
+    glow-rose-end: color,   // radial gradient end — transparent rose
+    glow-deep-fade: color,  // transparent bg-deep (campfire floor fade)
+    // --- status ---
     online: color,
-    state-mid: color,
+    idle: color,
+    dnd: color,
+    offline: color,
+    // --- aliases (views use these names; keep meaning stable) ---
+    accent: color,      // primary action accent -> ice
+    danger: color,      // destructive -> crimson
+    state-mid: color,   // neutral state -> text-mute
 }
 
 export global AppTheme {
     in property <Theme> colors: {
-        bg: #1e1f22,
-        bg-raised: #2b2d31,
-        bg-list: #2b2d31,
-        bg-rail: #1a1b1e,
-        bg-hover: #35373c,
-        bg-active: #393c41,
-        bg-pressed: #2f3136,
-        border: #26272b,
-        text: #e6e6ea,
-        text-dim: #9ba0a8,
-        accent: #5865f2,
-        danger: #f23f43,
-        online: #3ba55d,
-        state-mid: #b9bbbe,
+        bg: #0C111C,
+        bg-deep: #070A12,
+        surface: #141A28,
+        card: #232A3E,
+        card-hi: #2B334A,
+        bg-hover: #232A3E,
+        bg-active: #2B334A,
+        bg-pressed: #1F2536,
+        border: #363C54,
+        border-dim: #1F2536,
+        border-hi: #4A5273,
+        dim: #070A1280,
+        backdrop: #070A1299,
+        panel-translucent: #141A28EB,
+        talking-edge: #86B9CE40,
+        muted-edge: #5A4D3840,
+        error-tint: #D1635E66,
+        text: #E7E1D4,
+        text-hi: #F0E6D8,
+        text-dim: #9A98B4,
+        text-mute: #8F91AF,  // lifted from #5C5E78: 2.9:1 was below AA
+        crimson: #9E312A,
+        crimson-hi: #B84234,
+        rose: #D1635E,
+        ice: #86B9CE,
+        ice-hi: #A4CFDF,
+        bronze: #8A7355,
+        bronze-hi: #C9A876,
+        bronze-dim: #5A4D38,
+        teal: #3C6E78,
+        teal-hi: #5AA0AA,
+        indigo: #2A3458,
+        fel: #7FC96E,
+        online: #6FAA6E,
+        idle: #C9A876,
+        dnd: #9E312A,
+        offline: #5C5E78,
+        accent: #86B9CE,
+        danger: #9E312A,
+        state-mid: #5C5E78,
+        glow-rose-start: #D1635E14,
+        glow-rose-end: #D1635E00,
+        glow-deep-fade: #070A1200,
     };
-    // Spacing grid — 4 px base, as the original CSS used.
+    // --- typography roles ---
+    in property <string> font-display: "Cinzel";      // headings, names ONLY
+    in property <string> font-body: "Inter";          // body, UI
+    in property <string> font-mono: "JetBrains Mono"; // meta, labels, code
+    // --- spacing — 4 px scale (Vox --vox-s-*) ---
     in property <length> sp-1: 4px;
     in property <length> sp-2: 8px;
     in property <length> sp-3: 12px;
     in property <length> sp-4: 16px;
-    // Layout constants (measured from the original components).
+    in property <length> sp-5: 24px;
+    in property <length> sp-6: 32px;
+    in property <length> sp-7: 48px;
+    // --- radii — hard corners (anti-Discord) ---
+    in property <length> radius-0: 0px;
+    in property <length> radius-1: 2px;   // inputs, small rows
+    in property <length> radius-2: 4px;   // large cards only
+    in property <length> radius-pill: 999px; // tiny state chips only
+    // --- layout constants (mock: rail 76px col / pills 48px, panel 240px) ---
     in property <length> header-height: 48px;
-    in property <length> row-height: 28px;
-    in property <length> rail-width: 56px;
-    in property <length> sidebar-width: 220px;
-    in property <length> login-width: 320px;
-    // Radii.
-    in property <length> radius: 8px;
-    in property <length> radius-sm: 4px;
-    // Typography scale (original font-sizes).
-    in property <length> font-xs: 11px;
-    in property <length> font-sm: 12px;
-    in property <length> font-md: 13px;
-    in property <length> font-base: 14px;
-    in property <length> font-lg: 16px;
-    in property <length> font-xl: 18px;
-    in property <length> font-title: 20px;
-    in property <length> font-hero: 28px;
+    in property <length> row-height: 36px;
+    in property <length> rail-width: 76px;
+    in property <length> sidebar-width: 240px;
+    in property <length> login-width: 340px;
+    in property <length> modal-width: 340px;
+    in property <length> card-max-height: 540px;   // modal/login/settings card cap
+    in property <length> settings-width: 420px;
+    in property <length> settings-height: 480px;
+    in property <length> shadow-offset: 6px;       // pixel-offset card/button shadow
+    // --- typography scale (mock --vox-text-*) ---
+    in property <length> font-xs: 11px;   // mono meta
+    in property <length> font-sm: 13px;   // mono body / rows
+    in property <length> font-md: 16px;   // titles / names
+    in property <length> font-base: 14px; // body
+    in property <length> font-lg: 20px;   // section headings
+    in property <length> font-xl: 28px;   // scene HUD
+    in property <length> font-title: 22px;
+    in property <length> font-hero: 32px;
+    // --- motion — pixel-step, NOT smooth easing ---
+    // Steps are implemented with Timers (sprite swaps) + short linear
+    // state-change anims; never animation-tick() on the software renderer.
+    in property <int> step-fast: 80;    // ms
+    in property <int> step-base: 120;   // ms
+    in property <int> step-slow: 200;   // ms
+    in property <int> pulse: 600;       // ms — talking border pulse
+    in property <int> breath: 2400;     // ms — idle breathing
+    // Accessibility: set from the OS setting by the Rust host (main.rs).
+    // Views gate their Timers on this; states stay visible, only motion stops.
+    in property <bool> motion-reduced: false;
 }

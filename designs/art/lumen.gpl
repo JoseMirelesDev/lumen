@@ -1,0 +1,37 @@
+GIMP Palette
+Name: Lumen
+Columns: 8
+# Paleta indexada de la UI (designs/vox-mockups/assets/sprites/palette.json) + bases de skin
+ 12  17  28	K
+ 20  26  40	k
+ 20  26  40	BG
+ 35  42  62	BG2
+ 15  20  32	SH
+ 54  60  84	GR
+ 74  80 108	GR2
+231 225 212	IV
+240 230 216	IV2
+138 136 164	ST
+108 110 138	ST2
+138 115  85	BR
+ 90  75  55	BR3
+201 168 118	BR2
+ 90  70  50	WD
+120  95  70	WD2
+ 80  85 100	STN
+110 115 130	STN2
+180  67  46	RS
+224 106  62	RS2
+240 180 100	RS3
+224 106  62	EM
+240 180 100	EM2
+ 60 110 120	TL
+ 90 160 170	TL2
+255 245 220	WH
+201 194 176	IV_base
+217 179 108	GO_base
+158  49  42	CR_base
+ 60 110 120	TL_base
+ 42  52  88	IN_base
+138 138 150	ST_base
+138 115  85	BR_base

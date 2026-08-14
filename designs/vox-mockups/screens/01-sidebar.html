@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox · Sidebar & App Shell</title>
+  <link rel="stylesheet" href="../assets/vox-tokens.css">
+  <style>
+    /* === LAYOUT SHELL === */
+    .vox-shell {
+      display: grid;
+      grid-template-columns: 76px 240px 1fr;
+      height: 100vh;
+      background: var(--vox-bg);
+    }
+
+    /* --- Columna 1: Clanes --- */
+    .clan-rail {
+      background: var(--vox-bg-deep);
+      border-right: 1px solid var(--vox-border-dim);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: var(--vox-s-5) 0;
+      gap: var(--vox-s-4);
+      overflow-y: auto;
+    }
+    .clan-rail__home {
+      width: 48px;
+      height: 48px;
+      background: var(--vox-rust);
+      border: 2px solid var(--vox-amber);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--vox-font-title);
+      font-weight: 900;
+      font-size: 22px;
+      color: var(--vox-text-hi);
+      cursor: pointer;
+      position: relative;
+    }
+    .clan-rail__home::after {
+      content: '';
+      position: absolute;
+      bottom: -3px;
+      right: -3px;
+      width: 12px;
+      height: 12px;
+      background: var(--vox-online);
+      border: 2px solid var(--vox-bg-deep);
+    }
+    .clan-rail__divider {
+      width: 32px;
+      height: 2px;
+      background: var(--vox-border-dim);
+      margin: var(--vox-s-1) 0;
+    }
+    .clan-rail__list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-3);
+      width: 100%;
+      align-items: center;
+    }
+    .clan-pill {
+      width: 48px;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--vox-card);
+      border: 2px solid var(--vox-border);
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: 18px;
+      color: var(--vox-text);
+      cursor: pointer;
+      position: relative;
+      transition: none;
+    }
+    .clan-pill:hover {
+      border-color: var(--vox-bronze-hi);
+      background: var(--vox-card-hi);
+    }
+    .clan-pill--active {
+      border-color: var(--vox-amber);
+      background: var(--vox-card-hi);
+    }
+    .clan-pill--active::before {
+      content: '';
+      position: absolute;
+      left: -16px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 4px;
+      height: 32px;
+      background: var(--vox-amber);
+    }
+    .clan-pill__notif {
+      position: absolute;
+      bottom: -4px;
+      right: -4px;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 4px;
+      background: var(--vox-rust);
+      border: 2px solid var(--vox-bg-deep);
+      color: var(--vox-text-hi);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .clan-pill__add {
+      width: 48px;
+      height: 48px;
+      background: transparent;
+      border: 2px dashed var(--vox-border);
+      color: var(--vox-text-dim);
+      font-size: 24px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .clan-pill__add:hover {
+      border-color: var(--vox-bronze-hi);
+      color: var(--vox-bronze-hi);
+    }
+
+    /* --- Columna 2: Salones / Canales --- */
+    .channel-panel {
+      background: var(--vox-surface);
+      border-right: 1px solid var(--vox-border-dim);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .channel-panel__header {
+      padding: var(--vox-s-6) var(--vox-s-6) var(--vox-s-5);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-2);
+    }
+    .channel-panel__clan-name {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-lg);
+      color: var(--vox-text-hi);
+      letter-spacing: var(--vox-ls-tight);
+      line-height: var(--vox-lh-tight);
+    }
+    .channel-panel__clan-tag {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bronze-hi);
+    }
+    .channel-panel__body {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--vox-s-4) 0;
+    }
+    .channel-group {
+      margin-bottom: var(--vox-s-5);
+    }
+    .channel-group__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--vox-s-3) var(--vox-s-6);
+      cursor: pointer;
+    }
+    .channel-group__label {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .channel-group__chevron {
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid var(--vox-text-dim);
+      border-bottom: 2px solid var(--vox-text-dim);
+      transform: rotate(-45deg);
+      display: inline-block;
+    }
+    .channel-group__chevron--closed {
+      transform: rotate(-90deg);
+    }
+    .channel-group__add {
+      color: var(--vox-text-dim);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .channel-group__add:hover {
+      color: var(--vox-text);
+    }
+    .channel-list {
+      list-style: none;
+    }
+    .channel-item {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+      padding: var(--vox-s-2) var(--vox-s-6);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-dim);
+      border-left: 2px solid transparent;
+      cursor: pointer;
+      transition: none;
+      position: relative;
+    }
+    .channel-item:hover {
+      color: var(--vox-text);
+      background: var(--vox-bg);
+    }
+    .channel-item--active {
+      color: var(--vox-text-hi);
+      background: var(--vox-card);
+      border-left-color: var(--vox-amber);
+    }
+    .channel-item__icon {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      opacity: 0.7;
+    }
+    .channel-item--active .channel-item__icon {
+      opacity: 1;
+    }
+    .channel-item__name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .channel-item__badge {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--vox-bg-deep);
+      background: var(--vox-text-hi);
+      padding: 1px 5px;
+      min-width: 16px;
+      text-align: center;
+    }
+    .channel-item__badge--amber {
+      background: var(--vox-amber);
+      color: var(--vox-bg-deep);
+    }
+    /* Voice channel — expandible con usuarios conectados */
+    .voice-channel {
+      padding: 0;
+    }
+    .voice-channel__users {
+      list-style: none;
+      padding-left: 28px;
+      padding-top: var(--vox-s-1);
+      padding-bottom: var(--vox-s-3);
+    }
+    .voice-channel__user {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      padding: var(--vox-s-2) var(--vox-s-4);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-dim);
+    }
+    .voice-channel__user-bust {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+    .voice-channel__user-state {
+      width: 6px;
+      height: 6px;
+      flex-shrink: 0;
+    }
+    .voice-channel__user-state--talking { background: var(--vox-amber); }
+    .voice-channel__user-state--muted   { background: var(--vox-text-mute); }
+    .voice-channel__user-state--idle    { background: var(--vox-bronze-hi); }
+
+    /* --- User footer --- */
+    .user-footer {
+      background: var(--vox-bg-deep);
+      border-top: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-4) var(--vox-s-5);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+    }
+    .user-footer__bust {
+      width: 32px;
+      height: 32px;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .user-footer__bust img {
+      width: 100%;
+      height: 100%;
+    }
+    .user-footer__bust::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      right: -2px;
+      width: 10px;
+      height: 10px;
+      background: var(--vox-online);
+      border: 2px solid var(--vox-bg-deep);
+    }
+    .user-footer__info {
+      flex: 1;
+      min-width: 0;
+    }
+    .user-footer__name {
+      font-family: var(--vox-font-body);
+      font-weight: var(--vox-fw-semi);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-hi);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .user-footer__tag {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      color: var(--vox-text-dim);
+      letter-spacing: var(--vox-ls-mono);
+    }
+    .user-footer__controls {
+      display: flex;
+      gap: var(--vox-s-2);
+    }
+    .ctrl-btn {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: none;
+    }
+    .ctrl-btn:hover {
+      background: var(--vox-card);
+      border-color: var(--vox-border);
+    }
+    .ctrl-btn--active {
+      background: var(--vox-card);
+      border-color: var(--vox-border);
+    }
+    .ctrl-btn--danger:hover {
+      border-color: var(--vox-rust);
+    }
+    .ctrl-btn img {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* --- Columna 3: Área principal --- */
+    .main-area {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+    .main-area__header {
+      height: 48px;
+      padding: 0 var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      background: var(--vox-bg);
+      flex-shrink: 0;
+    }
+    .main-area__crumb {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-dim);
+    }
+    .main-area__crumb-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .main-area__crumb-sep {
+      color: var(--vox-text-mute);
+    }
+    .main-area__crumb-current {
+      color: var(--vox-text-hi);
+      font-weight: var(--vox-fw-med);
+    }
+    .main-area__actions {
+      margin-left: auto;
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+    .main-area__body {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--vox-s-9) var(--vox-s-11);
+      position: relative;
+    }
+    .welcome {
+      max-width: 720px;
+    }
+    .welcome__eyebrow {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      margin-bottom: var(--vox-s-3);
+    }
+    .welcome__title {
+      font-family: var(--vox-font-title);
+      font-weight: 900;
+      font-size: var(--vox-text-2xl);
+      color: var(--vox-text-hi);
+      line-height: var(--vox-lh-tight);
+      margin-bottom: var(--vox-s-5);
+    }
+    .welcome__title-accent {
+      color: var(--vox-amber);
+    }
+    .welcome__desc {
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-dim);
+      line-height: var(--vox-lh-loose);
+      margin-bottom: var(--vox-s-9);
+    }
+    .welcome__grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--vox-s-5);
+      margin-top: var(--vox-s-9);
+    }
+    .welcome-card {
+      background: var(--vox-surface);
+      border: 1px solid var(--vox-border-dim);
+      padding: var(--vox-s-6);
+      display: flex;
+      flex-direction: column;
+      gap: var(--vox-s-3);
+      cursor: pointer;
+    }
+    .welcome-card:hover {
+      background: var(--vox-card);
+      border-color: var(--vox-border);
+    }
+    .welcome-card__icon {
+      width: 32px;
+      height: 32px;
+    }
+    .welcome-card__title {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+    }
+    .welcome-card__desc {
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-dim);
+      line-height: var(--vox-lh-snug);
+    }
+
+    /* --- Mini system status bar --- */
+    .sys-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+      padding: var(--vox-s-3) var(--vox-s-6);
+      background: var(--vox-bg-deep);
+      border-top: 1px solid var(--vox-border-dim);
+      flex-shrink: 0;
+    }
+    .sys-bar__item {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+    }
+    .sys-bar__dot {
+      width: 6px;
+      height: 6px;
+      background: var(--vox-online);
+    }
+    .sys-bar__sep {
+      color: var(--vox-text-mute);
+    }
+
+    /* --- Mockup chrome (top bar with screen switcher) --- */
+    .mockup-meta {
+      position: fixed;
+      top: var(--vox-s-3);
+      right: var(--vox-s-5);
+      z-index: 9999;
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+    .mockup-meta__tag {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-rust);
+      padding: 4px 8px;
+    }
+    .mockup-meta__back {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text);
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+      padding: 4px 10px;
+      text-decoration: none;
+    }
+    .mockup-meta__back:hover {
+      border-color: var(--vox-amber);
+      color: var(--vox-amber);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Mockup meta -->
+  <div class="mockup-meta">
+    <span class="mockup-meta__tag">01 · SIDEBAR & SHELL</span>
+    <a href="../index.html" class="mockup-meta__back">← INDEX</a>
+  </div>
+
+  <div class="vox-shell">
+
+    <!-- ====== COLUMNA 1: CLANES ====== -->
+    <aside class="clan-rail">
+      <div class="clan-rail__home" title="Vox Home">V</div>
+      <div class="clan-rail__divider"></div>
+      <div class="clan-rail__list">
+        <div class="clan-pill clan-pill--active" title="Askrinn — Clan vikingo principal">A</div>
+        <div class="clan-pill" title="Mjötnir — Aliados">
+          M
+          <span class="clan-pill__notif">3</span>
+        </div>
+        <div class="clan-pill" title="Rúnrefni">R</div>
+        <div class="clan-pill" title="Fenrisúlfr">
+          F
+          <span class="clan-pill__notif">12</span>
+        </div>
+        <div class="clan-pill" title="Skógul">S</div>
+        <div class="clan-pill" title="Valknut League">V</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="clan-pill__add" title="Crear o unirse a un clan">+</div>
+    </aside>
+
+    <!-- ====== COLUMNA 2: SALONES / CANALES ====== -->
+    <aside class="channel-panel">
+      <header class="channel-panel__header">
+        <div class="channel-panel__clan-name">Askrinn</div>
+        <div class="channel-panel__clan-tag">Clan · 47 miembros</div>
+      </header>
+
+      <div class="channel-panel__body">
+        <!-- Grupo: INFO -->
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label">
+              <span class="channel-group__chevron"></span>
+              Info
+            </span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">anuncios</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">reglas</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">recursos</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Grupo: TEXTO -->
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label">
+              <span class="channel-group__chevron"></span>
+              Texto
+            </span>
+            <span class="channel-group__add">+</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item channel-item--active">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">general</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">off-topic</span>
+              <span class="channel-item__badge">5</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">raids-coord</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">lore-y-relatos</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_hash.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">crafting</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Grupo: VOZ -->
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label">
+              <span class="channel-group__chevron"></span>
+              Voz
+            </span>
+            <span class="channel-group__add">+</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item voice-channel">
+              <div style="display:flex; align-items:center; gap: var(--vox-s-4); width:100%; padding: var(--vox-s-2) var(--vox-s-6); border-left: 2px solid var(--vox-amber);">
+                <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon" alt="" style="opacity:1;">
+                <span class="channel-item__name" style="color:var(--vox-text-hi);">fogata-del-consejo</span>
+                <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-amber);">6/12</span>
+              </div>
+              <ul class="voice-channel__users">
+                <li class="voice-channel__user">
+                  <img src="../assets/sprites/characters/bust_talking.png" class="voice-channel__user-bust" alt="">
+                  <span class="voice-channel__user-state voice-channel__user-state--talking"></span>
+                  <span style="color:var(--vox-text-hi);">Hjornvard</span>
+                </li>
+                <li class="voice-channel__user">
+                  <img src="../assets/sprites/characters/bust_idle.png" class="voice-channel__user-bust" alt="">
+                  <span class="voice-channel__user-state voice-channel__user-state--idle"></span>
+                  <span>Skadi_v2</span>
+                </li>
+                <li class="voice-channel__user">
+                  <img src="../assets/sprites/characters/bust_muted_arms.png" class="voice-channel__user-bust" alt="">
+                  <span class="voice-channel__user-state voice-channel__user-state--muted"></span>
+                  <span>Brenna_RK</span>
+                </li>
+                <li class="voice-channel__user">
+                  <img src="../assets/sprites/characters/bust_idle.png" class="voice-channel__user-bust" alt="">
+                  <span class="voice-channel__user-state voice-channel__user-state--idle"></span>
+                  <span>Thrain</span>
+                </li>
+                <li class="voice-channel__user">
+                  <img src="../assets/sprites/characters/bust_muted_mouth.png" class="voice-channel__user-bust" alt="">
+                  <span class="voice-channel__user-state voice-channel__user-state--muted"></span>
+                  <span>Ylva</span>
+                </li>
+                <li class="voice-channel__user">
+                  <img src="../assets/sprites/characters/bust_idle.png" class="voice-channel__user-bust" alt="">
+                  <span class="voice-channel__user-state voice-channel__user-state--idle"></span>
+                  <span>Otrak</span>
+                </li>
+              </ul>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">taller-de-herrería</span>
+              <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-text-dim);">2/4</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">afk · sala-de-descanso</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon" alt="">
+              <span class="channel-item__name">sala-de-warband</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- User footer -->
+      <footer class="user-footer">
+        <div class="user-footer__bust">
+          <img src="../assets/sprites/characters/bust_idle.png" alt="Tu personaje">
+        </div>
+        <div class="user-footer__info">
+          <div class="user-footer__name">Rúnvardr</div>
+          <div class="user-footer__tag">#0471 · ASCENDIDO</div>
+        </div>
+        <div class="user-footer__controls">
+          <button class="ctrl-btn" title="Silenciar micrófono">
+            <img src="../assets/sprites/ui/icon_mic_on.png" alt="">
+          </button>
+          <button class="ctrl-btn" title="Silenciar audífonos">
+            <img src="../assets/sprites/ui/icon_headset.png" alt="">
+          </button>
+          <button class="ctrl-btn" title="Compartir cámara">
+            <img src="../assets/sprites/ui/icon_video_on.png" alt="">
+          </button>
+          <button class="ctrl-btn" title="Ajustes">
+            <img src="../assets/sprites/ui/icon_settings.png" alt="">
+          </button>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- ====== COLUMNA 3: ÁREA PRINCIPAL ====== -->
+    <main class="main-area">
+      <header class="main-area__header">
+        <div class="main-area__crumb">
+          <span class="t-amber" style="font-family:var(--vox-font-title); font-weight:700;">Askrinn</span>
+          <span class="main-area__crumb-sep">/</span>
+          <span>Texto</span>
+          <span class="main-area__crumb-sep">/</span>
+          <span class="main-area__crumb-current"># general</span>
+        </div>
+        <div class="main-area__actions">
+          <span class="tag tag--amber">47 miembros</span>
+          <span class="tag">12 en línea</span>
+        </div>
+      </header>
+
+      <div class="main-area__body">
+        <div class="welcome">
+          <div class="welcome__eyebrow">CANAL #general · ASKRINN</div>
+          <h1 class="welcome__title">
+            Bienvenido al <span class="welcome__title-accent">consejo</span>.
+          </h1>
+          <p class="welcome__desc">
+            Este es el canal de texto principal del clan. Aquí caen los anuncios importantes, se coordina
+            la semana y se arman las partidas. Mantenelo legible — sin spam, sin flooding. Las decisiones
+            que se toman acá quedan grabadas en la runa-memoria del clan.
+          </p>
+
+          <div class="welcome__grid">
+            <div class="welcome-card">
+              <img src="../assets/sprites/ui/icon_hash.png" class="welcome-card__icon" alt="">
+              <div class="welcome-card__title">Canales de texto</div>
+              <div class="welcome-card__desc">5 canales activos. Último mensaje hace 4 minutos en #off-topic.</div>
+            </div>
+            <div class="welcome-card">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="welcome-card__icon" alt="">
+              <div class="welcome-card__title">Canales de voz</div>
+              <div class="welcome-card__desc">Hay 6 vikingos alrededor de la fogata-del-consejo. Sumate.</div>
+            </div>
+            <div class="welcome-card">
+              <img src="../assets/sprites/ui/rune.png" class="welcome-card__icon" alt="">
+              <div class="welcome-card__title">Runas del clan</div>
+              <div class="welcome-card__desc">3 runas activas esta semana. La próxima incursión: sábado 21:00.</div>
+            </div>
+            <div class="welcome-card">
+              <img src="../assets/sprites/ui/torch.png" class="welcome-card__icon" alt="">
+              <div class="welcome-card__title">Eventos</div>
+              <div class="welcome-card__desc">Taller de skins el viernes. Traé tu propio casco.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- System bar -->
+      <footer class="sys-bar">
+        <div class="sys-bar__item">
+          <span class="sys-bar__dot"></span>
+          Conectado · Región Boreal
+        </div>
+        <span class="sys-bar__sep">|</span>
+        <div class="sys-bar__item">Ping 24ms</div>
+        <span class="sys-bar__sep">|</span>
+        <div class="sys-bar__item">v0.4.2-alpha</div>
+        <span class="sys-bar__sep">|</span>
+        <div class="sys-bar__item t-amber">FOGATA ACTIVA</div>
+      </footer>
+    </main>
+  </div>
+
+</body>
+</html>

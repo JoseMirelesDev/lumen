@@ -9,8 +9,14 @@ license = "MIT"
 name = "lumen"
 path = "src/main.rs"
 
+[features]
+# Enable the embedded Slint MCP server (run with SLINT_MCP_PORT=<port>).
+# Intended for UI debugging only; not part of normal builds.
+mcp = ["slint/mcp"]
+
 [build-dependencies]
 slint-build.workspace = true
+serde_json.workspace = true
 
 [dependencies]
 slint.workspace = true
@@ -18,7 +24,15 @@ lumen-core = { path = "../../crates/lumen-core" }
 lumen-voice = { path = "../../crates/lumen-voice" }
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
 arboard = "3"
+rfd.workspace = true
+cpal.workspace = true
+glow = "0.17"
+
+[dev-dependencies]
+tiny-skia = "0.12"

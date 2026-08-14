@@ -1,11 +1,17 @@
 // Shared data structs for the AppWindow and its views. Keep these in lockstep
 // with the Rust side (see src/model.rs, src/voice.rs) — they are the UI data
 // contract.
+//
+// `skin` names a silhouette palette color (ivory/gold/crimson/teal/indigo/
+// stone/bronze) derived from the username hash in src/model.rs. Placeholder
+// art: real multi-color sprites replace the silhouettes later; the hash→skin
+// mapping stays stable.
 
 export struct ServerItem {
     id: string,
     label: string,
     active: bool,
+    skin: string,
 }
 
 export struct ChannelItem {
@@ -13,6 +19,21 @@ export struct ChannelItem {
     name: string,
     kind: string, // "text" | "voice"
     active: bool,
+    peer-count: int,  // voice occupancy badge (Fase 3): >0 → "N" badge
+    joined: bool,     // estamos dentro de este canal de voz (indicador)
+}
+
+export struct ToastItem {
+    id: int,
+    message: string,
+    kind: string, // "info" | "success" | "error"
+}
+
+export struct MemberItem {
+    id: string,
+    username: string,
+    online: bool,
+    skin: string,
 }
 
 export struct MessageItem {
@@ -20,12 +41,21 @@ export struct MessageItem {
     author: string,
     time: string,
     content: string,
-    mine: bool, // authored by the current user
+    mine: bool,      // authored by the current user
+    skin: string,
+    first-in-run: bool, // first message of a consecutive same-author run
+    link-url: string,   // first URL detected in the content, "" if none
+    link-title: string, // resolved preview title for link-url, "" if none
+    edited: bool,       // shows "(editado)" tag (Fase 2)
+    deleted: bool,      // renders the "Mensaje eliminado" placeholder (Fase 2)
+    reply-to: string,   // quoted reply target id, "" if none (Fase 2)
 }
 
 export struct FriendItem {
+    id: string,       // user id (Fase 2: remove-friend targets)
     username: string,
     shared: int,
+    skin: string,
 }
 
 export struct FriendRequestItem {
@@ -36,6 +66,7 @@ export struct FriendRequestItem {
 export struct DmItem {
     id: string,
     username: string,
+    skin: string,
 }
 
 export struct PeerTile {
@@ -46,4 +77,5 @@ export struct PeerTile {
     speaking: bool,
     state: string,     // "new"|"connecting"|"connected"|"disconnected"|"failed"|"closed"
     muted: bool,
+    skin: string,
 }

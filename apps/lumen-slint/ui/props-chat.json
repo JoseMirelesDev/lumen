@@ -1,0 +1,19 @@
+{
+  "logged-in": true,
+  "friends-view": false,
+  "current-user": "Brizhel",
+  "channel-list-title": "Nido del Amor",
+  "chat-title": "general",
+  "is-dm": false,
+  "messages": [
+    {"id":"m1","author":"BIBI","time":"05:16","content":":D","mine":false,"skin":"crimson","first-in-run":true,"link-url":"","link-title":""},
+    {"id":"m2","author":"BRIZHEL","time":"05:27","content":"Te amo","mine":true,"skin":"gold","first-in-run":true,"link-url":"","link-title":""},
+    {"id":"m3","author":"Ari","time":"05:30","content":"check https://example.com link","mine":false,"skin":"teal","first-in-run":true,"link-url":"https://example.com","link-title":"Example Domain"}
+  ],
+  "servers": [
+    {"id":"s1","label":"N","active":true,"skin":"crimson"}
+  ],
+  "channels": [
+    {"id":"c1","name":"general","kind":"text","active":true}
+  ]
+}

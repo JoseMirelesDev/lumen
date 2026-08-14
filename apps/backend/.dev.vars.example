@@ -6,3 +6,21 @@ AUTH_SECRET=replace-me-with-32-random-bytes-hex
 # serves STUN-only config (stun.cloudflare.com), which is fine for local dev.
 # REALTIME_TURN_KEY_ID=your_turn_key_id
 # REALTIME_API_TOKEN=your_cloudflare_api_token
+
+# Local dev/test only — disables Cache API rate limiting so the smoke suite
+# (which registers ~10 users) can run. NEVER set in production.
+# LUMEN_RATE_LIMIT_DISABLED=true
+
+# OAuth (Fase 4) — wrangler secret put per provider:
+#   wrangler secret put GOOGLE_CLIENT_ID
+#   wrangler secret put GOOGLE_CLIENT_SECRET
+#   wrangler secret put GITHUB_CLIENT_ID
+#   wrangler secret put GITHUB_CLIENT_SECRET
+#   wrangler secret put OAUTH_CALLBACK_URL   # https://api.dominio.com/api/oauth
+#   wrangler secret put WEB_CLIENT_URL       # https://app.dominio.com
+# GOOGLE_CLIENT_ID=fake
+# GOOGLE_CLIENT_SECRET=fake
+# GITHUB_CLIENT_ID=fake
+# GITHUB_CLIENT_SECRET=fake
+# OAUTH_CALLBACK_URL=http://localhost:8787/api/oauth
+# WEB_CLIENT_URL=http://localhost:8787

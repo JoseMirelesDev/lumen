@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vox · Lista compacta</title>
+  <link rel="stylesheet" href="../assets/vox-tokens.css">
+  <style>
+    /* === SHARED SHELL (mismo que otros mockups) === */
+    .vox-shell { display: grid; grid-template-columns: 76px 240px 1fr; height: 100vh; background: var(--vox-bg); }
+    .clan-rail { background: var(--vox-bg-deep); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; align-items: center; padding: var(--vox-s-5) 0; gap: var(--vox-s-4); overflow-y: auto; }
+    .clan-rail__home { width: 48px; height: 48px; background: var(--vox-rust); border: 2px solid var(--vox-amber); display: flex; align-items: center; justify-content: center; font-family: var(--vox-font-title); font-weight: 900; font-size: 22px; color: var(--vox-text-hi); cursor: pointer; position: relative; }
+    .clan-rail__divider { width: 32px; height: 2px; background: var(--vox-border-dim); margin: var(--vox-s-1) 0; }
+    .clan-rail__list { display: flex; flex-direction: column; gap: var(--vox-s-3); width: 100%; align-items: center; }
+    .clan-pill { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); font-family: var(--vox-font-title); font-weight: 700; font-size: 18px; color: var(--vox-text); cursor: pointer; position: relative; transition: none; }
+    .clan-pill:hover { border-color: var(--vox-bronze-hi); background: var(--vox-card-hi); }
+    .clan-pill--active { border-color: var(--vox-amber); background: var(--vox-card-hi); }
+    .clan-pill--active::before { content: ''; position: absolute; left: -16px; top: 50%; transform: translateY(-50%); width: 4px; height: 32px; background: var(--vox-amber); }
+    .clan-pill__notif { position: absolute; bottom: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; background: var(--vox-rust); border: 2px solid var(--vox-bg-deep); color: var(--vox-text-hi); font-family: var(--vox-font-mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .clan-pill__add { width: 48px; height: 48px; background: transparent; border: 2px dashed var(--vox-border); color: var(--vox-text-dim); font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+    .channel-panel { background: var(--vox-surface); border-right: 1px solid var(--vox-border-dim); display: flex; flex-direction: column; overflow: hidden; }
+    .channel-panel__header { padding: var(--vox-s-6) var(--vox-s-6) var(--vox-s-5); border-bottom: 1px solid var(--vox-border-dim); }
+    .channel-panel__clan-name { font-family: var(--vox-font-title); font-weight: 700; font-size: var(--vox-text-lg); color: var(--vox-text-hi); }
+    .channel-panel__clan-tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-bronze-hi); margin-top: var(--vox-s-2); }
+    .channel-panel__body { flex: 1; overflow-y: auto; padding: var(--vox-s-4) 0; }
+    .channel-group { margin-bottom: var(--vox-s-5); }
+    .channel-group__header { display: flex; align-items: center; justify-content: space-between; padding: var(--vox-s-3) var(--vox-s-6); cursor: pointer; }
+    .channel-group__label { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); display: flex; align-items: center; gap: var(--vox-s-2); }
+    .channel-group__chevron { width: 8px; height: 8px; border-right: 2px solid var(--vox-text-dim); border-bottom: 2px solid var(--vox-text-dim); transform: rotate(-45deg); display: inline-block; }
+    .channel-list { list-style: none; }
+    .channel-item { display: flex; align-items: center; gap: var(--vox-s-4); padding: var(--vox-s-2) var(--vox-s-6); font-family: var(--vox-font-mono); font-size: var(--vox-text-sm); color: var(--vox-text-dim); border-left: 2px solid transparent; cursor: pointer; transition: none; position: relative; }
+    .channel-item:hover { color: var(--vox-text); background: var(--vox-bg); }
+    .channel-item--active { color: var(--vox-text-hi); background: var(--vox-card); border-left-color: var(--vox-amber); }
+    .channel-item__icon { width: 14px; height: 14px; flex-shrink: 0; opacity: 0.7; }
+    .channel-item--active .channel-item__icon { opacity: 1; }
+    .channel-item__name { flex: 1; }
+
+    .user-footer { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-5); display: flex; align-items: center; gap: var(--vox-s-4); }
+    .user-footer__bust { width: 32px; height: 32px; flex-shrink: 0; position: relative; }
+    .user-footer__bust img { width: 100%; height: 100%; }
+    .user-footer__bust::after { content: ''; position: absolute; bottom: -2px; right: -2px; width: 10px; height: 10px; background: var(--vox-online); border: 2px solid var(--vox-bg-deep); }
+    .user-footer__info { flex: 1; min-width: 0; }
+    .user-footer__name { font-family: var(--vox-font-body); font-weight: var(--vox-fw-semi); font-size: var(--vox-text-sm); color: var(--vox-text-hi); }
+    .user-footer__tag { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); }
+    .user-footer__controls { display: flex; gap: var(--vox-s-2); }
+    .ctrl-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: transparent; border: 1px solid transparent; cursor: pointer; transition: none; }
+    .ctrl-btn:hover { background: var(--vox-card); border-color: var(--vox-border); }
+    .ctrl-btn img { width: 16px; height: 16px; }
+    .ctrl-btn--active { background: var(--vox-card); border-color: var(--vox-border); }
+
+    /* === MAIN: COMPACT LIST === */
+    .compact-area {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--vox-bg);
+    }
+
+    .compact-header {
+      height: 48px;
+      padding: 0 var(--vox-s-6);
+      border-bottom: 1px solid var(--vox-border-dim);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      background: var(--vox-bg-deep);
+      flex-shrink: 0;
+    }
+    .compact-header__title {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-4);
+    }
+    .compact-header__icon { width: 18px; height: 18px; }
+    .compact-header__name {
+      font-family: var(--vox-font-title);
+      font-weight: 700;
+      font-size: var(--vox-text-md);
+      color: var(--vox-text-hi);
+    }
+    .compact-header__meta {
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .compact-header__actions {
+      margin-left: auto;
+      display: flex;
+      gap: var(--vox-s-3);
+      align-items: center;
+    }
+    .view-toggle {
+      display: flex;
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border);
+    }
+    .view-toggle__btn {
+      padding: var(--vox-s-2) var(--vox-s-4);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+    }
+    .view-toggle__btn--active {
+      background: var(--vox-rust);
+      color: var(--vox-text-hi);
+    }
+
+    /* === Toolbar: filtros === */
+    .compact-toolbar {
+      padding: var(--vox-s-4) var(--vox-s-6);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-5);
+      background: var(--vox-surface);
+      border-bottom: 1px solid var(--vox-border-dim);
+      flex-shrink: 0;
+    }
+    .compact-search {
+      flex: 0 0 240px;
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      padding: var(--vox-s-2) var(--vox-s-4);
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border-dim);
+    }
+    .compact-search input {
+      flex: 1;
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text);
+    }
+    .compact-search input::placeholder { color: var(--vox-text-mute); }
+    .compact-search__icon {
+      width: 14px;
+      height: 14px;
+      opacity: 0.5;
+    }
+    .compact-filter {
+      display: flex;
+      gap: var(--vox-s-1);
+      background: var(--vox-card);
+      border: 1px solid var(--vox-border-dim);
+    }
+    .compact-filter__btn {
+      padding: var(--vox-s-2) var(--vox-s-4);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+      background: transparent;
+      cursor: pointer;
+    }
+    .compact-filter__btn--active {
+      background: var(--vox-card-hi);
+      color: var(--vox-amber);
+    }
+    .compact-stats {
+      margin-left: auto;
+      display: flex;
+      gap: var(--vox-s-5);
+    }
+    .compact-stat {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .compact-stat__num {
+      font-family: var(--vox-font-mono);
+      font-weight: 700;
+      color: var(--vox-text-hi);
+      font-size: var(--vox-text-sm);
+    }
+    .compact-stat__dot {
+      width: 8px;
+      height: 8px;
+    }
+    .compact-stat__dot--total { background: var(--vox-text-dim); }
+    .compact-stat__dot--talking { background: var(--vox-amber); }
+    .compact-stat__dot--muted { background: var(--vox-text-mute); }
+    .compact-stat__dot--cam { background: var(--vox-teal-hi); }
+
+    /* === Lista de usuarios === */
+    .compact-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--vox-s-4) var(--vox-s-6);
+    }
+
+    /* Group header */
+    .list-group {
+      margin-bottom: var(--vox-s-6);
+    }
+    .list-group__header {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      padding: var(--vox-s-3) 0;
+      font-family: var(--vox-font-mono);
+      font-size: var(--vox-text-xs);
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .list-group__header::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--vox-border-dim);
+    }
+    .list-group__count {
+      color: var(--vox-amber);
+      font-weight: 700;
+    }
+
+    /* Compact row */
+    .compact-row {
+      display: grid;
+      grid-template-columns: 56px 1fr 100px 80px 80px 100px;
+      align-items: center;
+      gap: var(--vox-s-5);
+      padding: var(--vox-s-3) var(--vox-s-4);
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: none;
+    }
+    .compact-row:hover {
+      background: var(--vox-surface);
+    }
+    .compact-row--talking {
+      background: rgba(224, 106, 62, 0.08);
+      border-color: rgba(224, 106, 62, 0.3);
+    }
+
+    /* Bust — derivado del sprite, NO avatar circular */
+    .compact-row__bust {
+      width: 48px;
+      height: 48px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--vox-bg-deep);
+      border: 2px solid var(--vox-border);
+    }
+    .compact-row__bust img {
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    .compact-row--talking .compact-row__bust {
+      border-color: var(--vox-amber);
+      animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite;
+    }
+    .compact-row--muted .compact-row__bust {
+      filter: brightness(0.7) saturate(0.6);
+      border-color: var(--vox-bronze-dim);
+    }
+
+    /* Identity */
+    .compact-row__identity {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .compact-row__name {
+      font-family: var(--vox-font-body);
+      font-weight: var(--vox-fw-med);
+      font-size: var(--vox-text-sm);
+      color: var(--vox-text-hi);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .compact-row--muted .compact-row__name {
+      color: var(--vox-text-dim);
+    }
+    .compact-row__role {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-bronze-hi);
+    }
+
+    /* State pill */
+    .compact-row__state {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+    }
+    .compact-row__state-dot {
+      width: 8px;
+      height: 8px;
+    }
+    .state-talking .compact-row__state-dot { background: var(--vox-amber); animation: vox-pulse-talking var(--vox-pulse) steps(2) infinite; }
+    .state-talking .compact-row__state-text { color: var(--vox-amber); }
+    .state-idle .compact-row__state-dot { background: var(--vox-bronze-hi); }
+    .state-idle .compact-row__state-text { color: var(--vox-text-dim); }
+    .state-muted .compact-row__state-dot { background: var(--vox-text-mute); }
+    .state-muted .compact-row__state-text { color: var(--vox-text-mute); }
+
+    /* Mic level */
+    .compact-row__mic {
+      display: flex;
+      gap: 2px;
+      align-items: flex-end;
+      height: 16px;
+    }
+    .compact-row__mic-bar {
+      width: 3px;
+      background: var(--vox-border);
+    }
+    .compact-row__mic-bar--on { background: var(--vox-amber); }
+    .compact-row__mic-bar--1 { height: 5px; }
+    .compact-row__mic-bar--2 { height: 8px; }
+    .compact-row__mic-bar--3 { height: 11px; }
+    .compact-row__mic-bar--4 { height: 14px; }
+    .compact-row__mic-bar--5 { height: 16px; }
+    .compact-row--muted .compact-row__mic-bar { background: var(--vox-border-dim); }
+
+    /* Cam indicator */
+    .compact-row__cam {
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-2);
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-text-dim);
+    }
+    .compact-row__cam-icon {
+      width: 14px;
+      height: 14px;
+      opacity: 0.5;
+    }
+    .compact-row__cam--on {
+      color: var(--vox-teal-hi);
+    }
+    .compact-row__cam--on .compact-row__cam-icon {
+      opacity: 1;
+    }
+
+    /* Time */
+    .compact-row__time {
+      font-family: var(--vox-font-mono);
+      font-size: 11px;
+      color: var(--vox-text-dim);
+      text-align: right;
+    }
+
+    /* Voice controls (reused) */
+    .voice-controls { background: var(--vox-bg-deep); border-top: 1px solid var(--vox-border-dim); padding: var(--vox-s-4) var(--vox-s-6); display: flex; align-items: center; gap: var(--vox-s-5); flex-shrink: 0; }
+    .voice-controls__info { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+    .voice-controls__channel { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); }
+    .voice-controls__detail { font-family: var(--vox-font-mono); font-size: var(--vox-text-xs); color: var(--vox-text-dim); }
+    .voice-controls__divider { width: 1px; height: 32px; background: var(--vox-border-dim); }
+    .voice-controls__buttons { display: flex; gap: var(--vox-s-2); }
+    .voice-ctrl-btn { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: var(--vox-card); border: 2px solid var(--vox-border); cursor: pointer; position: relative; }
+    .voice-ctrl-btn:hover { background: var(--vox-card-hi); border-color: var(--vox-border-hi); }
+    .voice-ctrl-btn--active { background: var(--vox-rust); border-color: var(--vox-amber); }
+    .voice-ctrl-btn--danger { background: var(--vox-rust); border-color: var(--vox-amber); }
+    .voice-ctrl-btn img { width: 20px; height: 20px; }
+    .voice-ctrl-btn__label { position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%); font-family: var(--vox-font-mono); font-size: 9px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text-dim); white-space: nowrap; }
+    .voice-controls__right { margin-left: auto; display: flex; align-items: center; gap: var(--vox-s-4); }
+    .voice-meter { display: flex; gap: 2px; align-items: flex-end; height: 20px; }
+    .voice-meter__bar { width: 3px; background: var(--vox-border); }
+    .voice-meter__bar--on { background: var(--vox-amber); }
+    .voice-meter__bar--1 { height: 6px; } .voice-meter__bar--2 { height: 10px; } .voice-meter__bar--3 { height: 14px; } .voice-meter__bar--4 { height: 18px; } .voice-meter__bar--5 { height: 20px; }
+
+    .mockup-meta { position: fixed; top: var(--vox-s-3); right: var(--vox-s-5); z-index: 9999; display: flex; gap: var(--vox-s-3); align-items: center; }
+    .mockup-meta__tag { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-amber); background: var(--vox-bg-deep); border: 1px solid var(--vox-rust); padding: 4px 8px; }
+    .mockup-meta__back { font-family: var(--vox-font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: var(--vox-ls-wide); color: var(--vox-text); background: var(--vox-card); border: 1px solid var(--vox-border); padding: 4px 10px; text-decoration: none; }
+    .mockup-meta__back:hover { border-color: var(--vox-amber); color: var(--vox-amber); }
+
+    /* Auto-switch hint */
+    .auto-switch-hint {
+      position: absolute;
+      top: var(--vox-s-9);
+      right: var(--vox-s-6);
+      background: var(--vox-bg-deep);
+      border: 1px solid var(--vox-rust);
+      padding: var(--vox-s-3) var(--vox-s-4);
+      display: flex;
+      align-items: center;
+      gap: var(--vox-s-3);
+      max-width: 280px;
+      z-index: 100;
+    }
+    .auto-switch-hint__icon {
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+    .auto-switch-hint__text {
+      font-family: var(--vox-font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: var(--vox-ls-wide);
+      color: var(--vox-amber);
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="mockup-meta">
+    <span class="mockup-meta__tag">03 · LISTA COMPACTA · >8 USUARIOS</span>
+    <a href="../index.html" class="mockup-meta__back">← INDEX</a>
+  </div>
+
+  <div class="vox-shell">
+
+    <!-- ====== COLUMNA 1: CLANES ====== -->
+    <aside class="clan-rail">
+      <div class="clan-rail__home">V</div>
+      <div class="clan-rail__divider"></div>
+      <div class="clan-rail__list">
+        <div class="clan-pill clan-pill--active">A</div>
+        <div class="clan-pill">M<span class="clan-pill__notif">3</span></div>
+        <div class="clan-pill">R</div>
+        <div class="clan-pill">F<span class="clan-pill__notif">12</span></div>
+        <div class="clan-pill">S</div>
+        <div class="clan-pill">V</div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="clan-pill__add">+</div>
+    </aside>
+
+    <!-- ====== COLUMNA 2: SALONES ====== -->
+    <aside class="channel-panel">
+      <header class="channel-panel__header">
+        <div class="channel-panel__clan-name">Askrinn</div>
+        <div class="channel-panel__clan-tag">Clan · 47 miembros</div>
+      </header>
+      <div class="channel-panel__body">
+        <div class="channel-group">
+          <div class="channel-group__header">
+            <span class="channel-group__label"><span class="channel-group__chevron"></span>Voz</span>
+            <span style="color:var(--vox-text-dim); font-size:16px;">+</span>
+          </div>
+          <ul class="channel-list">
+            <li class="channel-item channel-item--active">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">fogata-del-consejo</span>
+              <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-amber);">14/20</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">taller-de-herrería</span>
+              <span style="font-family:var(--vox-font-mono); font-size:10px; color:var(--vox-text-dim);">2/4</span>
+            </li>
+            <li class="channel-item">
+              <img src="../assets/sprites/ui/icon_speaker.png" class="channel-item__icon">
+              <span class="channel-item__name">afk · sala-de-descanso</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <footer class="user-footer">
+        <div class="user-footer__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+        <div class="user-footer__info">
+          <div class="user-footer__name">Rúnvardr</div>
+          <div class="user-footer__tag">#0471 · ASCENDIDO</div>
+        </div>
+        <div class="user-footer__controls">
+          <button class="ctrl-btn ctrl-btn--active"><img src="../assets/sprites/ui/icon_mic_on.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"></button>
+          <button class="ctrl-btn"><img src="../assets/sprites/ui/icon_settings.png"></button>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- ====== COLUMNA 3: COMPACT LIST ====== -->
+    <main class="compact-area">
+
+      <header class="compact-header">
+        <div class="compact-header__title">
+          <img src="../assets/sprites/ui/icon_speaker.png" class="compact-header__icon">
+          <span class="compact-header__name">fogata-del-consejo</span>
+          <span class="compact-header__meta">· 14 alrededor · 20 max · AUTO-LIST</span>
+        </div>
+        <div class="compact-header__actions">
+          <div class="view-toggle">
+            <button class="view-toggle__btn">FOGATA</button>
+            <button class="view-toggle__btn view-toggle__btn--active">LISTA</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="compact-toolbar">
+        <div class="compact-search">
+          <img src="../assets/sprites/ui/icon_hash.png" class="compact-search__icon">
+          <input placeholder="Buscar vikingo...">
+        </div>
+        <div class="compact-filter">
+          <button class="compact-filter__btn compact-filter__btn--active">TODOS</button>
+          <button class="compact-filter__btn">HABLANDO</button>
+          <button class="compact-filter__btn">MUTEADOS</button>
+          <button class="compact-filter__btn">CÁMARA</button>
+        </div>
+        <div class="compact-stats">
+          <div class="compact-stat">
+            <span class="compact-stat__dot compact-stat__dot--total"></span>
+            <span class="compact-stat__num">14</span>
+            <span>TOTAL</span>
+          </div>
+          <div class="compact-stat">
+            <span class="compact-stat__dot compact-stat__dot--talking"></span>
+            <span class="compact-stat__num">3</span>
+            <span>HABLANDO</span>
+          </div>
+          <div class="compact-stat">
+            <span class="compact-stat__dot compact-stat__dot--muted"></span>
+            <span class="compact-stat__num">5</span>
+            <span>MUTEADOS</span>
+          </div>
+          <div class="compact-stat">
+            <span class="compact-stat__dot compact-stat__dot--cam"></span>
+            <span class="compact-stat__num">2</span>
+            <span>CÁMARA</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="auto-switch-hint">
+        <img src="../assets/sprites/ui/rune.png" class="auto-switch-hint__icon">
+        <span class="auto-switch-hint__text">VISTA LISTA ACTIVADA AUTOMÁTICAMENTE · UMBRAL 10 USUARIOS</span>
+      </div>
+
+      <div class="compact-list">
+
+        <!-- Grupo: HABLANDO -->
+        <div class="list-group">
+          <div class="list-group__header">
+            <span>Hablando ahora</span>
+            <span class="list-group__count">3</span>
+          </div>
+
+          <div class="compact-row compact-row--talking state-talking">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_talking.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Hjornvard</div>
+              <div class="compact-row__role">JARL · ASCENDIDO</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">HABLANDO</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">12:47</div>
+          </div>
+
+          <div class="compact-row compact-row--talking state-talking">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_talking.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Vigdis_Ättr</div>
+              <div class="compact-row__role">SKALD</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">HABLANDO</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam compact-row__cam--on">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>SÍ</span>
+            </div>
+            <div class="compact-row__time">04:12</div>
+          </div>
+
+          <div class="compact-row compact-row--talking state-talking">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_talking.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Eirik_Steel</div>
+              <div class="compact-row__role">BERSERKER</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">HABLANDO</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2 compact-row__mic-bar--on"></span>
+              <span class="compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">00:48</div>
+          </div>
+        </div>
+
+        <!-- Grupo: EN ESCUCHA -->
+        <div class="list-group">
+          <div class="list-group__header">
+            <span>En escucha</span>
+            <span class="list-group__count">6</span>
+          </div>
+
+          <div class="compact-row state-idle">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Skadi_v2</div>
+              <div class="compact-row__role">CAZADORA</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">IDLE</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">47:23</div>
+          </div>
+
+          <div class="compact-row state-idle">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Thrain</div>
+              <div class="compact-row__role">HERRERO</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">IDLE</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam compact-row__cam--on">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>SÍ</span>
+            </div>
+            <div class="compact-row__time">47:23</div>
+          </div>
+
+          <div class="compact-row state-idle">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Otrak</div>
+              <div class="compact-row__role">BERSERKER</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">IDLE</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">31:08</div>
+          </div>
+
+          <div class="compact-row state-idle">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Sigrun_K</div>
+              <div class="compact-row__role">VÖLVA</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">IDLE</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">22:55</div>
+          </div>
+
+          <div class="compact-row state-idle">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Bjorn_Iron</div>
+              <div class="compact-row__role">RAIDER</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">IDLE</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">18:41</div>
+          </div>
+
+          <div class="compact-row state-idle">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_idle.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Gretta_S</div>
+              <div class="compact-row__role">CAZADORA</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">IDLE</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">07:33</div>
+          </div>
+        </div>
+
+        <!-- Grupo: MUTEADOS -->
+        <div class="list-group">
+          <div class="list-group__header">
+            <span>Muteados</span>
+            <span class="list-group__count">5</span>
+          </div>
+
+          <div class="compact-row compact-row--muted state-muted">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_muted_arms.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Brenna_RK</div>
+              <div class="compact-row__role">SKALD</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">MUTED</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">38:14</div>
+          </div>
+
+          <div class="compact-row compact-row--muted state-muted">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_muted_mouth.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Ylva</div>
+              <div class="compact-row__role">VÖLVA</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">MUTED</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">47:23</div>
+          </div>
+
+          <div class="compact-row compact-row--muted state-muted">
+            <div class="compact-row__bust"><img src="../assets/sprites/characters/bust_muted_back.png" alt=""></div>
+            <div class="compact-row__identity">
+              <div class="compact-row__name">Finn_Skald</div>
+              <div class="compact-row__role">RAIDER</div>
+            </div>
+            <div class="compact-row__state">
+              <span class="compact-row__state-dot"></span>
+              <span class="compact-row__state-text">MUTED</span>
+            </div>
+            <div class="compact-row__mic">
+              <span class="compact-row__mic-bar compact-row__mic-bar--1"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--2"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--3"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--4"></span>
+              <span class="compact-row__mic-bar compact-row__mic-bar--5"></span>
+            </div>
+            <div class="compact-row__cam">
+              <img src="../assets/sprites/ui/icon_video_on.png" class="compact-row__cam-icon">
+              <span>—</span>
+            </div>
+            <div class="compact-row__time">02:11</div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="voice-controls">
+        <div class="voice-controls__info">
+          <span class="voice-controls__channel">FOGATA-DEL-CONSEJO · 14/20</span>
+          <span class="voice-controls__detail">VOZ ACTIVA · 47:23 · REGIÓN BOREAL · 24ms</span>
+        </div>
+        <div class="voice-controls__divider"></div>
+        <div class="voice-controls__buttons">
+          <button class="voice-ctrl-btn voice-ctrl-btn--active"><img src="../assets/sprites/ui/icon_mic_on.png"><span class="voice-ctrl-btn__label">MIC</span></button>
+          <button class="voice-ctrl-btn"><img src="../assets/sprites/ui/icon_headset.png"><span class="voice-ctrl-btn__label">SOUND</span></button>
+          <button class="voice-ctrl-btn"><img src="../assets/sprites/ui/icon_video_on.png"><span class="voice-ctrl-btn__label">CAM</span></button>
+          <button class="voice-ctrl-btn voice-ctrl-btn--danger"><img src="../assets/sprites/ui/icon_mic_off.png"><span class="voice-ctrl-btn__label">LEAVE</span></button>
+        </div>
+        <div class="voice-controls__right">
+          <span class="tag">ESCUCHANDO</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+</body>
+</html>

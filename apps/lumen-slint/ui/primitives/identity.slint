@@ -1,0 +1,53 @@
+// Lumen primitives — identity module.
+import { AppTheme } from "../theme.slint";
+import { ArtManifest } from "../generated/art-manifest.slint";
+
+// Bust — the identity component: square avatar with a state border
+// (diegetic, not a halo). talking = crimson<->ice stepped pulse,
+// muted/deafened = dim overlay + bronze edge. Motion stops under
+// reduced-motion; the state stays visible via color + pose.
+// Art: vector SVG per skin (assets/avatars) — distinct character per skin,
+// crisp at any size (replaces the pixel silhouettes).
+export component Bust inherits Rectangle {
+    in property <string> skin: "ivory";
+    in property <string> state: "idle"; // idle | talking | muted | deafened
+    in property <bool> reduced-motion: false;
+
+    width: 72px;
+    height: 42px;
+    background: AppTheme.colors.bg-deep;
+    border-width: 2px;
+    border-color: root.state == "talking"
+        ? (root.pulse-on ? AppTheme.colors.ice : AppTheme.colors.crimson)
+        : (root.state == "muted" || root.state == "deafened")
+            ? AppTheme.colors.bronze-dim
+            : AppTheme.colors.border;
+
+    property <bool> pulse-on: false;
+    Timer {
+        running: root.state == "talking" && !root.reduced-motion;
+        interval: AppTheme.pulse / 2 * 1ms;
+        triggered() => { root.pulse-on = !root.pulse-on; }
+    }
+
+    // Arte resuelto por el manifiesto de build (ui/generated/art-manifest.slint):
+    // PNG real del artista si existe para esta skin, si no placeholder SVG.
+    function avatar() -> image {
+        return ArtManifest.bust(root.skin, root.state);
+    }
+
+    Image {
+        source: root.avatar();
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+    // muted dim — overlay, not filter (software renderer)
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: AppTheme.colors.dim;
+        visible: root.state == "muted" || root.state == "deafened";
+    }
+}
+

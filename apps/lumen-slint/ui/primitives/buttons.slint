@@ -1,0 +1,185 @@
+// Lumen primitives — buttons module.
+import { AppTheme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { IconGlyph } from "icon.slint";
+
+// VoxButton — the one button. Hard corners, pixel-offset shadow (sinks on
+// press), gold focus ring. Primary = crimson; ghost = card. All states:
+// default · hover · focus · active(pressed) · disabled · loading · error ·
+// success. Loading/error/success are overlay states on top of the base pair.
+export component VoxButton inherits Rectangle {
+    in property <string> text: "";
+    in property <string> icon: "";
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    in property <bool> loading: false;
+    in property <bool> error: false;
+    in property <bool> success: false;
+    in property <bool> compact: false;
+    in property <bool> fixed-type: false; // toggle groups: keep typography constant, only fill/border change
+    in property <length> icon-size: 16px;
+    in property <length> width-override: 0px; // 0 = default (icon/text/compact sizing)
+    callback clicked();
+
+    // Explicit sizes: a Rectangle *fills* its parent by default (containers
+    // stretch in layouts), so preferred-height is ignored in a HeaderBar and
+    // the button would grow to the bar height. `preferred-width` (not
+    // `width`) is the size base: it leaves the width unbound, so a caller in
+    // a layout can override `horizontal-stretch: 1` to make the button fill
+    // its slot (login/modal full-width buttons). Stretch stays 0 by default,
+    // so every existing call site keeps its exact compact size.
+    height: root.compact ? 32px : 34px;
+    preferred-width: root.width-override > 0px ? root.width-override
+        : (root.text == "" ? 34px
+           : (root.compact ? (root.icon != "" ? 96px : 72px)
+                           : (root.icon != "" ? 132px : 108px)));
+    horizontal-stretch: 0;
+    background: transparent;
+
+    // pixel-offset shadow — sinks on press
+    Rectangle {
+        x: 2px; y: 2px;
+        width: parent.width; height: parent.height;
+        background: AppTheme.colors.bg-deep;
+        visible: root.enabled && !root.loading && !ta.pressed;
+    }
+    body := Rectangle {
+        width: 100%; height: 100%;
+        background: root.enabled
+            ? (root.primary
+                ? (ta.pressed ? AppTheme.colors.crimson-hi
+                   : ta.has-hover ? AppTheme.colors.crimson-hi : AppTheme.colors.crimson)
+                : (ta.pressed ? AppTheme.colors.bg-pressed
+                   : ta.has-hover ? AppTheme.colors.card-hi : AppTheme.colors.card))
+            : AppTheme.colors.surface;
+        border-width: 1px;
+        border-color: root.enabled
+            ? (root.primary
+                ? AppTheme.colors.crimson-hi
+                : (fs.has-focus ? AppTheme.colors.ice : AppTheme.colors.border))
+            : AppTheme.colors.border-dim;
+        border-radius: AppTheme.radius-1;
+
+        // status overlay tints
+        Rectangle {
+            width: 100%; height: 100%;
+            background: root.error ? #D1635E66 : (root.success ? #6FAA6E40 : transparent);
+            border-radius: AppTheme.radius-1;
+        }
+        // focus ring — pixel style, gold, never animated
+        Rectangle {
+            x: -2px; y: -2px;
+            width: parent.width + 4px; height: parent.height + 4px;
+            border-width: 2px;
+            border-color: AppTheme.colors.ice;
+            visible: fs.has-focus;
+        }
+        HorizontalLayout {
+            // Icon-only buttons are 34px wide with a 20px icon box: 7+7 fits
+            // exactly; text buttons keep readable padding.
+            padding-left: root.text == "" ? 7px : (root.compact ? 8px : 14px);
+            padding-right: root.text == "" ? 7px : (root.compact ? 8px : 14px);
+            spacing: 6px;
+            alignment: center;
+            // explicit-size children under the default cross-axis stretch
+            // land at the START of the cross axis (icons stuck to the top);
+            // center them so icon and label share the button's midline.
+            cross-axis-alignment: center;
+            // Icon glyphs are SVG now (crisp at any size); IconGlyph carries
+            // the tint + centering, so the old font nudge is gone.
+            if root.loading : IconGlyph {
+                glyph: Icons.circle-notch;
+                size: 14px;
+                text-color: root.enabled ? AppTheme.colors.text-dim : AppTheme.colors.text-mute;
+            }
+            if !root.loading && root.icon != "" : IconGlyph {
+                glyph: root.icon;
+                size: root.icon-size;
+                text-color: root.enabled ? (root.primary ? AppTheme.colors.text-hi : AppTheme.colors.text-dim) : AppTheme.colors.text-mute;
+            }
+            Text {
+                visible: root.text != "";
+                text: root.text;
+                font-family: root.primary && !root.fixed-type ? AppTheme.font-body : AppTheme.font-mono;
+                font-size: root.primary && !root.fixed-type ? 14px : 11px;
+                font-weight: root.primary && !root.fixed-type ? 600 : 500;
+                color: root.enabled ? (root.primary ? AppTheme.colors.text-hi : AppTheme.colors.text) : AppTheme.colors.text-mute;
+                vertical-alignment: center;
+            }
+        }
+    }
+    fs := FocusScope {
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// HeaderIconBtn — small square icon button for panel headers (32px hit area).
+// `active` swaps to icon-active (e.g. check after copying) and lights ice.
+export component HeaderIconBtn inherits Rectangle {
+    in property <string> icon;
+    in property <string> icon-active: "";
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 32px;
+    height: 32px;
+    background: !root.enabled
+        ? transparent
+        : (root.active
+            ? AppTheme.colors.card
+            : (ta.has-hover ? AppTheme.colors.card-hi : transparent));
+    border-width: 1px;
+    border-color: !root.enabled
+        ? AppTheme.colors.border-dim
+        : (root.active
+            ? AppTheme.colors.ice
+            : (ta.has-hover ? AppTheme.colors.border-hi : transparent));
+    animate background { duration: AppTheme.step-fast * 1ms; }
+    animate border-color { duration: AppTheme.step-fast * 1ms; }
+
+    // focus ring — 2px ice border when focused
+    Rectangle {
+        x: 0px; y: 0px;
+        width: 100%; height: 100%;
+        border-width: 2px;
+        border-color: AppTheme.colors.ice;
+        visible: fs.has-focus;
+    }
+
+    fs := FocusScope {
+        key-pressed(event) => {
+            if root.enabled && (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => {
+                fs.focus();
+                root.clicked();
+            }
+            IconGlyph {
+                glyph: root.active && root.icon-active != "" ? root.icon-active : root.icon;
+                size: 14px;
+                text-color: !root.enabled
+                    ? AppTheme.colors.text-mute
+                    : (root.active ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.text-hi : AppTheme.colors.text-dim));
+            }
+        }
+    }
+}

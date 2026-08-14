@@ -84,6 +84,9 @@ pub struct Server {
     pub owner_id: String,
     pub invite_code: String,
     pub created_at: String,
+    /// R2 key (migration 0003/0004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +116,12 @@ pub struct Channel {
     pub name: String,
     pub kind: ChannelKind,
     pub created_at: String,
+    /// Migration 0003.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Manual ordering within the server (migration 0003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,13 +173,62 @@ pub struct TextMessage {
     pub author_name: String,
     pub content: String,
     pub created_at: String,
+    /// Set when edited (migration 0003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    /// Set when soft-deleted — clients render a placeholder (migration 0003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    /// Id of the replied-to message (migration 0003, Fase 6.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+}
+
+/// Message block row (ADR-0004): 1 row = up to 50 packed messages.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageBlock {
+    pub id: String,
+    pub channel_id: String,
+    pub count: u32,
+    pub first_at: String,
+    pub last_at: String,
+}
+
+/// PATCH /api/messages/:id response (Fase 2, provisional per ADR-0010).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditMessageResult {
+    pub id: String,
+    pub content: String,
+    pub edited_at: String,
+}
+
+/// Minimal permission model (Fase 2/5): owner vs member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerRole {
+    Owner,
+    Member,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
     pub token: String,
+    /// Present on register/login (Fase 1, ADR-0007). Optional for
+    /// compatibility with responses that predate refresh tokens.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
     pub user: User,
+}
+
+/// POST /api/auth/refresh — rotation response (ADR-0007).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshResponse {
+    pub token: String,
+    pub refresh_token: String,
 }
 
 /// Shape compatible with RTCIceServer (the host casts).
@@ -245,4 +303,168 @@ pub struct FriendAcceptedResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DmCreatedResponse {
     pub channel: DmSummary,
+}
+
+// ---------------------------------------------------------------------------
+// Presence v2 (WS /api/presence → PresenceHubDO) — protocol/presence-v2.md.
+// Mirror of @lumen/protocol presence types. The v1 PresenceStatus above
+// stays for the ChannelDO voice broadcasts; the hub uses PresenceV2Status.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresenceV2Status {
+    Online,
+    Idle,
+    Dnd,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerLite {
+    pub user_id: String,
+    pub username: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineFriendLite {
+    pub user_id: String,
+    pub username: String,
+    pub status: PresenceV2Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceChannelPresence {
+    pub channel_id: String,
+    pub peers: Vec<PeerLite>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPresence {
+    pub server_id: String,
+    pub online_members: Vec<PeerLite>,
+    pub voice_channels: Vec<VoiceChannelPresence>,
+}
+
+/// One buffered chat message (ADR-0004): packed N-per-row in message_blocks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BufferedMessage {
+    pub id: String,
+    pub author_id: String,
+    pub author_name: String,
+    pub content: String,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DmSignalKind {
+    Offer,
+    Answer,
+    Ice,
+}
+
+/// Messages the client sends to the PresenceHubDO.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PresenceClientMessage {
+    Ready,
+    #[serde(rename_all = "camelCase")]
+    Status { status: PresenceV2Status },
+    #[serde(rename_all = "camelCase")]
+    VoiceJoin { channel_id: String, server_id: String },
+    VoiceLeave,
+    #[serde(rename_all = "camelCase")]
+    Chat {
+        channel_id: String,
+        server_id: String,
+        content: String,
+        client_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attachment_url: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    ChatEdit { channel_id: String, server_id: String, message_id: String, content: String, client_id: String },
+    #[serde(rename_all = "camelCase")]
+    ChatDelete { channel_id: String, server_id: String, message_id: String, client_id: String },
+    #[serde(rename_all = "camelCase")]
+    Typing { channel_id: String, server_id: String },
+    #[serde(rename_all = "camelCase")]
+    Subscribe { channel_id: String },
+    #[serde(rename_all = "camelCase")]
+    Unsubscribe { channel_id: String },
+    #[serde(rename_all = "camelCase")]
+    DmSignal { to: String, kind: DmSignalKind, #[serde(skip_serializing_if = "Option::is_none")] sdp: Option<String>, #[serde(skip_serializing_if = "Option::is_none")] candidate: Option<serde_json::Value> },
+    #[serde(rename_all = "camelCase")]
+    ReactionToggle { channel_id: String, server_id: String, message_id: String, emoji: String },
+    Ping,
+}
+
+/// Messages the PresenceHubDO sends to clients.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PresenceServerMessage {
+    #[serde(rename_all = "camelCase")]
+    Ready { online_friends: Vec<OnlineFriendLite>, servers: Vec<ServerPresence> },
+    #[serde(rename_all = "camelCase")]
+    FriendOnline { user_id: String, username: String },
+    #[serde(rename_all = "camelCase")]
+    FriendOffline { user_id: String },
+    #[serde(rename_all = "camelCase")]
+    FriendStatus { user_id: String, status: PresenceV2Status },
+    #[serde(rename_all = "camelCase")]
+    VoiceUpdate { server_id: String, channel_id: String, peers: Vec<PeerLite> },
+    #[serde(rename_all = "camelCase")]
+    MemberOnline { server_id: String, user_id: String, username: String },
+    #[serde(rename_all = "camelCase")]
+    MemberOffline { server_id: String, user_id: String },
+    #[serde(rename_all = "camelCase")]
+    Typing { channel_id: String, user_id: String },
+    #[serde(rename_all = "camelCase")]
+    SubscribeAck { channel_id: String },
+    #[serde(rename_all = "camelCase")]
+    Chat { channel_id: String, message: BufferedMessage },
+    #[serde(rename_all = "camelCase")]
+    ChatAck { client_id: String, message_id: String, created_at: String },
+    #[serde(rename_all = "camelCase")]
+    ChatEditAck { client_id: String, message_id: String },
+    #[serde(rename_all = "camelCase")]
+    ChatDeleteAck { client_id: String, message_id: String },
+    #[serde(rename_all = "camelCase")]
+    ChatEdited { channel_id: String, message: EditedMessage },
+    #[serde(rename_all = "camelCase")]
+    ChatDeleted { channel_id: String, message_id: String },
+    #[serde(rename_all = "camelCase")]
+    ChatError { client_id: String, code: String },
+    #[serde(rename_all = "camelCase")]
+    Reaction { channel_id: String, message_id: String, emoji: String, user_id: String, added: bool },
+    #[serde(rename_all = "camelCase")]
+    DmOffer { from: String, sdp: String },
+    #[serde(rename_all = "camelCase")]
+    DmAnswer { from: String, sdp: String },
+    #[serde(rename_all = "camelCase")]
+    DmIce { from: String, candidate: serde_json::Value },
+    Pong,
+    #[serde(rename_all = "camelCase")]
+    Error { code: String, message: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditedMessage {
+    pub id: String,
+    pub content: String,
+    pub edited_at: String,
 }

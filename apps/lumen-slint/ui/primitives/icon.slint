@@ -1,0 +1,26 @@
+// Lumen primitives — icon module.
+import { AppTheme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+
+// IconGlyph — app icon rendered as SVG (`Image` + `colorize`). SVG glyphs
+// are metrically centered, so no vertical nudge is needed (the old font-glyph
+// offset is gone). The +4px box keeps the same visual weight as before.
+export component IconGlyph inherits Rectangle {
+    in property <string> glyph;
+    in property <length> size: 16px;
+    in property <color> text-color: AppTheme.colors.text-dim;
+
+    width: root.size + 4px;
+    height: root.size + 4px;
+    background: transparent;
+
+    Image {
+        x: 2px;
+        y: 2px;
+        width: root.size;
+        height: root.size;
+        source: Icons.img(root.glyph);
+        colorize: root.text-color;
+    }
+}
+
