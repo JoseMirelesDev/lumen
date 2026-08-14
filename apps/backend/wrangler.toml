@@ -2,6 +2,7 @@ name = "lumen-backend"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "ed9536d9e1d27a1a66e72661621c2e90"
 
 [observability]
 enabled = true
