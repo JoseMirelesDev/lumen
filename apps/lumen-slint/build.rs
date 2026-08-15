@@ -345,6 +345,62 @@ fn generate_scene_manifest() -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Sprites de la fogata embebidos (particles.rs). El binario NO debe depender
+// del CWD: `./lumen` desde cualquier directorio tiene que encontrar los
+// sprites. Se decodifican a RGBA8 en build time y se emiten a OUT_DIR como
+// .rgba + un módulo `sprites.rs` que los expone por nombre.
+// ---------------------------------------------------------------------------
+const PARTICLE_SPRITES: &[&str] =
+    &["ember", "firefly", "campfire_0", "campfire_1", "campfire_2", "campfire_3", "torch_0", "torch_1"];
+
+fn decode_png_rgba(path: &std::path::Path) -> (Vec<u8>, u32, u32) {
+    use png::Transformations;
+    let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("build.rs: abrir {path:?}: {e}"));
+    let mut decoder = png::Decoder::new(file);
+    decoder.set_transformations(Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().unwrap_or_else(|e| panic!("build.rs: info {path:?}: {e}"));
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .unwrap_or_else(|e| panic!("build.rs: decodificar {path:?}: {e}"));
+    buf.truncate(info.buffer_size());
+    let w = info.width;
+    let h = info.height;
+    // Normalizar cualquier formato 8-bit a RGBA8 (4 bytes por px).
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf
+            .chunks(2)
+            .flat_map(|c| [c[0], c[0], c[0], c[1]])
+            .collect(),
+        _ => panic!("build.rs: formato de color no soportado en {path:?}"),
+    };
+    (rgba, w, h)
+}
+
+fn generate_sprites(out: &Path) {
+    let mut rs = String::new();
+    rs.push_str("// AUTO-GENERADO por apps/lumen-slint/build.rs — NO EDITAR.\n");
+    rs.push_str("// Sprites de la fogata embebidos (RGBA8 decodificado en build time).\n");
+    rs.push_str("pub struct SpriteData { pub data: &'static [u8], pub w: u32, pub h: u32 }\n");
+    rs.push_str("pub fn sprite(name: &str) -> Option<SpriteData> {\n    match name {\n");
+    for name in PARTICLE_SPRITES {
+        let path = std::path::Path::new("assets/pixel").join(format!("{name}.png"));
+        let (rgba, w, h) = decode_png_rgba(&path);
+        let out_name = format!("sprite_{name}.rgba");
+        std::fs::write(out.join(&out_name), &rgba)
+            .unwrap_or_else(|e| panic!("build.rs: escribir {out_name}: {e}"));
+        rs.push_str(&format!(
+            "        \"{name}\" => Some(SpriteData {{ data: include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{out_name}\")), w: {w}, h: {h} }}),\n"
+        ));
+    }
+    rs.push_str("        _ => None,\n    }\n}\n");
+    std::fs::write(out.join("sprites.rs"), rs).expect("escribir sprites.rs");
+}
+
 fn main() {
     // The Slint compiler recurses deep on large .slint files (members
     // overlay, settings tabs, chat-view) and the Windows main-thread stack
@@ -359,6 +415,7 @@ fn main() {
 }
 
 fn run_build() {
+    generate_sprites(&std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")));
     let art_manifest = generate_art_manifest();
     let scene_manifest = generate_scene_manifest();
     let gen_dir = Path::new("ui/generated");

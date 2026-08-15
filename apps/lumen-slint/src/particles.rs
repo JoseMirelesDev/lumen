@@ -13,7 +13,7 @@
 //!   - fuego: element_geometry (anchor), frame = floor(time*1000/anim-ms) % n
 
 
-use slint::{ComponentHandle, Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
 
 /// Key con el que se registran los frames del campfire. Debe coincidir con el
 /// `animation-key` del `AnimationImage` en voice-view.slint.
@@ -248,27 +248,22 @@ fn generate_frames(
 }
 
 // ---------------------------------------------------------------------------
-// Carga de sprites
+// Carga de sprites — EMBEBIDOS en build time (build.rs → OUT_DIR/sprites.rs).
+// El binario NO depende del CWD: funciona desde cualquier directorio.
 // ---------------------------------------------------------------------------
-fn load_sprite(path: &str) -> Sprite {
-    let img = Image::load_from_path(std::path::Path::new(path))
-        .unwrap_or_else(|_| panic!("particles: no se pudo cargar sprite {path}"));
-    let buf = img.to_rgba8().unwrap_or_else(|| panic!("particles: {path} sin RGBA"));
-    let w = buf.width();
-    let h = buf.height();
-    let mut data = Vec::with_capacity((w * h * 4) as usize);
-    for p in buf.as_slice() {
-        data.extend_from_slice(&[p.r, p.g, p.b, p.a]);
-    }
-    Sprite { data, w, h }
+include!(concat!(env!("OUT_DIR"), "/sprites.rs"));
+
+fn load_sprite(name: &str) -> Sprite {
+    let sd = sprite(name).unwrap_or_else(|| panic!("particles: sprite embebido faltante: {name}"));
+    Sprite { data: sd.data.to_vec(), w: sd.w, h: sd.h }
 }
 
 fn load_fire_frames(base: &str, n: usize) -> Vec<Sprite> {
-    (0..n).map(|i| load_sprite(&format!("apps/lumen-slint/assets/pixel/{base}_{i}.png"))).collect()
+    (0..n).map(|i| load_sprite(&format!("{base}_{i}"))).collect()
 }
 
 fn emitter_from(name: &str, count: usize, sx: f32, sy: f32, sw: f32, sh: f32, rise: f32, drift: f32, sway: f32, sway_freq: f32, gravity: f32, life_min: f32, life_max: f32, size: f32, op_start: f32, op_end: f32) -> EmitterDef {
-    let sprite = load_sprite(&format!("apps/lumen-slint/assets/pixel/{name}.png"));
+    let sprite = load_sprite(name);
     EmitterDef {
         count, spawn_x: sx, spawn_y: sy, spawn_w: sw, spawn_h: sh,
         rise, drift, sway, sway_freq, gravity,

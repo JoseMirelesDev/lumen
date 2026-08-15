@@ -17,6 +17,9 @@ mcp = ["slint/mcp"]
 [build-dependencies]
 slint-build.workspace = true
 serde_json.workspace = true
+# Sprite embebido (particles.rs): decodifica los PNG de la fogata a RGBA en
+# build time para que el binario no dependa de rutas del CWD en runtime.
+png = "0.17"
 
 [dependencies]
 slint.workspace = true
