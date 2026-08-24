@@ -99,6 +99,8 @@ jobs:
           # webrtc-audio-processing uses designated initializers (C++20);
           # MSVC defaults to C++17.
           CXXFLAGS: /std:c++20
+          RUSTFLAGS: -C linker=lld-link -C link-arg=/FORCE:MULTIPLE -C link-arg=/NODEFAULTLIB:icu -C link-arg=/NODEFAULTLIB:icu.lib -C link-arg=/NODEFAULTLIB:icuuc -C link-arg=/NODEFAULTLIB:icuuc.lib -C link-arg=/NODEFAULTLIB:icuin -C link-arg=/NODEFAULTLIB:icuin.lib -C link-arg=/NODEFAULTLIB:icudt -C link-arg=/NODEFAULTLIB:icudt.lib -C link-arg=/NODEFAULTLIB:icuio -C link-arg=/NODEFAULTLIB:icuio.lib -C link-arg=/NODEFAULTLIB:icutu -C link-arg=/NODEFAULTLIB:icutu.lib -C link-arg=/DELAYLOAD:icu.dll -C link-arg=/DELAYLOAD:icuuc.dll -C link-arg=delayimp.lib
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           # fe (FastEnhancer) builds with MinGW gcc (GNU .a archive); lld-link
           # reads both the MSVC .lib files and the GNU .a in a single link.
           # /FORCE:MULTIPLE: skia's bundled ICU ships as static objects in
