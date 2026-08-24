@@ -101,13 +101,30 @@ jobs:
           # skunicode_icu.lib + an icuuc.dll import (skia-bindings Windows
           # quirk) → duplicate u* symbols at link; identical copies, the
           # linker keeps the static one.
-          echo "RUSTFLAGS=-C linker=lld-link -C link-arg=/FORCE:MULTIPLE" >> "$GITHUB_ENV"
+          # /NODEFAULTLIB:icu.lib + icuuc.lib suppress the automatic
+          # /DEFAULTLIB:icu.lib/icuuc.lib that Skia injects, otherwise the
+          # exe imports icu.dll/icuuc.dll and fails on clean Windows
+          # (ucptrie_close missing).
+          echo "RUSTFLAGS=-C linker=lld-link -C link-arg=/FORCE:MULTIPLE -C link-arg=/NODEFAULTLIB:icu.lib -C link-arg=/NODEFAULTLIB:icuuc.lib" >> "$GITHUB_ENV"
       - name: Build lumen-desktop (debug)
         run: cargo build -p lumen-desktop
         env:
           # audiopus_sys bundles a libopus whose CMakeLists needs CMake < 3.5
           # compat, which CMake 4.x removed. Official escape hatch.
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      - name: Verify no ICU DLL dependency (Windows)
+        if: matrix.cc != ''
+        shell: pwsh
+        run: |
+          $exe = "target/debug/lumen.exe"
+          if (!(Test-Path $exe)) { Write-Error "exe not found: $exe"; exit 1 }
+          $imports = & dumpbin /DEPENDENTS $exe | Out-String
+          Write-Host $imports
+          if ($imports -match "icu\.dll|icuuc\.dll") {
+            Write-Error "ERROR: lumen.exe still imports icu.dll/icuuc.dll - static link failed (ucptrie_close will be missing on clean Windows)"
+            exit 1
+          }
+          Write-Host "OK: no icu.dll/icuuc.dll dependency - ICU is static"
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:

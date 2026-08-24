@@ -1,0 +1,30 @@
+# Windows: Skia's bundled ICU is static (skunicode_icu.lib), but the linker was
+# pulling the system import libs icu.lib/icuuc.lib -> exe depended on icu.dll/icuuc.dll
+# at runtime and failed on machines with old/no ICU (ucptrie_close missing).
+# /FORCE:MULTIPLE keeps the first (static) duplicate (ubrk_* etc.) and discards the import-thunk copy.
+# /NODEFAULTLIB suppresses the automatic /DEFAULTLIB:icu.lib and /DEFAULTLIB:icuuc.lib that
+# Skia's objects or the Windows SDK inject via #pragma comment(lib, ...).
+# Result: fully static ICU, no icu.dll/icuuc.dll in the import table (see release.yml verify step).
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+  "-C", "linker=lld-link",
+  "-C", "link-arg=/FORCE:MULTIPLE",
+  "-C", "link-arg=/NODEFAULTLIB:icu.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuuc.lib",
+]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = [
+  "-C", "linker=lld-link",
+  "-C", "link-arg=/FORCE:MULTIPLE",
+  "-C", "link-arg=/NODEFAULTLIB:icu.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuuc.lib",
+]
+
+[target.i686-pc-windows-msvc]
+rustflags = [
+  "-C", "linker=lld-link",
+  "-C", "link-arg=/FORCE:MULTIPLE",
+  "-C", "link-arg=/NODEFAULTLIB:icu.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuuc.lib",
+]
