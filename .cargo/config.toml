@@ -4,27 +4,69 @@
 # /FORCE:MULTIPLE keeps the first (static) duplicate (ubrk_* etc.) and discards the import-thunk copy.
 # /NODEFAULTLIB suppresses the automatic /DEFAULTLIB:icu.lib and /DEFAULTLIB:icuuc.lib that
 # Skia's objects or the Windows SDK inject via #pragma comment(lib, ...).
-# Result: fully static ICU, no icu.dll/icuuc.dll in the import table (see release.yml verify step).
+# /DELAYLOAD makes any remaining raw-dylib icu imports (windows-sys Win32_Globalization via dirs-sys/winit)
+# delay-loaded via delayimp.lib, so the exe starts even if system icu.dll is old/missing
+# (we don't call windows::Globalization::ucptrie, only Skia's static one).
+# Result: no hard dependency on icu.dll/icuuc.dll (see release.yml verify step).
 [target.x86_64-pc-windows-msvc]
 rustflags = [
   "-C", "linker=lld-link",
   "-C", "link-arg=/FORCE:MULTIPLE",
+  "-C", "link-arg=/NODEFAULTLIB:icu",
   "-C", "link-arg=/NODEFAULTLIB:icu.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuuc",
   "-C", "link-arg=/NODEFAULTLIB:icuuc.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuin",
+  "-C", "link-arg=/NODEFAULTLIB:icuin.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icudt",
+  "-C", "link-arg=/NODEFAULTLIB:icudt.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuio",
+  "-C", "link-arg=/NODEFAULTLIB:icuio.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icutu",
+  "-C", "link-arg=/NODEFAULTLIB:icutu.lib",
+  "-C", "link-arg=/DELAYLOAD:icu.dll",
+  "-C", "link-arg=/DELAYLOAD:icuuc.dll",
+  "-C", "link-arg=delayimp.lib",
 ]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = [
   "-C", "linker=lld-link",
   "-C", "link-arg=/FORCE:MULTIPLE",
+  "-C", "link-arg=/NODEFAULTLIB:icu",
   "-C", "link-arg=/NODEFAULTLIB:icu.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuuc",
   "-C", "link-arg=/NODEFAULTLIB:icuuc.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuin",
+  "-C", "link-arg=/NODEFAULTLIB:icuin.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icudt",
+  "-C", "link-arg=/NODEFAULTLIB:icudt.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuio",
+  "-C", "link-arg=/NODEFAULTLIB:icuio.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icutu",
+  "-C", "link-arg=/NODEFAULTLIB:icutu.lib",
+  "-C", "link-arg=/DELAYLOAD:icu.dll",
+  "-C", "link-arg=/DELAYLOAD:icuuc.dll",
+  "-C", "link-arg=delayimp.lib",
 ]
 
 [target.i686-pc-windows-msvc]
 rustflags = [
   "-C", "linker=lld-link",
   "-C", "link-arg=/FORCE:MULTIPLE",
+  "-C", "link-arg=/NODEFAULTLIB:icu",
   "-C", "link-arg=/NODEFAULTLIB:icu.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuuc",
   "-C", "link-arg=/NODEFAULTLIB:icuuc.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuin",
+  "-C", "link-arg=/NODEFAULTLIB:icuin.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icudt",
+  "-C", "link-arg=/NODEFAULTLIB:icudt.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icuio",
+  "-C", "link-arg=/NODEFAULTLIB:icuio.lib",
+  "-C", "link-arg=/NODEFAULTLIB:icutu",
+  "-C", "link-arg=/NODEFAULTLIB:icutu.lib",
+  "-C", "link-arg=/DELAYLOAD:icu.dll",
+  "-C", "link-arg=/DELAYLOAD:icuuc.dll",
+  "-C", "link-arg=delayimp.lib",
 ]

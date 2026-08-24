@@ -60,6 +60,11 @@ wry = { path = "vendor/wry" }
 # Vendored webrtc-audio-processing-sys patch: drops the GCC-only
 # -Wno-unused-parameter flag that breaks MSVC (cl D8021).
 webrtc-audio-processing-sys = { path = "vendor/webrtc-audio-processing-sys" }
+# Vendored dirs-sys patch: removes Win32_Globalization (which pulls
+# windows-sys raw-dylib icu.dll/icuuc.dll via lstrlenW) and computes the
+# wide-string length manually. Fixes "ucptrie_close not found" on clean
+# Windows where system icu.dll is old/missing. See ADR 0011.
+dirs-sys = { path = "vendor/dirs-sys" }
 
 # Fork de Slint: componente de animación aislada (frames sin invalidar el árbol).
 # Ver docs/performance-fork-design.md.

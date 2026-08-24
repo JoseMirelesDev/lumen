@@ -96,16 +96,18 @@ jobs:
           echo "CXXFLAGS=${{ matrix.cxxflags }}" >> "$GITHUB_ENV"
           # fe (FastEnhancer) builds with MinGW gcc (GNU .a); lld-link reads
           # both the MSVC .lib (webrtc) and the GNU .a in one link. Enabled
-          # now that the webrtc fresh-build bug (pthread.h) is fixed.
           # /FORCE:MULTIPLE: skia's bundled ICU = static objects in
           # skunicode_icu.lib + an icuuc.dll import (skia-bindings Windows
           # quirk) → duplicate u* symbols at link; identical copies, the
           # linker keeps the static one.
-          # /NODEFAULTLIB:icu.lib + icuuc.lib suppress the automatic
-          # /DEFAULTLIB:icu.lib/icuuc.lib that Skia injects, otherwise the
-          # exe imports icu.dll/icuuc.dll and fails on clean Windows
-          # (ucptrie_close missing).
-          echo "RUSTFLAGS=-C linker=lld-link -C link-arg=/FORCE:MULTIPLE -C link-arg=/NODEFAULTLIB:icu.lib -C link-arg=/NODEFAULTLIB:icuuc.lib" >> "$GITHUB_ENV"
+          # /NODEFAULTLIB suppresses the automatic /DEFAULTLIB:icu/icuuc
+          # that Skia injects via #pragma comment(lib, ...) which otherwise
+          # makes the exe import icu.dll/icuuc.dll and fail on clean Windows
+          # (ucptrie_close missing). List both with/without .lib and all variants.
+          # /DELAYLOAD makes any remaining raw-dylib icu (windows-sys
+          # Win32_Globalization via dirs-sys/winit) delay-loaded so the exe
+          # starts even if system icu is old/missing (we only use Skia's static ICU).
+          echo "RUSTFLAGS=-C linker=lld-link -C link-arg=/FORCE:MULTIPLE -C link-arg=/NODEFAULTLIB:icu -C link-arg=/NODEFAULTLIB:icu.lib -C link-arg=/NODEFAULTLIB:icuuc -C link-arg=/NODEFAULTLIB:icuuc.lib -C link-arg=/NODEFAULTLIB:icuin -C link-arg=/NODEFAULTLIB:icuin.lib -C link-arg=/NODEFAULTLIB:icudt -C link-arg=/NODEFAULTLIB:icudt.lib -C link-arg=/NODEFAULTLIB:icuio -C link-arg=/NODEFAULTLIB:icuio.lib -C link-arg=/NODEFAULTLIB:icutu -C link-arg=/NODEFAULTLIB:icutu.lib -C link-arg=/DELAYLOAD:icu.dll -C link-arg=/DELAYLOAD:icuuc.dll -C link-arg=delayimp.lib" >> "$GITHUB_ENV"
       - name: Build lumen-desktop (debug)
         run: cargo build -p lumen-desktop
         env:
