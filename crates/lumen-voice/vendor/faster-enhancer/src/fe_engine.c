@@ -3,6 +3,7 @@
  * -> decoder -> mask -> iSTFT. Heavy matmuls route through fe_qgemm
  * with runtime SIMD dispatch; k=3 conv uses Winograd F(2,3).
  */
+#include <stdlib.h>
 #include "fe_internal.h"
 #include "fe_sgemm.h"
 #include "fe_qgemm.h"
