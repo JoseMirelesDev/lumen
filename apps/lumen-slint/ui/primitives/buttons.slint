@@ -21,6 +21,9 @@ export component VoxButton inherits Rectangle {
     in property <length> width-override: 0px; // 0 = default (icon/text/compact sizing)
     callback clicked();
 
+    accessible-role: button;
+    accessible-label: root.text;
+
     // Explicit sizes: a Rectangle *fills* its parent by default (containers
     // stretch in layouts), so preferred-height is ignored in a HeaderBar and
     // the button would grow to the bar height. `preferred-width` (not
@@ -59,11 +62,13 @@ export component VoxButton inherits Rectangle {
                 : (fs.has-focus ? AppTheme.colors.ice : AppTheme.colors.border))
             : AppTheme.colors.border-dim;
         border-radius: AppTheme.radius-1;
+        animate background { duration: AppTheme.step-fast * 1ms; }
+        animate border-color { duration: AppTheme.step-fast * 1ms; }
 
         // status overlay tints
         Rectangle {
             width: 100%; height: 100%;
-            background: root.error ? #D1635E66 : (root.success ? #6FAA6E40 : transparent);
+            background: root.error ? AppTheme.colors.error-tint : (root.success ? AppTheme.colors.online.with-alpha(0.25) : transparent);
             border-radius: AppTheme.radius-1;
         }
         // focus ring — pixel style, gold, never animated
@@ -101,7 +106,7 @@ export component VoxButton inherits Rectangle {
                 visible: root.text != "";
                 text: root.text;
                 font-family: root.primary && !root.fixed-type ? AppTheme.font-body : AppTheme.font-mono;
-                font-size: root.primary && !root.fixed-type ? 14px : 11px;
+                font-size: root.primary && !root.fixed-type ? AppTheme.font-base : AppTheme.font-xs;
                 font-weight: root.primary && !root.fixed-type ? 600 : 500;
                 color: root.enabled ? (root.primary ? AppTheme.colors.text-hi : AppTheme.colors.text) : AppTheme.colors.text-mute;
                 vertical-alignment: center;
@@ -119,7 +124,7 @@ export component VoxButton inherits Rectangle {
     }
     ta := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: pointer;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
     }
 }
@@ -131,7 +136,11 @@ export component HeaderIconBtn inherits Rectangle {
     in property <string> icon-active: "";
     in property <bool> active: false;
     in property <bool> enabled: true;
+    in property <string> a11y-label: "";
     callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.a11y-label;
 
     width: 32px;
     height: 32px;
@@ -168,7 +177,7 @@ export component HeaderIconBtn inherits Rectangle {
         }
         ta := TouchArea {
             enabled: root.enabled;
-            mouse-cursor: pointer;
+            mouse-cursor: root.enabled ? pointer : default;
             clicked => {
                 fs.focus();
                 root.clicked();

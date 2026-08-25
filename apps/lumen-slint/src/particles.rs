@@ -134,7 +134,9 @@ fn psize_of(d: &EmitterDef, i: usize) -> f32 {
 /// source-over. Reutilizado por partículas (cuadrados centrados) y fuego.
 fn blit_sprite(
     buf: &mut SharedPixelBuffer<Rgba8Pixel>,
-    sprite: &Sprite,
+    sprite_data: &[u8],
+    sw: u32,
+    sh: u32,
     dx: f32,
     dy: f32,
     dw: f32,
@@ -148,27 +150,30 @@ fn blit_sprite(
         return;
     }
     let pixels = buf.make_mut_slice();
-    let sw = sprite.w as usize;
-    let sh = sprite.h as usize;
+    let sw = sw as usize;
+    let sh = sh as usize;
     let dwpx = dw.ceil() as i32;
     let dhpx = dh.ceil() as i32;
     let dx0 = dx as i32;
     let dy0 = dy as i32;
+    // Precompute inverse divisors to replace per-pixel division with multiply.
+    let inv_dw = 1.0 / dwpx as f32;
+    let inv_dh = 1.0 / dhpx as f32;
     for sy in 0..dhpx {
         let ty = dy0 + sy;
         if ty < 0 || ty >= h as i32 {
             continue;
         }
-        let src_y = ((sy as f32 / dhpx as f32) * sh as f32).floor() as usize % sh as usize;
+        let src_y = ((sy as f32 * inv_dh) * sh as f32).floor() as usize % sh as usize;
         for sx in 0..dwpx {
             let tx = dx0 + sx;
             if tx < 0 || tx >= w as i32 {
                 continue;
             }
             let fx = if flip { dwpx - 1 - sx } else { sx };
-            let src_x = ((fx as f32 / dwpx as f32) * sw as f32).floor() as usize % sw as usize;
+            let src_x = ((fx as f32 * inv_dw) * sw as f32).floor() as usize % sw as usize;
             let si = (src_y * sw + src_x) * 4;
-            let sa = sprite.data[si + 3] as f32 / 255.0;
+            let sa = sprite_data[si + 3] as f32 / 255.0;
             let a = sa * alpha;
             if a <= 0.0 {
                 continue;
@@ -181,9 +186,9 @@ fn blit_sprite(
                 continue;
             }
             let (sr, sg, sb) = (
-                sprite.data[si] as f32 / 255.0,
-                sprite.data[si + 1] as f32 / 255.0,
-                sprite.data[si + 2] as f32 / 255.0,
+                sprite_data[si] as f32 / 255.0,
+                sprite_data[si + 1] as f32 / 255.0,
+                sprite_data[si + 2] as f32 / 255.0,
             );
             let (dr, dg, db) = (dst.r as f32 / 255.0, dst.g as f32 / 255.0, dst.b as f32 / 255.0);
             dst.r = ((sr * a + dr * oa * (1.0 - a)) / out_a * 255.0) as u8;
@@ -198,14 +203,29 @@ fn blit_sprite(
 /// Dibuja un emisor de partículas: cada partícula es un quad centrado en
 /// (px, py) con el sprite escalado al tamaño `psize`.
 fn draw_emitter(buf: &mut SharedPixelBuffer<Rgba8Pixel>, d: &EmitterDef, time: f32) {
-    let sprite = Sprite { data: d.sprite.clone(), w: d.sprite_w, h: d.sprite_h };
+    // Evita clonar el sprite por partícula/frame: pasa el slice por referencia.
+    let sprite_data = &d.sprite;
+    let sw = d.sprite_w;
+    let sh = d.sprite_h;
     for i in 0..d.count {
-        let px = px_of(d, i, time) * FRAME_SCALE;
-        let py = py_of(d, i, time) * FRAME_SCALE;
-        let alpha = palpha_of(d, i, time).clamp(0.0, 1.0);
-        let size = psize_of(d, i) * FRAME_SCALE;
+        // Cache hash() — 4 llamadas por partícula en vez de 6+ con distintos
+        // multiplicadores; reutiliza h0..h3 para las propiedades.
+        let h0 = hash(i * 4);
+        let h1 = hash(i * 4 + 1);
+        let h2 = hash(i * 4 + 2);
+        let h3 = hash(i * 4 + 3);
+        let life = d.life_min + h0 * (d.life_max - d.life_min);
+        let age = time % life;
+        let x0 = d.spawn_x + d.spawn_w * h1;
+        let wob = d.sway * ((d.sway_freq * age * 57.2958 + h2 * 360.0).to_radians()).sin();
+        let px = (x0 + d.drift * age + wob) * FRAME_SCALE;
+        let y0 = d.spawn_y + d.spawn_h * h3;
+        let v = d.rise * age + 0.5 * d.gravity * age * age;
+        let py = (y0 - v) * FRAME_SCALE;
+        let alpha = (d.opacity_start + (d.opacity_end - d.opacity_start) * (age / life)).clamp(0.0, 1.0);
+        let size = d.size * (0.7 + 0.6 * h1) * FRAME_SCALE;
         let half = size / 2.0;
-        blit_sprite(buf, &sprite, px - half, py - half, size, size, alpha, false);
+        blit_sprite(buf, sprite_data, sw, sh, px - half, py - half, size, size, alpha, false);
     }
 }
 
@@ -218,7 +238,7 @@ fn draw_fire(buf: &mut SharedPixelBuffer<Rgba8Pixel>, f: &FireDef, time: f32) {
     let dy = f.y * FRAME_SCALE;
     let dw = f.w * FRAME_SCALE;
     let dh = f.h * FRAME_SCALE;
-    blit_sprite(buf, sprite, dx, dy, dw, dh, 1.0, f.flip);
+    blit_sprite(buf, &sprite.data, sprite.w, sprite.h, dx, dy, dw, dh, 1.0, f.flip);
 }
 
 /// Genera todos los frames del loop en RAM: fondo del fuego + partículas.

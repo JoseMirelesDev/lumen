@@ -165,8 +165,7 @@ pub struct VoiceClient {
     /// model watched by the send task (mid-call switches apply immediately).
     suppressor_model: Arc<parking_lot::RwLock<crate::audio::SuppressorModel>>,
     /// AEC3 (echo cancellation) for the next join. Default true (speakers);
-    /// headphones users disable it — this webrtc build corrupts the send when
-    /// the render reference is fed.
+    /// headphones users may disable it for a marginally cleaner send.
     aec_enabled: Arc<AtomicBool>,
 }
 
@@ -223,7 +222,7 @@ impl VoiceClient {
         if guard.is_some() {
             return Err("already in a voice channel".into());
         }
-        let aec = self.aec_enabled.load(Ordering::SeqCst);
+        let aec = self.aec_enabled.load(Ordering::Relaxed);
         let session = VoiceSession::start(self.events.clone(), args, self.suppressor_model.clone(), aec)
             .await
             .map_err(|e| e.to_string())?;
@@ -259,11 +258,11 @@ impl VoiceClient {
 
     /// Toggle feeding the playback (far-end) reference into AEC3.
     ///
-    /// Default true (preserves echo cancellation for speaker users). This
-    /// webrtc-audio-processing build corrupts the send when any render is fed
-    /// (measured: near-end correlation 0.34-0.85 vs 1.0 with no render), so
-    /// headphones users should disable it for a clean send. Applies to the
-    /// live session and to the next join.
+    /// Default true (preserves echo cancellation for speaker users).
+    /// Render is fed rate-limited (at most 40 ms per capture frame) so
+    /// bulk accumulation cannot break AEC3's delay estimator.
+    /// Headphones users may still disable it for a marginally cleaner send.
+    /// Applies to the live session and to the next join.
     pub async fn set_aec_enabled(&self, enabled: bool) {
         self.aec_enabled.store(enabled, Ordering::SeqCst);
         if let Some(s) = self.session.lock().await.as_ref() {
@@ -279,7 +278,7 @@ impl VoiceClient {
     }
 
     pub fn aec_enabled(&self) -> bool {
-        self.aec_enabled.load(Ordering::SeqCst)
+        self.aec_enabled.load(Ordering::Relaxed)
     }
 
     /// TEMP DIAG: (playout buffer occupancy in frames, total shed samples).
@@ -444,7 +443,7 @@ impl VoiceSession {
                 // model is watched so the UI ComboBox applies live, not on
                 // re-join (see the per-frame check below).
                 let mut current_model = *suppressor_model.read();
-                let mut current_aec = aec_enabled.load(Ordering::SeqCst);
+                let mut current_aec = aec_enabled.load(Ordering::Relaxed);
                 let mut ns =
                     crate::audio::NoiseSuppressor::with_model_and_aec(current_model, current_aec);
                 let mut frame_idx = 0u64;
@@ -475,40 +474,44 @@ impl VoiceSession {
                     // blip on a user-initiated toggle). Drop-then-create on
                     // this single thread is safe for the FastEnhancer C global
                     // engine (fe_free then fe_init).
+                    let a = aec_enabled.load(Ordering::Relaxed);
                     let m = *suppressor_model.read();
-                    let a = aec_enabled.load(Ordering::SeqCst);
                     if m != current_model || a != current_aec {
                         ns = crate::audio::NoiseSuppressor::with_model_and_aec(m, a);
                         current_model = m;
                         current_aec = a;
                     }
-                    if stopping.load(Ordering::SeqCst) {
+                    if stopping.load(Ordering::Acquire) {
                         loop_exit = Some("stopping");
                         break;
                     }
-                    if muted.load(Ordering::SeqCst) {
+                    if muted.load(Ordering::Relaxed) {
                         continue;
                     }
-                    // AEC3 render reference: fed when the user wants echo
-                    // cancellation (speakers: ON; headphones: OFF). The
-                    // earlier "render corrupts send" measurement (corr
-                    // 0.34-0.85) that motivated the AEC-off default was
-                    // contaminated by the frame-shed bug — now fixed by the
-                    // threshold-gated shed below — so feeding render is safe.
-                    // The tap is drained bounded so it can't grow unbounded.
-                    let render: Vec<i16> = {
+                    // AEC3 render: feed in cadence with capture. Drain at most
+                    // 2 capture frames' worth of render (1920 samples = 40 ms)
+                    // per iteration — enough for jitter, bounded so bulk feeding
+                    // can't break AEC3's delay estimator. Excess stays in the
+                    // tap for the next frame.
+                    if aec_enabled.load(Ordering::Relaxed) {
                         let mut tap = render_tap.lock();
-                        const RENDER_CAP: usize = 48_000 / 2; // 500 ms
+                        // Cap at 500 ms to bound memory; discard the oldest.
+                        const RENDER_CAP: usize = 48_000 / 2;
                         let excess = tap.len().saturating_sub(RENDER_CAP);
                         if excess > 0 {
                             tap.drain(..excess);
                         }
-                        std::mem::take(&mut *tap)
-                    };
-                    if aec_enabled.load(Ordering::SeqCst) {
-                        for chunk in render.chunks(480) {
-                            ns.process_render_frame(chunk);
+                        // Feed at most 2 frames (40 ms) to stay aligned.
+                        let feed = tap.len().min(960 * 2);
+                        if feed > 0 {
+                            let render: Vec<i16> = tap.drain(..feed).collect();
+                            for chunk in render.chunks(480) {
+                                ns.process_render_frame(chunk);
+                            }
                         }
+                    } else {
+                        // AEC off: still drain the tap so it doesn't grow.
+                        render_tap.lock().clear();
                     }
                     // Shed only on genuine overload: >4 queued frames (>80 ms
                     // backlog). USB capture delivers 40 ms bursts — two
@@ -526,7 +529,8 @@ impl VoiceSession {
                             Err(_) => break,
                         }
                     }
-                    local_level.store(rms_level(&frame).to_bits(), Ordering::SeqCst);
+                    let rms = rms_level(&frame);
+                    local_level.store(rms.to_bits(), Ordering::Relaxed);
                     if timing {
                         t1 = std::time::Instant::now(); // render+shed+rms done
                     }
@@ -552,19 +556,18 @@ impl VoiceSession {
                         diag::log(
                             "proc",
                             &serde_json::json!({
-                                "in_rms": rms_level(&frame),
+                                "in_rms": rms,
                                 "out_rms": rms_level(&cleaned),
                                 "model": current_model.as_str(),
                                 "fe": ns.neural_available(),
-                                "aec": aec_enabled.load(Ordering::SeqCst),
+                                "aec": aec_enabled.load(Ordering::Relaxed),
                                 "shed_us": t1.duration_since(t0).as_micros(),
                                 "ns_us": t2.duration_since(t1).as_micros(),
                             }),
                         );
                     }
                     frame_idx += 1;
-                    let rms_raw = f32::from_bits(local_level.load(Ordering::SeqCst));
-                    let speech = ns.speech_detected() || rms_raw > 0.01;
+                    let speech = ns.speech_detected() || rms > 0.01;
                     let (reuse, new_streak) =
                         crate::audio::silence_reuse_decision(speech, silence_streak, silence_pkt.is_some());
                     silence_streak = new_streak;
@@ -587,8 +590,9 @@ impl VoiceSession {
                     if timing {
                         t3 = std::time::Instant::now(); // encode done
                     }
+                    let encoded: Arc<Vec<u8>> = Arc::new(encoded);
                     for peer in peers.lock().values() {
-                        let _ = peer.send_tx.send(encoded.clone());
+                        let _ = peer.send_tx.send(Arc::clone(&encoded));
                     }
                     if timing && frame_idx % 25 == 0 {
                         diag::log(
@@ -626,17 +630,17 @@ impl VoiceSession {
                 let mut ticker = tokio::time::interval(Duration::from_millis(80));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
-                    if stopping.load(Ordering::SeqCst) {
+                    if stopping.load(Ordering::Acquire) {
                         break;
                     }
                     ticker.tick().await;
-                    let local = f32::from_bits(local_level.load(Ordering::SeqCst));
+                    let local = f32::from_bits(local_level.load(Ordering::Relaxed));
                     let list: Vec<PeerLevel> = peers
                         .lock()
                         .iter()
                         .map(|(id, p)| PeerLevel {
                             peer_id: id.clone(),
-                            level: f32::from_bits(p.level.load(Ordering::SeqCst)),
+                            level: f32::from_bits(p.level.load(Ordering::Relaxed)),
                         })
                         .collect();
                     let _ = events.send(VoiceEvent::Levels { local, peers: list });
@@ -663,7 +667,7 @@ impl VoiceSession {
                 let mut mixed = vec![0i16; FRAME_SAMPLES];
                 let silence = vec![0i16; FRAME_SAMPLES];
                 loop {
-                    if stopping.load(Ordering::SeqCst) {
+                    if stopping.load(Ordering::Acquire) {
                         break;
                     }
                     ticker.tick().await;
@@ -707,7 +711,7 @@ impl VoiceSession {
                         if got == 0 {
                             continue; // peer idle: contributes silence
                         }
-                        peer.level.store(rms_level(&pcm[..got]).to_bits(), Ordering::SeqCst);
+                        peer.level.store(rms_level(&pcm[..got]).to_bits(), Ordering::Relaxed);
                         for (i, s) in pcm[..got].iter().enumerate() {
                             acc[i] = acc[i].saturating_add(*s as i32);
                         }
@@ -833,7 +837,7 @@ impl VoiceSession {
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    if self.stopping.load(Ordering::SeqCst) {
+                    if self.stopping.load(Ordering::Acquire) {
                         break;
                     }
                 }
@@ -863,13 +867,13 @@ impl VoiceSession {
         {
             let stale: Vec<Peer> = self.peers.lock().values().cloned().collect();
             for peer in stale {
-                peer.stop.store(true, Ordering::SeqCst);
+                peer.stop.store(true, Ordering::Release);
                 let _ = peer.pc.close().await;
             }
         }
         let mut delay = Duration::from_secs(2);
         loop {
-            if self.stopping.load(Ordering::SeqCst) {
+            if self.stopping.load(Ordering::Acquire) {
                 return None;
             }
             match SignalingClient::connect(
@@ -882,7 +886,7 @@ impl VoiceSession {
             .await
             {
                 Ok((signal, rx)) => {
-                    if self.stopping.load(Ordering::SeqCst) {
+                    if self.stopping.load(Ordering::Acquire) {
                         // leave() raced the connect: close the fresh socket so
                         // no ghost connection lingers on the DO.
                         let _ = signal.tx.send(SignalOut::Close);
@@ -912,7 +916,7 @@ impl VoiceSession {
                         tokio::select! {
                             _ = &mut sleep => break,
                             _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                                if self.stopping.load(Ordering::SeqCst) {
+                                if self.stopping.load(Ordering::Acquire) {
                                     return None;
                                 }
                             }
@@ -946,7 +950,7 @@ impl VoiceSession {
                     let still_live = live.iter().any(|l| *l == id);
                     let removed = self.peers.lock().remove(&id);
                     if let Some(peer) = removed {
-                        peer.stop.store(true, Ordering::SeqCst);
+                        peer.stop.store(true, Ordering::Release);
                         let _ = peer.pc.close().await;
                         if !still_live {
                             let _ = self.events.send(VoiceEvent::PeerLeft { peer_id: id });
@@ -1126,7 +1130,7 @@ impl VoiceSession {
             None
         };
 
-        let (send_tx, send_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (send_tx, send_rx) = mpsc::unbounded_channel::<Arc<Vec<u8>>>();
         spawn_send_worker(track, sender.clone(), ssrc, send_rx, stop.clone());
 
         Ok(Peer {
@@ -1235,7 +1239,7 @@ impl VoiceSession {
         // Bind the guard to its own statement so it is dropped before we await.
         let removed = self.peers.lock().remove(peer_id);
         if let Some(peer) = removed {
-            peer.stop.store(true, Ordering::SeqCst);
+            peer.stop.store(true, Ordering::Release);
             let _ = peer.pc.close().await;
             let _ = self.events.send(VoiceEvent::PeerLeft { peer_id: peer_id.to_string() });
         }
@@ -1260,10 +1264,10 @@ impl VoiceSession {
             "teardown",
             &serde_json::json!({"replaced": replaced, "reason": "run_loop_exit"}),
         );
-        self.stopping.store(true, Ordering::SeqCst);
+        self.stopping.store(true, Ordering::Release);
         let peers: Vec<Peer> = self.peers.lock().drain().map(|(_, p)| p).collect();
         for peer in peers {
-            peer.stop.store(true, Ordering::SeqCst);
+            peer.stop.store(true, Ordering::Release);
             let _ = peer.pc.close().await;
         }
         let state = if replaced { SignalingState::Replaced } else { SignalingState::Closed };
@@ -1279,7 +1283,7 @@ impl VoiceSession {
 
     /// End the session. Closes peers and the WS; the loop breaks and tears down.
     async fn stop(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
+        self.stopping.store(true, Ordering::Release);
         // Explicitly ask the signaling writer to close the socket: dropping
         // the sender alone would NOT close it (the heartbeat task holds a
         // clone of the outbound channel, so the writer never sees it close),
@@ -1289,7 +1293,7 @@ impl VoiceSession {
         }
         let peers: Vec<Peer> = self.peers.lock().drain().map(|(_, p)| p).collect();
         for peer in peers {
-            peer.stop.store(true, Ordering::SeqCst);
+            peer.stop.store(true, Ordering::Release);
             let _ = peer.pc.close().await;
         }
         self.output.set_enabled(false);
@@ -1315,7 +1319,7 @@ struct Peer {
     dc: Option<Arc<dyn DataChannel>>,
     #[allow(dead_code)]
     sender: Arc<dyn RtpSender>,
-    send_tx: mpsc::UnboundedSender<Vec<u8>>,
+    send_tx: mpsc::UnboundedSender<Arc<Vec<u8>>>,
     /// Inbound adaptive jitter buffer + decoder (NetEQ). Filled by the
     /// per-peer receive task (`insert_packet`), drained by the session-wide
     /// playout task (`get_audio`, two 10 ms frames per 20 ms tick).
@@ -1350,7 +1354,7 @@ fn spawn_send_worker(
     track: Arc<TrackLocalStaticRTP>,
     sender: Arc<dyn RtpSender>,
     ssrc: u32,
-    mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut rx: mpsc::UnboundedReceiver<Arc<Vec<u8>>>,
     stop: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
@@ -1358,7 +1362,7 @@ fn spawn_send_worker(
         let mut pt: Option<u8> = None;
         let mut last_send: Option<std::time::Instant> = None;
         while let Some(frame) = rx.recv().await {
-            if stop.load(Ordering::SeqCst) {
+            if stop.load(Ordering::Acquire) {
                 break;
             }
             if pt.is_none() {
@@ -1369,7 +1373,7 @@ fn spawn_send_worker(
                     continue; // not negotiated yet — wait for a later frame
                 }
             }
-            let pkt = packetizer.packet(&frame);
+            let pkt = packetizer.packet(&*frame);
             let now = std::time::Instant::now();
             diag::log(
                 "send",
@@ -1462,7 +1466,7 @@ impl PeerConnectionEventHandler for PeerHandler {
             let mut last_seq: Option<u16> = None;
             let mut last_t: Option<std::time::Instant> = None;
             while let Some(event) = track.poll().await {
-                if stop_recv.load(Ordering::SeqCst) {
+                if stop_recv.load(Ordering::Acquire) {
                     break;
                 }
                 match event {

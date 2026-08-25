@@ -27,7 +27,7 @@ export component SectionHeader inherits HorizontalLayout {
     Text {
         text: root.label;
         font-family: AppTheme.font-mono;
-        font-size: 11px;
+        font-size: AppTheme.font-xs;
         font-weight: 700;
         letter-spacing: 1.2px;
         color: AppTheme.colors.text-dim;
@@ -100,11 +100,10 @@ export component StateChip inherits HorizontalLayout {
     Text {
         text: root.label;
         font-family: AppTheme.font-mono;
-        font-size: 9px;
+        font-size: 9px; // intentionally sub-xs for compact state chips
         font-weight: 700;
         letter-spacing: 1px;
         color: root.chip-color;
         vertical-alignment: center;
     }
 }
-

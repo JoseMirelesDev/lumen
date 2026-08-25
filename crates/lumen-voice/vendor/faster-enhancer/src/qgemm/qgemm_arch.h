@@ -18,7 +18,8 @@
 #elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
   #define FE_QGEMM_X86 1
   /* AVX2+FMA3+F16C is the minimum supported tier on x86. FMA3 is required
-   * for cross-tier bit-identity and F16C for fp16 state conversion. */
+   * for cross-tier bit-identity and F16C for fp16 state conversion.
+   * SSE4.1 is the fallback for older CPUs without AVX. */
   #if defined(__AVX512VNNI__)
     #include <immintrin.h>
     #define FE_QGEMM_HAVE_AVX512_VNNI 1
@@ -28,6 +29,11 @@
   #elif defined(__AVX2__)
     #include <immintrin.h>
     #define FE_QGEMM_HAVE_AVX2 1
+  #elif defined(__SSE4_1__)
+    #include <immintrin.h>
+    #define FE_QGEMM_HAVE_SSE41 1
+  #else
+    #include <immintrin.h>
   #endif
 #endif
 

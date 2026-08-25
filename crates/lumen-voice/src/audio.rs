@@ -11,6 +11,7 @@
 use parking_lot::Mutex;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rubato::Resampler as _;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,11 +31,14 @@ pub const CLOCK_RATE: u32 = 48_000;
 ///
 /// `None` sinc = passthrough for the common 48 kHz device case (the capture
 /// setup prefers a 48 kHz config below, and WASAPI mix format is 48 kHz in
-/// practice) — no point running a sinc filter at ratio 1.0.
 struct CaptureResampler {
     sinc: Option<rubato::SincFixedIn<f32>>,
     /// Pending mono device-rate samples (< the 960-sample input chunk).
     stage: Vec<i16>,
+    /// Reusable buffer for f32 chunk conversion (P0-3).
+    chunk_buf: Vec<f32>,
+    /// Reusable buffer for resampled output (P0-3).
+    out_f32: Vec<f32>,
 }
 
 impl CaptureResampler {
@@ -60,7 +64,7 @@ impl CaptureResampler {
                 .expect("rubato params are valid"),
             )
         };
-        Self { sinc, stage: Vec::with_capacity(960) }
+        Self { sinc, stage: Vec::with_capacity(960), chunk_buf: Vec::with_capacity(960), out_f32: Vec::new() }
     }
 
     /// Same call shape as the old `LinearResampler::resample`.
@@ -69,31 +73,48 @@ impl CaptureResampler {
             return mono.to_vec();
         };
         self.stage.extend_from_slice(mono);
-        let mut out = Vec::new();
+        // Reuse out_f32 to avoid per-call allocation (P0-3).
+        self.out_f32.clear();
         while self.stage.len() >= 960 {
-            let chunk: Vec<f32> = self
-                .stage
-                .drain(..960)
-                .map(|s| s as f32 / 32768.0)
-                .collect();
+            self.chunk_buf.clear();
+            self.chunk_buf.extend(self.stage.drain(..960).map(|s| s as f32 / 32768.0));
             // SincFixedIn consumes exactly the 960-sample input chunk and
             // produces chunk_size*ratio output frames (channels-first).
-            let channels = sinc.process(&[chunk], None).expect("resample ok");
-            out.extend(
-                channels[0]
-                    .iter()
-                    .map(|v| {
-                        (v * 32767.0)
-                            .round()
-                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            let channels = sinc.process(&[self.chunk_buf.as_slice()], None).expect("resample ok");
+            self.out_f32.extend(channels[0].iter().copied());
         }
-        out
+        // Convert out_f32 -> i16 Vec in one pass.
+        self.out_f32
+            .iter()
+            .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+            .collect()
+    }
+
+    /// Zero-alloc variant: extend `out` directly without intermediate Vec.
+    /// Used by `feed()` to avoid the `to_vec()` in the passthrough case.
+    fn resample_into(&mut self, mono: &[i16], out: &mut Vec<i16>) {
+        let Some(sinc) = self.sinc.as_mut() else {
+            out.extend_from_slice(mono);
+            return;
+        };
+        self.stage.extend_from_slice(mono);
+        // For non-passthrough we still need temporary f32 buffers; reuse fields.
+        // We batch through out_f32 then flush to `out` at the end to avoid
+        // interleaving borrow issues — clear out_f32 first.
+        self.out_f32.clear();
+        while self.stage.len() >= 960 {
+            self.chunk_buf.clear();
+            self.chunk_buf.extend(self.stage.drain(..960).map(|s| s as f32 / 32768.0));
+            let channels = sinc.process(&[self.chunk_buf.as_slice()], None).expect("resample ok");
+            self.out_f32.extend(channels[0].iter().copied());
+        }
+        out.extend(
+            self.out_f32
+                .iter()
+                .map(|v| (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16),
+        );
     }
 }
-
 /// Load a 48 kHz mono PCM-i16 WAV file (RIFF) into a flat sample buffer.
 /// Used to feed real recorded speech through the transport (`input_wav`).
 /// Multi-channel files are down-mixed to mono (first channel).
@@ -251,11 +272,28 @@ fn cpal_capture(
             device.build_input_stream(
                 stream_config,
                 move |data: &[f32], _| {
-                    let mut s16: Vec<i16> = Vec::with_capacity(data.len());
-                    for &v in data {
-                        s16.push((v * 32767.0) as i16);
+                    // P0-1: stack buffer to avoid per-callback heap alloc on hot path.
+                    // Chunk in 4096-sample pieces, aligned to channel frames.
+                    let mut s16_buf = [0i16; 4096];
+                    let ch = channels.max(1);
+                    let chunk_cap = (4096 / ch) * ch;
+                    let chunk_cap = chunk_cap.max(ch);
+                    let mut offset = 0;
+                    while offset < data.len() {
+                        let len = (data.len() - offset).min(chunk_cap);
+                        // Ensure len stays channel-aligned except for final tail.
+                        let len = if offset + len < data.len() {
+                            (len / ch) * ch
+                        } else {
+                            len
+                        };
+                        if len == 0 { break; }
+                        for i in 0..len {
+                            s16_buf[i] = (data[offset + i] * 32767.0) as i16;
+                        }
+                        feed(&mut resampler, &s16_buf[..len], channels, &mut acc, &frames_tx);
+                        offset += len;
                     }
-                    feed(&mut resampler, &s16, channels, &mut acc, &frames_tx);
                 },
                 err_fn,
                 None,
@@ -277,14 +315,13 @@ fn feed(
     if data.is_empty() {
         return;
     }
-    // Mix down to mono (first channel of an interleaved buffer).
-    let mono: Vec<i16> = if channels == 1 {
-        data.to_vec()
+    // P0-2: avoid to_vec() when already mono via Cow (P0-3: resample_into avoids passthrough clone).
+    let mono: Cow<[i16]> = if channels == 1 {
+        Cow::Borrowed(data)
     } else {
-        data.iter().step_by(channels).copied().collect()
+        Cow::Owned(data.iter().step_by(channels).copied().collect())
     };
-    let resampled = resampler.resample(&mono);
-    acc.extend_from_slice(&resampled);
+    resampler.resample_into(&mono, acc);
     while acc.len() >= FRAME_SAMPLES {
         let frame: Vec<i16> = acc.drain(..FRAME_SAMPLES).collect();
         let _ = frames_tx.send(frame);
@@ -542,11 +579,26 @@ mod wasapi_raw {
             Fmt::F32 => {
                 let samples =
                     unsafe { std::slice::from_raw_parts(data as *const f32, frames * channels) };
-                let mut s16: Vec<i16> = Vec::with_capacity(samples.len());
-                for &v in samples {
-                    s16.push((v * 32767.0) as i16);
+                // P0-1: stack buffer to avoid per-callback heap alloc (WASAPI F32 path).
+                let mut s16_buf = [0i16; 4096];
+                let ch = channels.max(1);
+                let chunk_cap = (4096 / ch) * ch;
+                let chunk_cap = chunk_cap.max(ch);
+                let mut offset = 0;
+                while offset < samples.len() {
+                    let len = (samples.len() - offset).min(chunk_cap);
+                    let len = if offset + len < samples.len() {
+                        (len / ch) * ch
+                    } else {
+                        len
+                    };
+                    if len == 0 { break; }
+                    for i in 0..len {
+                        s16_buf[i] = (samples[offset + i] * 32767.0) as i16;
+                    }
+                    feed(resampler, &s16_buf[..len], channels, acc, frames_tx);
+                    offset += len;
                 }
-                feed(resampler, &s16, channels, acc, frames_tx);
             }
         }
     }
@@ -621,7 +673,8 @@ impl AudioOutput {
     pub fn push(&self, frame: &[i16]) {
         let mut guard = self.state.lock();
         let Some(st) = guard.as_mut() else { return };
-        st.buf.extend_from_slice(&st.resampler.resample(frame));
+        // P0-6: direct resample_into avoids intermediate Vec in passthrough case.
+        st.resampler.resample_into(frame, &mut st.buf);
         // ~4 frames of device-rate samples (~80 ms) is enough to smooth cpal
         // callback phase without accumulating audible delay.
         let target = st.frame_size.saturating_mul(4).max(st.frame_size);
@@ -656,14 +709,15 @@ impl AudioOutput {
         };
         let ch = st.channels.max(1);
         let frames = out.len() / ch;
-        let n = st.buf.len().min(frames);
         // AEC reference: copy what is actually played (mono, device rate) —
         // resampled to 48 kHz, the rate AEC3 expects (feeding device-rate
         // samples directly would time-stretch the reference on non-48 kHz
         // outputs and break echo cancellation).
+        let n = frames.min(st.buf.len());
         if n > 0 {
-            let tap = st.tap_resampler.resample(&st.buf[..n]);
-            self.render_tap.lock().extend_from_slice(&tap);
+            // P0-6: resample directly into render_tap to avoid intermediate Vec.
+            let mut tap_guard = self.render_tap.lock();
+            st.tap_resampler.resample_into(&st.buf[..n], &mut *tap_guard);
         }
         for f in 0..n {
             let s = st.buf[f];
@@ -925,6 +979,8 @@ pub struct NoiseSuppressor {
     /// LSNR (dB) of the last processed frame in the neural tier; `None` in the
     /// light (RNNoise) tier where LSNR is unavailable. For diagnostics/probes.
     last_lsnr: Option<f32>,
+    /// Reusable buffer for WebRTC APM output (P0-4) — avoids vec![0; N] per frame.
+    buf_apm: Vec<i16>,
 }
 
 impl NoiseSuppressor {
@@ -1005,6 +1061,7 @@ impl NoiseSuppressor {
             fe,
             speech_detected: false,
             last_lsnr: None,
+            buf_apm: Vec::with_capacity(960),
         }
     }
     /// Feed the far-end (playback) audio into AEC3. Call this with the exact
@@ -1030,75 +1087,79 @@ impl NoiseSuppressor {
     /// neural tier (DeepFilterNet, `new_neural`) or the light tier
     /// (RNNoise, `new_light`); with `new()` the APM output is final.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
-        // WebRTC APM: AEC3 + high-pass + NS (always on — see chain()).
-        let out: Vec<i16> = match self.processor.as_mut() {
-            Some(processor) => {
-                let mut out = vec![0i16; frame.len()];
-                let mut buf = [0f32; 480];
-                for (in_chunk, out_chunk) in frame.chunks_exact(480).zip(out.chunks_exact_mut(480)) {
+        // P0-4: reuse buf_apm to avoid vec![0; N] per frame on hot path.
+        // Destructure to allow simultaneous borrows of disjoint fields.
+        let Self { processor, rnnoise, neural, fe, speech_detected, last_lsnr, buf_apm } = &mut *self;
+        buf_apm.clear();
+        buf_apm.resize(frame.len(), 0);
+        match processor.as_mut() {
+            Some(p) => {
+                let mut tmp = [0f32; 480];
+                for (in_chunk, out_chunk) in frame.chunks_exact(480).zip(buf_apm.chunks_exact_mut(480)) {
                     for (i, s) in in_chunk.iter().enumerate() {
-                        buf[i] = *s as f32 / 32768.0;
+                        tmp[i] = *s as f32 / 32768.0;
                     }
-                    // Panics if the block isn't exactly 10 ms; chunks_exact(480) guarantees it.
-                    if processor.process_capture_frame([&mut buf]).is_ok() {
-                        for (i, v) in buf.iter().enumerate() {
-                            out_chunk[i] = (v * 32767.0)
-                                .round()
-                                .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    if p.process_capture_frame([&mut tmp]).is_ok() {
+                        for (i, v) in tmp.iter().enumerate() {
+                            out_chunk[i] = (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                         }
                     } else {
                         out_chunk.copy_from_slice(in_chunk);
                     }
                 }
-                out
             }
-            None => frame.to_vec(),
-        };
+            None => {
+                buf_apm.copy_from_slice(frame);
+            }
+        }
         // Denoise with the active tier and derive the speech signal.
+        // buf_apm now holds APM output; borrow it as &[i16] for denoisers.
         let mut result: Vec<i16>;
-        if let Some(fe) = self.fe.as_mut() {
+        if let Some(f) = fe.as_mut() {
             // FastEnhancer tier (default): full-band 48 kHz int8 runtime.
             // Its output on noise-only frames is near-silence, so the VAD is
             // post-denoise energy — the model itself suppresses before we
             // decide to transmit (the mic never opens on noise).
-            self.last_lsnr = None;
-            result = fe.process(&out);
-            self.speech_detected = rms_level(&result) > 0.01;
-        } else if let Some(n) = self.neural.as_mut() {
+            *last_lsnr = None;
+            // Reborrow buf_apm as &[i16] (shared) while fe is mutably borrowed — disjoint fields.
+            let apm_slice: &[i16] = &*buf_apm;
+            result = f.process(apm_slice);
+            *speech_detected = rms_level(&result) > 0.01;
+        } else if let Some(n) = neural.as_mut() {
             // DeepFilterNet tier (opt-in): the VAD comes from the model's own
             // LSNR (local SNR, dB) — mapped onto a [0..1] probability.
-            let (denoised, lsnr) = n.process(&out);
+            let apm_slice: &[i16] = &*buf_apm;
+            let (denoised, lsnr) = n.process(apm_slice);
             result = denoised;
-            self.last_lsnr = Some(lsnr);
+            *last_lsnr = Some(lsnr);
             let vad = ((lsnr - (-10.0)) / 40.0).clamp(0.0, 1.0);
-            self.speech_detected = vad > 0.5;
-        } else if let Some(rn) = self.rnnoise.as_mut() {
+            *speech_detected = vad > 0.5;
+        } else if let Some(rn) = rnnoise.as_mut() {
             // RNNoise tier (opt-in): its own VAD drives the speaking meter.
-            self.last_lsnr = None;
-            result = vec![0i16; out.len()];
+            *last_lsnr = None;
+            result = vec![0i16; buf_apm.len()];
             let mut max_vad = 0.0f32;
             let mut input = [0f32; 480];
             let mut denoised = [0f32; 480];
-            for (chunk, out_chunk) in out.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
+            for (chunk, out_chunk) in buf_apm.chunks_exact(480).zip(result.chunks_exact_mut(480)) {
                 for (i, s) in chunk.iter().enumerate() {
                     input[i] = *s as f32 / 32768.0;
                 }
                 let v = rn.process_frame(&mut denoised, &input);
                 max_vad = max_vad.max(v);
                 for (i, v) in denoised.iter().enumerate() {
-                    out_chunk[i] = (v * 32767.0)
-                        .round()
-                        .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    out_chunk[i] = (v * 32767.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                 }
             }
-            self.speech_detected = max_vad > 0.5;
+            *speech_detected = max_vad > 0.5;
         } else {
             // The default chain: the APM already did AEC3 + NS + GC2 — no
             // external denoiser, no custom leveler (the GC2's adaptive gain
             // is the AGC; a per-phrase leveler caused the volume surges).
-            self.last_lsnr = None;
-            result = out;
-            self.speech_detected = rms_level(&result) > 0.01;
+            *last_lsnr = None;
+            // Reuse buf_apm via clone to preserve its capacity for next call.
+            result = buf_apm.clone();
+            *speech_detected = rms_level(&result) > 0.01;
         }
         // Final safety net: cap the encoded i16 range at -1 dBFS so a hot mic
         // can never hard-clip after the leveler (clipping = harsh distortion
@@ -1272,9 +1333,12 @@ mod ffe {
 /// vendor/faster-enhancer/). Two variants:
 ///   `new()`       — Medium ("Ultra", hop 320, 6.67 ms frames)
 ///   `new_small()` — Small ("Ligera", hop 512, 10.67 ms frames)
-/// Requires AVX2+FMA3+F16C; both `new`/`new_small` return `None` on CPUs
-/// without it (pre-Haswell, or Pentium/Celeron) so the caller falls back to
-/// WebRTC NS-only. The engine is a C global (single instance); the struct is
+/// Requires SSE4.1 (minimum) or AVX2+FMA3+F16C (full speed); both
+/// `new`/`new_small` return `None` on CPUs without SSE4.1 so the caller
+/// falls back to WebRTC NS-only. On SSE4.1-only CPUs (Pentium/Celeron)
+/// the runtime uses software fp16 and 4-wide GEMM kernels at ~half the
+/// throughput of AVX2 — still fast enough for real-time at ~3-6% of a core.
+/// The engine is a C global (single instance); the struct is
 /// never `Send`/`Sync` — it lives on the single send-task thread.
 pub struct FastEnhancerDenoiser {
     run: unsafe extern "C" fn(*const f32, *mut f32),
@@ -1289,6 +1353,10 @@ pub struct FastEnhancerDenoiser {
     /// input-length blocks are returned and the partial remainder is held
     /// for the next call (bounded lag ≤ one frame ≈ 20 ms).
     out_buf: Vec<f32>,
+    /// Reusable buffer for drain chunk (P0-10) — avoids Vec alloc per engine call.
+    run_buf: Vec<f32>,
+    /// Reusable buffer for denoised output (P0-10).
+    denoise_buf: Vec<f32>,
 }
 
 #[cfg(not(target_env = "msvc"))]
@@ -1299,15 +1367,17 @@ impl FastEnhancerDenoiser {
     const WEIGHTS_S: &'static [u8] = include_bytes!("../vendor/faster-enhancer/weights/fe_s.q8");
 
     /// Non-destructive availability probe (does NOT init the global engine).
-    /// Mirrors the runtime's own AVX2+FMA3+F16C floor (x86) / NEON baseline
+    /// Mirrors the runtime's SSE4.1 floor (x86) / NEON baseline
     /// (arm64) so the UI can avoid offering a model this CPU can't run —
     /// there is no silent fallback at the UI layer.
     pub fn available() -> bool {
         #[cfg(target_arch = "x86_64")]
         {
-            std::arch::is_x86_feature_detected!("avx2")
+            // AVX2+FMA+F16C (full speed) or SSE4.1 (half speed, software fp16)
+            (std::arch::is_x86_feature_detected!("avx2")
                 && std::arch::is_x86_feature_detected!("fma")
-                && std::arch::is_x86_feature_detected!("f16c")
+                && std::arch::is_x86_feature_detected!("f16c"))
+            || std::arch::is_x86_feature_detected!("sse4.1")
         }
         #[cfg(target_arch = "aarch64")]
         {
@@ -1321,7 +1391,7 @@ impl FastEnhancerDenoiser {
 
     /// FastEnhancer-Medium ("Ultra", hop 320, 6.67 ms frames).
     /// Returns `None` when `fe_init` fails — i.e. the host lacks
-    /// AVX2+FMA3+F16C — which is how the runtime degrades to the NS-only
+    /// SSE4.1 — which is how the runtime degrades to the NS-only
     /// tier on weak CPUs (the UI already avoids offering it there).
     pub fn new() -> Option<Self> {
         Self::build(ffe::fe_init, ffe::fe_run, ffe::fe_free, Self::WEIGHTS_M, 320)
@@ -1348,7 +1418,15 @@ impl FastEnhancerDenoiser {
             )
         };
         if ok == 0 {
-            Some(Self { run, free, frame_size, in_buf: Vec::new(), out_buf: Vec::new() })
+            Some(Self {
+                run,
+                free,
+                frame_size,
+                in_buf: Vec::new(),
+                out_buf: Vec::new(),
+                run_buf: Vec::with_capacity(frame_size),
+                denoise_buf: Vec::with_capacity(frame_size),
+            })
         } else {
             None
         }
@@ -1359,15 +1437,16 @@ impl FastEnhancerDenoiser {
     /// encoder needs fixed 20 ms frames); a partial remainder is held in the
     /// output buffer and emitted with the next call.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
-        for &s in frame {
-            self.in_buf.push(s as f32 / 32768.0);
-        }
+        // P0-10: bulk extend (single reserve) + reuse buffers to avoid per-call allocs.
+        self.in_buf.extend(frame.iter().map(|&s| s as f32 / 32768.0));
         let fs = self.frame_size;
         while self.in_buf.len() >= fs {
-            let chunk: Vec<f32> = self.in_buf.drain(..fs).collect();
-            let mut denoised = vec![0f32; fs];
-            unsafe { (self.run)(chunk.as_ptr(), denoised.as_mut_ptr()) };
-            self.out_buf.extend_from_slice(&denoised);
+            self.run_buf.clear();
+            self.run_buf.extend(self.in_buf.drain(..fs));
+            self.denoise_buf.clear();
+            self.denoise_buf.resize(fs, 0.0);
+            unsafe { (self.run)(self.run_buf.as_ptr(), self.denoise_buf.as_mut_ptr()) };
+            self.out_buf.extend_from_slice(&self.denoise_buf);
         }
         let emit = self.out_buf.len() / frame.len() * frame.len();
         if emit == 0 {
@@ -1765,16 +1844,26 @@ impl LinearResampler {
     }
 
     pub fn resample(&mut self, input: &[i16]) -> Vec<i16> {
+        let mut out = Vec::new();
+        self.resample_into(input, &mut out);
+        out
+    }
+
+    /// P0-6: zero-copy variant that extends `out` directly, avoiding the
+    /// intermediate Vec in the common passthrough case (`src == dst`).
+    pub fn resample_into(&mut self, input: &[i16], out: &mut Vec<i16>) {
         if input.is_empty() {
-            return Vec::new();
+            return;
         }
         if self.src_rate == self.dst_rate {
-            return input.to_vec();
+            out.extend_from_slice(input);
+            return;
         }
         let len = input.len() as f64;
         let ratio = self.dst_rate as f64 / self.src_rate as f64;
         let step = 1.0 / ratio;
-        let mut out = Vec::with_capacity((len * ratio).ceil() as usize);
+        // Reserve once for this chunk.
+        out.reserve((len * ratio).ceil() as usize);
         while self.pos < len {
             let idx = self.pos.floor() as usize;
             let frac = self.pos - idx as f64;
@@ -1786,10 +1875,8 @@ impl LinearResampler {
         }
         // Carry the phase overshoot into the next chunk (stays in [0, step)).
         self.pos -= len;
-        out
     }
 }
-
 /// H1 silence-path decision: whether the send loop can reuse the last
 /// encoded silence packet instead of re-encoding the frame.
 ///

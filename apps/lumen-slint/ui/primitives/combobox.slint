@@ -9,11 +9,14 @@ export component VoxComboBox inherits Rectangle {
     in property <bool> enabled: true;
     callback selected(int);
 
+    accessible-role: combobox;
+    accessible-label: "";
+
     height: 32px;
     min-width: 140px;
     background: AppTheme.colors.bg-deep;
     border-width: 1px;
-    border-color: fs.has-focus ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border);
+    border-color: !root.enabled ? AppTheme.colors.border-dim : fs.has-focus ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border);
     border-radius: AppTheme.radius-1;
 
     // focus ring
@@ -66,7 +69,7 @@ export component VoxComboBox inherits Rectangle {
 
     ta := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: pointer;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             popup.show();
         }

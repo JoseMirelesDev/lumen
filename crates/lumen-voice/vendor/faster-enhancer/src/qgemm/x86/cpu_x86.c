@@ -42,6 +42,12 @@ uint32_t fe_cpu_x86_caps(void) {
     int has_f16c    = (c >> 29) & 1;
     int has_avx     = (c >> 28) & 1;
     int has_osxsave = (c >> 27) & 1;
+    /* SSE4.1: CPUID leaf 1, ECX bit 19. Uses only XMM registers which are
+     * always saved by the OS, so no OSXSAVE/XGETBV check is needed (unlike
+     * AVX which requires YMM preservation). Pentium G4560 (Kaby Lake) has
+     * SSE4.1/4.2 without AVX/AVX2/FMA/F16C. */
+    int has_sse41   = (c >> 19) & 1;
+    if (has_sse41) caps |= FE_X86_HAS_SSE41;
 
     /* OS XSAVE check: confirms the OS preserves YMM (bit 2) / ZMM (bits 5..7)
      * across context switches. Without this, AVX instructions raise #UD even
@@ -49,8 +55,8 @@ uint32_t fe_cpu_x86_caps(void) {
     int os_ymm = 0, os_zmm = 0;
     if (has_osxsave) {
         uint64_t xcr0 = fe_xgetbv0();
-        os_ymm = ((xcr0 & 0x6) == 0x6);                  /* XMM + YMM state */
-        os_zmm = ((xcr0 & 0xE6) == 0xE6);                 /* + ZMM_lo, ZMM_hi, opmask */
+        os_ymm = (xcr0 & 0x6) == 0x6;
+        os_zmm = (xcr0 & 0xE6) == 0xE6;
     }
     if (has_avx && os_ymm) caps |= FE_X86_HAS_OS_AVX;
     if (os_zmm) caps |= FE_X86_HAS_OS_AVX512;

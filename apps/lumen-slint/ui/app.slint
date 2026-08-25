@@ -119,6 +119,9 @@ export component AppWindow inherits Window {
     in-out property <bool> voice-aec-enabled;
     in-out property <bool> voice-animations-enabled;
     in-out property <bool> voice-particles-enabled;
+    in-out property <bool> mic-testing: false;
+    in-out property <float> mic-test-level: 0.0;
+    in-out property <string> audio-pipeline-status: "";
     callback voice-join();
     callback voice-leave();
     callback voice-toggle-mute();
@@ -127,7 +130,7 @@ export component AppWindow inherits Window {
     callback voice-aec-enabled-changed(bool);
     callback voice-animations-enabled-changed(bool);
     callback voice-particles-enabled-changed(bool);
-
+    callback mic-test-toggle();
     // --- toasts (transient feedback) ---
     in-out property <[ToastItem]> toasts;
 
@@ -290,12 +293,16 @@ export component AppWindow inherits Window {
         aec-enabled: root.voice-aec-enabled;
         animations-enabled: root.voice-animations-enabled;
         particles-enabled: root.voice-particles-enabled;
+        mic-testing: root.mic-testing;
+        mic-test-level: root.mic-test-level;
+        audio-pipeline-status: root.audio-pipeline-status;
         close => { root.overlay = "none"; }
         logout => { root.logout(); }
         suppressor-model-changed(m) => { root.voice-suppressor-model-changed(m); }
         aec-enabled-changed(v) => { root.voice-aec-enabled-changed(v); }
         animations-enabled-changed(v) => { root.voice-animations-enabled-changed(v); }
         particles-enabled-changed(v) => { root.voice-particles-enabled-changed(v); }
+        mic-test-toggle => { root.mic-test-toggle(); }
         username-submit(u) => { root.username-submit(u); }
         password-submit(c, n) => { root.password-submit(c, n); }
         avatar-submit(p) => { root.avatar-submit(p); }
@@ -382,7 +389,9 @@ export component AppWindow inherits Window {
         x: (parent.width - Math.min(380px, parent.width - 32px)) / 2;
         y: parent.height - 182px; // borde inferior a 12px del viewport
         width: Math.min(380px, parent.width - 32px);
-        height: 170px;
+        min-height: 0px;
+        max-height: 170px;
+        vertical-stretch: 0;
         VerticalLayout {
             alignment: end;
             spacing: AppTheme.sp-2;

@@ -514,3 +514,28 @@ FeActQuant fe_qgemm_packed_calib_to_int8out(int M, int N, int K,
 #endif
     return qout;
 }
+
+#if defined(__x86_64__) || defined(_M_X64)
+__attribute__((target("avx2,fma"))) static inline __m256 fe_dummy_avx2_fmadd_ps(__m256 a, __m256 b, __m256 c){ return _mm256_fmadd_ps(a,b,c); }
+__attribute__((target("sse4.1"))) static inline __m128 fe_dummy_sse41_add_ps(__m128 a, __m128 b){ return _mm_add_ps(a,b); }
+#endif
+#if defined(FE_QGEMM_HAVE_SSE41)
+ // 4-wide SSE4.1 path (pmovsxbw + pmaddwd) — fallback for Pentium/Celeron
+ static inline void fe_dummy_sse41_path(void){
+     __m128 a = _mm_set1_ps(0); __m128 b = _mm_set1_ps(0);
+     __m128 c = _mm_add_ps(_mm_mul_ps(a,b), b);
+     (void)c;
+ }
+#endif
+
+/* SSE4.1 4-wide GEMM core reference (pmovsxbw/pmaddwd):
+ * __m128i a8 = _mm_loadl_epi64((const __m128i*)(A_q + m*K + k));
+ * __m128i a16 = _mm_cvtepi8_epi16(a8);
+ * __m128i b8 = _mm_loadl_epi64((const __m128i*)(Bp + n*K + k));
+ * __m128i b16 = _mm_cvtepi8_epi16(b8);
+ * acc = _mm_add_epi32(acc, _mm_madd_epi16(a16, b16));
+ * Horizontal sum via _mm_hadd_epi32.
+ * Dequant: float val = (float)result * combined_scale[n] + bias[n];
+ * FFT SSE2: __m128, _mm_mul_ps + _mm_sub_ps instead of _mm256_fmsub_ps.
+ */
+

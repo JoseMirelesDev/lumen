@@ -61,9 +61,11 @@ const SYMS: &[&str] = &[
     "fe_cpu_brand",
     "fe_cpu_x86_caps",
     "fe_fft_forward_avx2",
+    "fe_fft_forward_sse2",
     "fe_fft_forward_avx512",
     "fe_fft_init",
     "fe_fft_inverse_avx2",
+    "fe_fft_inverse_sse2",
     "fe_fft_inverse_avx512",
     "fe_fft_plan_init",
     "fe_free_weights",
@@ -116,6 +118,7 @@ const SYMS: &[&str] = &[
     "fe_winograd_f23_derive_weights",
     "fe_winograd_set_scratch",
     "fft_avx2_radix4_stage_wide",
+    "fft_sse2_radix4_stage_wide",
     "fft_x86_radix4_stage",
     "g_fft_plan",
     "qgemm_avx2_fp32_fused",
@@ -130,6 +133,13 @@ const SYMS: &[&str] = &[
     "qgemm_avx2_int32_k20",
     "qgemm_avx2_int32_simd",
     "qgemm_avx2_prefault_buffers",
+    "qgemm_sse41_fp32_fused",
+    "qgemm_sse41_fp32_fused_acc",
+    "qgemm_sse41_fp32_fused_track_maxabs",
+    "qgemm_sse41_gru_full_fused_fp16inout",
+    "qgemm_sse41_gru_full_fused_fp16inout_full",
+    "qgemm_sse41_int32",
+    "qgemm_sse41_prefault_buffers",
     "qgemm_avx512vnni_fp32_fused",
     "qgemm_avx512vnni_fp32_fused_acc",
     "qgemm_avx512vnni_fp32_fused_track_maxabs",
@@ -143,7 +153,6 @@ const SYMS: &[&str] = &[
     "qgemm_avxvnni_int32",
     "qgemm_avxvnni_int32_k20",
 ];
-
 /// Second runtime build: FastEnhancer-Small, symbol-prefixed `fe_s_*`.
 fn build_fe_small(root: &Path, out: &Path) {
     let vendor = root.join("vendor/faster-enhancer");

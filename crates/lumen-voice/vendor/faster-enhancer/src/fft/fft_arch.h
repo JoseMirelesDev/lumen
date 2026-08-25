@@ -51,12 +51,14 @@ void fe_fft_inverse_neon(const float *in_re, const float *in_im, float *out_real
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-/* x86: AVX2 is the baseline (pre-AVX2 tiers dropped to keep cross-tier
- * byte-identity with FMA-using tiers). */
+/* x86: AVX2 is the baseline for full quality; SSE2 is the fallback for
+ * Pentium/Celeron class CPUs without AVX. */
 void fe_fft_forward_avx2  (const float *in_real, float *out_re, float *out_im);
 void fe_fft_inverse_avx2  (const float *in_re, const float *in_im, float *out_real);
 void fe_fft_forward_avx512(const float *in_real, float *out_re, float *out_im);
 void fe_fft_inverse_avx512(const float *in_re, const float *in_im, float *out_real);
+void fe_fft_forward_sse2  (const float *in_real, float *out_re, float *out_im);
+void fe_fft_inverse_sse2  (const float *in_re, const float *in_im, float *out_real);
 
 /* Small-L stage helpers shared between AVX2 and AVX-512 paths.
  * `fft_x86_radix4_stage` (128-bit, L>=4) is exported by fft_avx2.c. */
@@ -66,6 +68,8 @@ void fft_x86_radix4_stage      (const float *in_re, const float *in_im,
 void fft_avx2_radix4_stage_wide(const float *in_re, const float *in_im,
                                 float *out_re, float *out_im,
                                 const float *twr, const float *twi, int L);
+void fft_sse2_radix4_stage_wide(const float *in_re, const float *in_im,
+                                float *out_re, float *out_im,
+                                const float *twr, const float *twi, int L);
 #endif
-
 #endif /* FE_FFT_ARCH_H */

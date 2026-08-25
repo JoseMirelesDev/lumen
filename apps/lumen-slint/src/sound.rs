@@ -115,8 +115,8 @@ struct Voice {
 /// output channels.
 struct Mixer {
     voices: Vec<Voice>,
+    kept: Vec<Voice>,
 }
-
 impl Mixer {
     fn mix(&mut self, channels: usize, out: &mut [f32]) {
         for o in out.iter_mut() {
@@ -126,7 +126,7 @@ impl Mixer {
             return;
         }
         let frames = out.len() / channels;
-        let mut kept = Vec::with_capacity(self.voices.len());
+        self.kept.clear();
         for mut v in self.voices.drain(..) {
             let take = frames.min(v.samples.len() - v.pos);
             for f in 0..take {
@@ -137,10 +137,10 @@ impl Mixer {
             }
             v.pos += take;
             if v.pos < v.samples.len() {
-                kept.push(v);
+                self.kept.push(v);
             }
         }
-        self.voices = kept;
+        std::mem::swap(&mut self.voices, &mut self.kept);
     }
 }
 
@@ -213,7 +213,9 @@ impl Sfx {
     /// Boot the output stream. Never panics — on any failure the layer
     /// disables itself (alive = false) and `play` becomes a no-op.
     pub fn new() -> Self {
-        let mixer = Arc::new(Mutex::new(Mixer { voices: Vec::new() }));
+        // Pre-size audio thread scratch buffer to avoid resize() alloc on first I16 callback.
+        SCRATCH.with(|s| s.borrow_mut().reserve(8192));
+        let mixer = Arc::new(Mutex::new(Mixer { voices: Vec::new(), kept: Vec::new() }));
         let alive = Arc::new(AtomicBool::new(false));
 
         let build = cpal::default_host();
@@ -247,6 +249,10 @@ impl Sfx {
                 move |data: &mut [i16], _| {
                     SCRATCH.with(|scratch| {
                         let mut buf = scratch.borrow_mut();
+                        if buf.capacity() < 8192 {
+                            let needed = 8192 - buf.capacity();
+                            buf.reserve(needed);
+                        }
                         buf.resize(data.len(), 0.0);
                         mixer_cb.lock().mix(channels, &mut buf);
                         for (d, f) in data.iter_mut().zip(buf.iter()) {

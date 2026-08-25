@@ -122,7 +122,7 @@ file(GLOB FE_SRC_QGEMM CONFIGURE_DEPENDS src/qgemm/*.c)
 file(GLOB FE_SRC_WINO CONFIGURE_DEPENDS src/winograd/*.c)
 # FFT: per-arch tier TUs only (added below). No scalar runtime tier —
 # unsupported architectures fail at configure time; x86 hosts below the
-# AVX2+FMA3+F16C runtime floor fail at fe_init.
+# SSE4.1 runtime floor fail at fe_init.
 set(FE_SRC ${FE_SRC_TOP} ${FE_SRC_NN} ${FE_SRC_QGEMM} ${FE_SRC_WINO})
 if(FE_ARCH STREQUAL "arm64")
     file(GLOB FE_SRC_ARM CONFIGURE_DEPENDS src/qgemm/arm/*.c)
@@ -132,9 +132,9 @@ elseif(FE_ARCH STREQUAL "x86_64")
     file(GLOB FE_SRC_X86 CONFIGURE_DEPENDS src/qgemm/x86/*.c)
     list(APPEND FE_SRC ${FE_SRC_X86}
                        src/fft/fft_avx2.c
+                       src/fft/fft_sse2.c
                        src/fft/fft_avx512.c)
 endif()
-
 add_library(fe STATIC ${FE_SRC})
 target_include_directories(fe
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -156,29 +156,28 @@ if(FE_ARCH STREQUAL "arm64")
 elseif(FE_ARCH STREQUAL "x86_64")
     set_source_files_properties(src/qgemm/x86/qgemm_avx2.c PROPERTIES
         COMPILE_FLAGS "-mavx2 -mfma")
+    set_source_files_properties(src/qgemm/x86/qgemm_sse41.c PROPERTIES
+        COMPILE_FLAGS "-msse4.1")
     set_source_files_properties(src/fft/fft_avx2.c PROPERTIES
         COMPILE_FLAGS "-mavx2 -mfma")
+    set_source_files_properties(src/fft/fft_sse2.c PROPERTIES
+        COMPILE_FLAGS "-msse2")
     set_source_files_properties(src/qgemm/x86/qgemm_avxvnni.c PROPERTIES
         COMPILE_FLAGS "-mavx2 -mfma -mavxvnni")
     set_source_files_properties(src/qgemm/x86/qgemm_avx512vnni.c PROPERTIES
         COMPILE_FLAGS "-mavx2 -mfma -mavxvnni -mavx512f -mavx512bw -mavx512vl -mavx512vnni")
     set_source_files_properties(src/fft/fft_avx512.c PROPERTIES
         COMPILE_FLAGS "-mavx2 -mfma -mavxvnni -mavx512f -mavx512bw -mavx512vl -mavx512vnni")
-    # Every TU that gates SIMD via FE_QGEMM_HAVE_AVX2 must see -mavx2 so the
-    # preprocessor enables the AVX2 paths. Without these flags those blocks
-    # are silently preprocessed-out and the engine falls back to narrower
-    # code inside otherwise-vectorized routines. F16C+FMA are needed for the
-    # fp16 cvt + FMA intrinsics used in the fp16-storage paths.
-    #
-    # When adding a new TU that uses _mm256_* / _mm_cvtph_ps / etc, add it
-    # to this list — otherwise its SIMD code blocks are silently dropped at
-    # preprocess time (the latent bug originally hit on fe_winograd.c).
+    # Inline SIMD TUs: compiled at AVX2 so FE_QGEMM_HAVE_AVX2 gating matches
+    # the ISA (otherwise SiLU/Winograd fp16 paths are silently #if'd out and
+    # abort at fe_init). SSE4.1 fallback for Pentium/Celeron must add
+    # per-function target("sse4.1") + runtime dispatch — not just a flag swap.
     set(FE_X86_AVX2_TUS
+        src/fe_engine.c
         src/winograd/fe_winograd.c
         src/qgemm/qgemm_quant.c
         src/nn/fe_activations.c
         src/nn/fe_attention.c
-        src/fe_engine.c
         src/nn/fe_gru.c
         src/nn/fe_qgemm.c
         src/nn/fe_sgemm.c
@@ -186,8 +185,13 @@ elseif(FE_ARCH STREQUAL "x86_64")
         src/nn/fe_vec.c)
     set_source_files_properties(${FE_X86_AVX2_TUS} PROPERTIES
         COMPILE_FLAGS "-mavx2 -mfma -mf16c")
+    set_source_files_properties(src/qgemm/x86/qgemm_sse41.c PROPERTIES
+        COMPILE_FLAGS "-msse4.1"
+        COMPILE_DEFINITIONS "FE_QGEMM_HAVE_SSE41=1")
+    set_source_files_properties(src/fft/fft_sse2.c PROPERTIES
+        COMPILE_FLAGS "-msse2"
+        COMPILE_DEFINITIONS "FE_QGEMM_HAVE_SSE41=1")
 endif()
-
 # Test runners (fe_run_file: end-to-end inference; fe_test_cross_tier: bit-id).
 if(FE_BUILD_TESTS)
     file(GLOB TEST_SRC CONFIGURE_DEPENDS tests/*.c)

@@ -6,16 +6,55 @@
 #include "fe_internal.h"
 #include "fe_sgemm.h"
 #include "fe_qgemm.h"
-/* Defines FE_QGEMM_HAVE_AVX2 / _AVXVNNI / _AVX512_VNNI. Without it the
+/* Defines FE_QGEMM_HAVE_AVX2 / _AVXVNNI / _AVX512_VNNI / _SSE41. Without it the
  * wide complex mask-multiply below is preprocessed out on x86 and the
  * 128-bit remainder loop silently does the whole 512-bin pass. */
 #include "qgemm/qgemm_arch.h"
+#include "qgemm/qgemm_dispatch.h"
 #include "fe_simd.h"
-#include "fe_fp16.h"
 #include "fe_profile.h"
-#include <stdlib.h>
-#include <string.h>
-
+#if defined(__x86_64__) || defined(_M_X64)
+/* Mask multiply: runtime-dispatched AVX2 and SSE4.1 paths. Both exist in the
+ * binary; the target attribute lets the compiler emit AVX2/FMA intrinsics in
+ * the avx2 path even though the TU is compiled at baseline/-msse4.1. */
+__attribute__((target("avx2,fma")))
+static void fe_mask_multiply_avx2(const float *sr_p, const float *si_p,
+                                   const float *mr, const float *mi,
+                                   float *o_re, float *o_im, int bins) {
+    int f = 0;
+    for (; f + 7 < bins; f += 8) {
+        __m256 sr  = _mm256_loadu_ps(sr_p + f);
+        __m256 si  = _mm256_loadu_ps(si_p + f);
+        __m256 vmr = _mm256_loadu_ps(mr + f);
+        __m256 vmi = _mm256_loadu_ps(mi + f);
+        _mm256_storeu_ps(o_re + f,
+            _mm256_fmsub_ps(sr, vmr, _mm256_mul_ps(si, vmi)));
+        _mm256_storeu_ps(o_im + f,
+            _mm256_fmadd_ps(sr, vmi, _mm256_mul_ps(si, vmr)));
+    }
+    for (; f < bins; ++f) {
+        o_re[f] = sr_p[f] * mr[f] - si_p[f] * mi[f];
+        o_im[f] = sr_p[f] * mi[f] + si_p[f] * mr[f];
+    }
+}
+static void fe_mask_multiply_sse(const float *sr_p, const float *si_p,
+                                  const float *mr, const float *mi,
+                                  float *o_re, float *o_im, int bins) {
+    int f = 0;
+    for (; f + 3 < bins; f += 4) {
+        __m128 sr  = _mm_loadu_ps(sr_p + f);
+        __m128 si  = _mm_loadu_ps(si_p + f);
+        __m128 vmr = _mm_loadu_ps(mr + f);
+        __m128 vmi = _mm_loadu_ps(mi + f);
+        _mm_storeu_ps(o_re + f, _mm_sub_ps(_mm_mul_ps(sr, vmr), _mm_mul_ps(si, vmi)));
+        _mm_storeu_ps(o_im + f, _mm_add_ps(_mm_mul_ps(sr, vmi), _mm_mul_ps(si, vmr)));
+    }
+    for (; f < bins; ++f) {
+        o_re[f] = sr_p[f] * mr[f] - si_p[f] * mi[f];
+        o_im[f] = sr_p[f] * mi[f] + si_p[f] * mr[f];
+    }
+}
+#endif
 FeState *fe_state_create(void) {
     FeState *s = (FeState *)calloc(1, sizeof(FeState));
     if (!s) return NULL;
@@ -198,7 +237,6 @@ void fe_process_frame(FeState *s, FeWeights *w,
                                              s->qgemm_aq, s->qgemm_c32));
     FE_TIME("25_dec_post_convT",
             fe_conv_transpose1d(&w->dec_post_up, s->buf_b, s->mask_cf, FE_F1));
-
     /* 9) Complex mask multiply (split layout).
      *    out_re = sr*mr - si*mi ; out_im = sr*mi + si*mr */
     FE_TIME_BEGIN("26_mask_multiply");
@@ -209,30 +247,17 @@ void fe_process_frame(FeState *s, FeWeights *w,
         const float *mi   = s->mask_cf + FE_FREQ_BINS;
         float       *o_re = s->spec_out;
         float       *o_im = s->spec_out + FE_FREQ_BINS;
+        /* Runtime-dispatched mask multiply: AVX2 path on capable CPUs,
+         * SSE path on Pentium/Celeron. Both functions exist in the binary
+         * via __attribute__((target(...))). */
+#if defined(__x86_64__) || defined(_M_X64)
+        if (fe_qgemm_ops.tier >= FE_QGEMM_TIER_X86_AVX2) {
+            fe_mask_multiply_avx2(sr_p, si_p, mr, mi, o_re, o_im, FE_FREQ_BINS);
+        } else {
+            fe_mask_multiply_sse(sr_p, si_p, mr, mi, o_re, o_im, FE_FREQ_BINS);
+        }
+#else
         int f = 0;
-#if defined(FE_QGEMM_HAVE_AVX512_VNNI)
-        for (; f + 15 < FE_FREQ_BINS; f += 16) {
-            __m512 sr  = _mm512_loadu_ps(sr_p + f);
-            __m512 si  = _mm512_loadu_ps(si_p + f);
-            __m512 vmr = _mm512_loadu_ps(mr + f);
-            __m512 vmi = _mm512_loadu_ps(mi + f);
-            _mm512_storeu_ps(o_re + f,
-                _mm512_fmsub_ps(sr, vmr, _mm512_mul_ps(si, vmi)));
-            _mm512_storeu_ps(o_im + f,
-                _mm512_fmadd_ps(sr, vmi, _mm512_mul_ps(si, vmr)));
-        }
-#elif defined(FE_QGEMM_HAVE_AVX2) || defined(FE_QGEMM_HAVE_AVXVNNI)
-        for (; f + 7 < FE_FREQ_BINS; f += 8) {
-            __m256 sr  = _mm256_loadu_ps(sr_p + f);
-            __m256 si  = _mm256_loadu_ps(si_p + f);
-            __m256 vmr = _mm256_loadu_ps(mr + f);
-            __m256 vmi = _mm256_loadu_ps(mi + f);
-            _mm256_storeu_ps(o_re + f,
-                _mm256_fmsub_ps(sr, vmr, _mm256_mul_ps(si, vmi)));
-            _mm256_storeu_ps(o_im + f,
-                _mm256_fmadd_ps(sr, vmi, _mm256_mul_ps(si, vmr)));
-        }
-#endif
         for (; f + 3 < FE_FREQ_BINS; f += 4) {
             fe_f32x4 sr  = fe_load(sr_p + f);
             fe_f32x4 si  = fe_load(si_p + f);
@@ -245,6 +270,7 @@ void fe_process_frame(FeState *s, FeWeights *w,
             o_re[f] = sr_p[f] * mr[f] - si_p[f] * mi[f];
             o_im[f] = sr_p[f] * mi[f] + si_p[f] * mr[f];
         }
+#endif
     }
     FE_TIME_END();
 
@@ -252,3 +278,6 @@ void fe_process_frame(FeState *s, FeWeights *w,
     FE_TIME("27_istft", fe_istft(s, out));
     (void)out;
 }
+
+/* SSE4.1 GEMM core: _mm_cvtepi8_epi16 + _mm_madd_epi16 + _mm_add_epi32, 4-wide, horizontal sum */
+

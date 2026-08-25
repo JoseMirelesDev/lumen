@@ -157,6 +157,8 @@ component CopyButton {
     callback clicked();
     out property <bool> hovered: ta.has-hover;
     property <bool> copied: false;
+    accessible-role: button;
+    accessible-label: "Copiar mensaje";
     Timer {
         running: root.copied;
         interval: 1200ms;
@@ -191,6 +193,9 @@ component MsgActionBtn {
     in property <string> glyph;
     in property <brush> color: AppTheme.colors.text-dim;
     in property <bool> danger: false;
+    in property <string> a11y-label: "";
+    accessible-role: button;
+    accessible-label: root.a11y-label;
     callback clicked();
     out property <bool> hovered: ta.has-hover;
     width: 26px;
@@ -222,6 +227,8 @@ component MembersButton {
     in property <int> count: 0;
     in property <bool> active: false;
     callback clicked();
+    accessible-role: button;
+    accessible-label: "Miembros";
     width: 40px;
     height: 34px;
     ta := TouchArea {
@@ -463,16 +470,10 @@ export component ChatView inherits Rectangle {
                     }
                     // Copy + own-message actions — declared AFTER the content
                     // so they paint on top of the whole row (Z) and their own
-                    // TouchAreas win over row-ta's in their region. Visible
-                    // while the cursor is over the row OR the button itself —
-                    // without the OR, entering the button turns off
-                    // row-ta.has-hover and it disappears (flicker loop).
-                    // Orden de derecha a izquierda (26px targets):
-                    //   copy · [12px gap] · delete (rose) · edit · report
-                    // El gap aísla la acción destructiva del resto.
                     if !m.mine : rep-btn := MsgActionBtn {
                         glyph: Icons.warning;
                         color: AppTheme.colors.rose;
+                        a11y-label: "Reportar";
                         x: row-ta.width - 94px - AppTheme.sp-5;
                         y: AppTheme.sp-1;
                         visible: !m.deleted && (row-ta.has-hover || rep-btn.hovered);
@@ -480,6 +481,7 @@ export component ChatView inherits Rectangle {
                     }
                     if m.mine : edit-btn := MsgActionBtn {
                         glyph: Icons.pencil-simple;
+                        a11y-label: "Editar";
                         x: row-ta.width - 94px - AppTheme.sp-5;
                         y: AppTheme.sp-1;
                         visible: !m.deleted && (row-ta.has-hover || edit-btn.hovered);
@@ -489,6 +491,7 @@ export component ChatView inherits Rectangle {
                         glyph: Icons.x;
                         color: AppTheme.colors.rose;
                         danger: true;
+                        a11y-label: "Eliminar";
                         x: row-ta.width - 64px - AppTheme.sp-5;
                         y: AppTheme.sp-1;
                         visible: !m.deleted && (row-ta.has-hover || del-btn.hovered);
@@ -506,7 +509,7 @@ export component ChatView inherits Rectangle {
         if root.messages.length == 0 : Rectangle {
             vertical-stretch: 1;
             Text {
-                text: "No messages yet — the hall is quiet.";
+                text: "Aún no hay mensajes — la sala está en silencio.";
                 font-family: AppTheme.font-mono;
                 font-size: AppTheme.font-sm;
                 color: AppTheme.colors.text-mute;
@@ -563,6 +566,13 @@ export component ChatView inherits Rectangle {
                             horizontal-stretch: 1;
                             accepted(text) => { root.send-message(text); root.draft = ""; }
                         }
+                        if root.draft.character-count > 1600 : Text {
+                            text: root.draft.character-count + "/2000";
+                            font-family: AppTheme.font-mono;
+                            font-size: AppTheme.font-xs;
+                            color: root.draft.character-count > 1900 ? AppTheme.colors.rose : AppTheme.colors.text-mute;
+                            vertical-alignment: center;
+                        }
                         SendButton {
                             label: "ENVIAR";
                             enabled: root.draft != "";
@@ -573,8 +583,6 @@ export component ChatView inherits Rectangle {
             }
         }
     }
-
-    // --- overlay de miembros (EN LÍNEA) — flota sobre el chat, colapsable.
     // Posicionado top-right del área de chat, por encima de la lista de
     // mensajes (declarado después → pinta arriba). Se cierra con el toggle
     // del header o la X.

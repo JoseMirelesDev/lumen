@@ -176,9 +176,19 @@ void qgemm_neon_gru_full_fused_fp16inout(int M, int D,
 
 #endif /* aarch64 */
 
-/* x86 tiers. AVX2 is the minimum; pre-AVX2 x86 tiers were dropped (no FMA3
- * → breaks cross-tier byte-identity with AVX2+). */
+/* x86 tiers. AVX2 is the minimum for full quality; SSE4.1 is the
+ * fallback for Pentium/Celeron class CPUs (no FMA3 → software fp16). */
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+
+/* SSE4.1 fallback: pmovsxbw (SSE4.1) + pmaddwd (SSE2), 4-wide. */
+void qgemm_sse41_prefault_buffers(void);
+void qgemm_sse41_int32(int M, int N, int K, const int8_t *A_q, const int8_t *Bp, int32_t *C32, int ldc32);
+void qgemm_sse41_fp32_fused(int M, int N, int K, const int8_t *A_q, const int8_t *Bp, const float *combined_scale, const float *bias, float *C, int ldc, int act_silu, int32_t *c32_tail);
+void qgemm_sse41_fp32_fused_acc(int M, int N, int K, const int8_t *A_q, const int8_t *Bp, const float *combined_scale, const float *bias, float *C, int ldc, int32_t *c32_tail);
+void qgemm_sse41_fp32_fused_track_maxabs(int M, int N, int K, const int8_t *A_q, const int8_t *Bp, const float *combined_scale, const float *bias, float *C, int ldc, int32_t *c32_tail, float *max_abs);
+void qgemm_sse41_gru_full_fused_fp16inout(int M, int D, const int8_t *Xq, int ld_x, const int8_t *Hq, int ld_h, const int8_t *Wq_ih, const int8_t *Wq_hh, const float *scales_ih, const float *bias_eff_ih, const float *scales_hh, const float *bias_eff_hh, const uint16_t *h_in_fp16, float *h_out_scratch, int ld_h_out);
+/* Full signature matching Avx2 variant for dispatch compatibility. */
+void qgemm_sse41_gru_full_fused_fp16inout_full(int M, int D, const int8_t *Xq, int ld_x, const int8_t *Hq, int ld_h, const int8_t *Wq_ih, const int8_t *Wq_hh, const float *combined_ih, const float *bias_eff_ih, const float *combined_hh, const float *bias_eff_hh, const float *br_sum, const float *bz_sum, const float *bn_i, const float *bn_h, uint16_t *h_inout_fp16, int ld_h_inout, float *h_out_scratch, int ld_h_out);
 
 /* Pre-fault every page of the AVX2 BSS scratch buffers to
  * eliminate first-touch page-fault spikes from steady-state percentiles.

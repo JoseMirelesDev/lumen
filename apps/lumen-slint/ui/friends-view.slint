@@ -120,7 +120,7 @@ export component FriendsView inherits Rectangle {
         HeaderBar {
             pad-x: AppTheme.sp-3;
             Text {
-                text: "Friends";
+                text: "Amigos";
                 font-family: AppTheme.font-display;
                 font-weight: 700;
                 font-size: AppTheme.font-title;
@@ -129,6 +129,8 @@ export component FriendsView inherits Rectangle {
             }
             HeaderIconBtn {
                 icon: Icons.gear-six;
+                accessible-role: button;
+                accessible-label: "Ajustes";
                 clicked => { root.open-settings(); }
             }
         }
@@ -206,7 +208,7 @@ export component FriendsView inherits Rectangle {
                 HorizontalLayout {
                     padding-left: AppTheme.sp-2;
                     Text {
-                        text: "No DMs yet — send a friend request below.";
+                        text: "Aún no hay MDs — envía una solicitud abajo.";
                         font-family: AppTheme.font-body;
                         font-size: AppTheme.font-sm;
                         color: AppTheme.colors.text-mute;
@@ -235,7 +237,7 @@ export component FriendsView inherits Rectangle {
                                 HorizontalLayout {
                     padding-left: AppTheme.sp-2;
                     Text {
-                        text: "No friends online.";
+                        text: "Nadie conectado.";
                         font-family: AppTheme.font-body;
                         font-size: AppTheme.font-sm;
                         color: AppTheme.colors.text-mute;
@@ -267,7 +269,7 @@ export component FriendsView inherits Rectangle {
                                 HorizontalLayout {
                     padding-left: AppTheme.sp-2;
                     Text {
-                        text: "No friends yet.";
+                        text: "Aún no tienes amigos.";
                         font-family: AppTheme.font-body;
                         font-size: AppTheme.font-sm;
                         color: AppTheme.colors.text-mute;

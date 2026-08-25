@@ -31,16 +31,20 @@ uint32_t fe_cpu_arm_caps(void);
 
 /* x86 runtime tiers plus OS vector-state support. FE_X86_HAS_AVX2 implies
  * the AVX2+FMA3+F16C floor required by the kernels and fp16 state storage;
- * FE_X86_HAS_AVX512VNNI implies that floor plus AVX-512F/BW/VL/VNNI. */
+ * FE_X86_HAS_AVX512VNNI implies that floor plus AVX-512F/BW/VL/VNNI.
+ * FE_X86_HAS_SSE41 is the fallback tier for Pentium/Celeron class CPUs
+ * (Kaby Lake G4560, etc.) which have SSE4.1/4.2 but lack AVX/AVX2/FMA/F16C.
+ * SSE4.1 uses only XMM registers (no YMM/ZMM) so it does NOT require
+ * OSXSAVE/XGETBV — XMM state is always preserved. */
 enum {
     FE_X86_HAS_AVX2       = 1u << 0,
     FE_X86_HAS_AVXVNNI    = 1u << 1,  /* Alder Lake+, Zen 4+ (256-bit VNNI) */
     FE_X86_HAS_AVX512VNNI = 1u << 2,
     FE_X86_HAS_OS_AVX     = 1u << 3,  /* xgetbv confirmed OS preserves YMM */
-    FE_X86_HAS_OS_AVX512  = 1u << 4   /* xgetbv confirmed OS preserves ZMM */
+    FE_X86_HAS_OS_AVX512  = 1u << 4,  /* xgetbv confirmed OS preserves ZMM */
+    FE_X86_HAS_SSE41      = 1u << 5,  /* SSE4.1 fallback (pmovsxbw/pmaddwd) */
 };
 uint32_t fe_cpu_x86_caps(void);
-
 /* Human-readable name of the host (printed at init for diagnostics). */
 const char *fe_cpu_brand(void);
 

@@ -14,7 +14,7 @@
 //! resets every `animate` and makes the pane look frozen/jumpy.
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ use lumen_voice::{
     VoiceClient, VoiceEvent, VoiceJoinArgs,
 };
 use parking_lot::{Mutex, RwLock};
-use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel, Weak};
 
 use crate::sound::{Sfx, SfxEvent};
 use crate::{AppWindow, PeerTile};
@@ -96,6 +96,19 @@ pub struct VoiceController {
     reconnecting: AtomicBool,
     /// UI sound layer (join/leave/user events).
     sfx: Arc<Sfx>,
+    mic_test_active: AtomicBool,
+    mic_test_level: RwLock<f32>,
+    mic_test_stream: parking_lot::Mutex<Option<lumen_voice::audio::MicStream>>,
+    mic_test_output: parking_lot::Mutex<Option<lumen_voice::audio::AudioOutput>>,
+    // cpal::Stream must be kept alive while playing; stored separately because
+    // AudioOutput is Clone (Arc inside) but Stream is not.
+    mic_test_output_stream: parking_lot::Mutex<Option<cpal::Stream>>,
+    /// Cached computed status string — avoids format! on every push() tick.
+    cached_status: RwLock<String>,
+    cached_peer_count: AtomicUsize,
+    cached_status_active: AtomicBool,
+    /// Cached pipeline string — recomputed only when suppressor model or AEC changes.
+    cached_pipeline: RwLock<String>,
 }
 
 impl VoiceController {
@@ -107,6 +120,16 @@ impl VoiceController {
         bus: EventBus,
     ) -> Arc<Self> {
         let (client, events) = VoiceClient::new();
+        // Pre-compute initial pipeline string from the client's defaults.
+        let init_model = client.suppressor_model();
+        let init_aec = client.aec_enabled();
+        let init_model_name = match init_model {
+            lumen_voice::audio::SuppressorModel::FastEnhancerM => "FastEnhancer-M",
+            lumen_voice::audio::SuppressorModel::FastEnhancerS => "FastEnhancer-S",
+            lumen_voice::audio::SuppressorModel::NsOnly => "NS",
+        };
+        let init_aec_str = if init_aec { "on" } else { "off" };
+        let init_pipeline = format!("Pipeline: {} · AEC {} · 48 kHz", init_model_name, init_aec_str);
         let this = Arc::new(Self {
             client: Arc::new(client),
             api,
@@ -128,6 +151,15 @@ impl VoiceController {
             bus: bus.clone(),
             join_info: RwLock::new(None),
             reconnecting: AtomicBool::new(false),
+            mic_test_active: AtomicBool::new(false),
+            mic_test_level: RwLock::new(0.0),
+            mic_test_stream: parking_lot::Mutex::new(None),
+            mic_test_output: parking_lot::Mutex::new(None),
+            mic_test_output_stream: parking_lot::Mutex::new(None),
+            cached_status: RwLock::new("not connected".to_string()),
+            cached_peer_count: AtomicUsize::new(0),
+            cached_status_active: AtomicBool::new(false),
+            cached_pipeline: RwLock::new(init_pipeline),
         });
         let drain = Arc::clone(&this);
         let mut rx = events;
@@ -149,6 +181,17 @@ impl VoiceController {
         if let Some(enabled) = this.settings.aec_enabled() {
             this.client.set_aec_enabled_now(enabled);
         }
+        // Refresh cached pipeline after applying persisted settings.
+        {
+            let model = this.client.suppressor_model();
+            let model_name = match model {
+                lumen_voice::audio::SuppressorModel::FastEnhancerM => "FastEnhancer-M",
+                lumen_voice::audio::SuppressorModel::FastEnhancerS => "FastEnhancer-S",
+                lumen_voice::audio::SuppressorModel::NsOnly => "NS",
+            };
+            let aec_str = if this.client.aec_enabled() { "on" } else { "off" };
+            *this.cached_pipeline.write() = format!("Pipeline: {} · AEC {} · 48 kHz", model_name, aec_str);
+        }
         this
     }
 
@@ -157,6 +200,14 @@ impl VoiceController {
     pub fn set_suppressor_model(&self, model: lumen_voice::audio::SuppressorModel) {
         self.client.set_suppressor_model(model);
         self.settings.set_suppressor_model(model.as_str().to_string());
+        // Recompute cached pipeline string.
+        let model_name = match model {
+            lumen_voice::audio::SuppressorModel::FastEnhancerM => "FastEnhancer-M",
+            lumen_voice::audio::SuppressorModel::FastEnhancerS => "FastEnhancer-S",
+            lumen_voice::audio::SuppressorModel::NsOnly => "NS",
+        };
+        let aec_str = if self.client.aec_enabled() { "on" } else { "off" };
+        *self.cached_pipeline.write() = format!("Pipeline: {} · AEC {} · 48 kHz", model_name, aec_str);
     }
 
     pub fn current_suppressor_model(&self) -> lumen_voice::audio::SuppressorModel {
@@ -171,6 +222,17 @@ impl VoiceController {
     /// users should keep it off (this webrtc build corrupts the send when the
     /// render reference is fed).
     pub fn set_aec_enabled(&self, enabled: bool) {
+        // Optimistic cache update so the next push() shows the new value immediately.
+        {
+            let model = self.client.suppressor_model();
+            let model_name = match model {
+                lumen_voice::audio::SuppressorModel::FastEnhancerM => "FastEnhancer-M",
+                lumen_voice::audio::SuppressorModel::FastEnhancerS => "FastEnhancer-S",
+                lumen_voice::audio::SuppressorModel::NsOnly => "NS",
+            };
+            let aec_str = if enabled { "on" } else { "off" };
+            *self.cached_pipeline.write() = format!("Pipeline: {} · AEC {} · 48 kHz", model_name, aec_str);
+        }
         let client = self.client.clone();
         let settings = self.settings.clone();
         self.rt.spawn(async move {
@@ -202,6 +264,121 @@ impl VoiceController {
 
     pub fn set_particles_enabled(&self, enabled: bool) {
         self.settings.set_particles_enabled(enabled);
+    }
+
+    /// Whether the offline mic test is capturing.
+    pub fn is_mic_testing(&self) -> bool {
+        self.mic_test_active.load(Ordering::SeqCst)
+    }
+
+    /// Current RMS level from the mic test (0..1), updated at ~50 Hz.
+    pub fn mic_test_level(&self) -> f32 {
+        *self.mic_test_level.read()
+    }
+
+    /// Start the offline mic test: captures via `start_capture`, runs through
+    /// `NoiseSuppressor` with the current model, measures `rms_level`, and
+    /// pushes updates. Also plays back the processed audio through the output
+    /// device so you hear exactly what would be sent (Discord-style loopback).
+    /// When AEC is enabled, the playback render is fed back as `process_render_frame`
+    /// (capped at 40 ms per mic frame, like the real send path) — without this
+    /// the speaker echo picked up by the mic would Larsen (you heard this).
+    /// Does NOT join a voice channel.
+    pub fn start_mic_test(self: &Arc<Self>) {
+        if self.mic_test_active.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
+        let stream = match lumen_voice::audio::start_capture(tx) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("mic test start failed: {e}");
+                self.mic_test_active.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+        *self.mic_test_stream.lock() = Some(stream);
+        // Start loopback playback (best-effort; level meter still works without it).
+        // Wiring the render_tap lets AEC see its own playback — speaker mode needs it,
+        // headphones mode has aec_enabled=false and skips the feeding.
+        let aec_enabled = self.current_aec_enabled();
+        let render_tap: std::sync::Arc<parking_lot::Mutex<Vec<i16>>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        {
+            let mut output = lumen_voice::audio::AudioOutput::new();
+            output.set_render_tap(std::sync::Arc::clone(&render_tap));
+            match output.start() {
+                Ok(cpal_stream) => {
+                    *self.mic_test_output.lock() = Some(output);
+                    *self.mic_test_output_stream.lock() = Some(cpal_stream);
+                }
+                Err(e) => eprintln!("mic test playback start failed: {e}"),
+            }
+        }
+        let model = self.current_suppressor_model();
+        let this = Arc::clone(self);
+        self.rt.spawn(async move {
+            let mut suppressor =
+                lumen_voice::audio::NoiseSuppressor::with_model_and_aec(model, aec_enabled);
+            while let Some(frame) = rx.recv().await {
+                if !this.mic_test_active.load(Ordering::SeqCst) {
+                    break;
+                }
+                // Feed AEC render reference (what we just played). Mirrors
+                // client.rs send loop: cap at 1920 samples (40 ms) per frame
+                // so bulk feeding doesn't break the delay estimator; excess
+                // stays in the tap for the next iteration. Bound the tap at
+                // 500 ms (24k samples) to avoid unbounded growth.
+                if aec_enabled {
+                    let mut tap = render_tap.lock();
+                    const RENDER_CAP: usize = 48_000 / 2; // 500 ms
+                    if tap.len() > RENDER_CAP {
+                        let drop_n = tap.len() - RENDER_CAP;
+                        tap.drain(..drop_n);
+                    }
+                    let take = tap.len().min(1920);
+                    if take > 0 {
+                        let render: Vec<i16> = tap.drain(..take).collect();
+                        drop(tap);
+                        for chunk in render.chunks(480) {
+                            suppressor.process_render_frame(chunk);
+                        }
+                    }
+                }
+                let processed = suppressor.process(&frame);
+                let level = lumen_voice::audio::rms_level(&processed).clamp(0.0, 1.0);
+                *this.mic_test_level.write() = level;
+                // Loopback: play what the denoiser produced.
+                if let Some(out) = this.mic_test_output.lock().as_ref() {
+                    out.push(&processed);
+                }
+                this.push();
+            }
+            *this.mic_test_level.write() = 0.0;
+            this.push();
+        });
+        self.push();
+    }
+
+    /// Stop the offline mic test and drop the capture/playback streams.
+    pub fn stop_mic_test(&self) {
+        if !self.mic_test_active.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        *self.mic_test_stream.lock() = None;
+        *self.mic_test_output_stream.lock() = None;
+        *self.mic_test_output.lock() = None;
+        *self.mic_test_level.write() = 0.0;
+        self.push();
+    }
+
+    /// Toggle the offline mic test.
+    pub fn toggle_mic_test(self: &Arc<Self>) {
+        if self.mic_test_active.load(Ordering::SeqCst) {
+            self.stop_mic_test();
+        } else {
+            self.start_mic_test();
+        }
     }
 
     /// Install the window handle and start the UI-thread model sync timer.
@@ -560,20 +737,38 @@ impl VoiceController {
         let active = self.active.load(Ordering::SeqCst);
         let muted = self.muted.load(Ordering::SeqCst);
         let deafened = self.deafened.load(Ordering::SeqCst);
-        let channel_name = self.channel_name.read().clone().unwrap_or_default();
         let error = self.error.read().clone().unwrap_or_default();
         let peer_count = self.peers.lock().len();
         let particles = self.particles_enabled();
-        let status = if active {
-            // Nosotros contamos como uno en la fogata (el roster ya muestra
-            // peers + 1); el status debe cuadrar con eso.
-            let total = peer_count + 1;
-            match peer_count {
-                0 => "connected — solo en la fogata".to_string(),
-                _ => format!("connected — {total} en la fogata"),
+        let mic_testing = self.mic_test_active.load(Ordering::SeqCst);
+        let mic_level = *self.mic_test_level.read();
+        // --- cached status: recompute only when active or peer_count changes ---
+        let status: SharedString = {
+            let prev_active = self.cached_status_active.load(Ordering::Relaxed);
+            let prev_count = self.cached_peer_count.load(Ordering::Relaxed);
+            if prev_active != active || prev_count != peer_count {
+                let new_status = if active {
+                    let total = peer_count + 1;
+                    match peer_count {
+                        0 => "connected — solo en la fogata".to_string(),
+                        _ => format!("connected — {total} en la fogata"),
+                    }
+                } else {
+                    "not connected".to_string()
+                };
+                *self.cached_status.write() = new_status;
+                self.cached_status_active.store(active, Ordering::Relaxed);
+                self.cached_peer_count.store(peer_count, Ordering::Relaxed);
             }
-        } else {
-            "not connected".to_string()
+            SharedString::from(self.cached_status.read().as_str())
+        };
+        // --- cached pipeline: already maintained by set_suppressor_model / set_aec_enabled ---
+        let pipeline_status: SharedString =
+            SharedString::from(self.cached_pipeline.read().as_str());
+        // Channel name without intermediate String clone — produce SharedString directly.
+        let channel_name: SharedString = {
+            let guard = self.channel_name.read();
+            SharedString::from(guard.as_deref().unwrap_or(""))
         };
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.set_voice_active(active);
@@ -581,9 +776,12 @@ impl VoiceController {
             ui.set_voice_deafened(deafened);
             ui.set_voice_local_level(local_level);
             ui.set_voice_local_speaking(local_speaking);
-            ui.set_voice_channel_name(channel_name.into());
+            ui.set_voice_channel_name(channel_name);
             ui.set_voice_error(error.into());
-            ui.set_voice_status(status.into());
+            ui.set_voice_status(status);
+            ui.set_mic_testing(mic_testing);
+            ui.set_mic_test_level(mic_level);
+            ui.set_audio_pipeline_status(pipeline_status);
             // El campfire cabalga este render: su mark_dirty_region + request_redraw
             // coalescen con el que ya dispara el level stream, sin renders propios.
             // No-op si el key no está registrado o las partículas están apagadas.

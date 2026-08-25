@@ -7,7 +7,18 @@ use lumen_core::{
     Channel, DmSummary, FriendInfo, FriendshipRequest, ServerWithChannels, TextMessage, User,
 };
 use slint::{ModelRc, SharedString, VecModel};
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use parking_lot::Mutex;
 
+static LINK_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Clear cached detect_link results — call when the message list is reset
+/// (e.g. channel switch) so stale ids do not retain old URLs.
+pub fn clear_link_cache() {
+    LINK_CACHE.lock().clear();
+}
 pub fn first_char_upper(s: &str) -> SharedString {
     s.chars()
         .next()
@@ -180,12 +191,21 @@ pub fn messages_model(msgs: &[TextMessage], self_user_id: &str) -> ModelRc<Messa
         .enumerate()
         .map(|(i, m)| {
             let first_in_run = i == 0 || msgs[i - 1].author_id != m.author_id;
-            let link_url = detect_link(&m.content);
+            // Cached detect_link by message id — avoids URL parsing on every push.
+            let link_url = {
+                if let Some(cached) = LINK_CACHE.lock().get(&m.id).cloned() {
+                    cached
+                } else {
+                    let computed = detect_link(&m.content);
+                    LINK_CACHE.lock().insert(m.id.clone(), computed.clone());
+                    computed
+                }
+            };
             MessageItem {
                 id: m.id.clone().into(),
                 author: m.author_name.clone().into(),
                 time: hhmm(&m.created_at),
-                content: m.content.clone().into(),
+                content: SharedString::from(m.content.as_str()),
                 mine: m.author_id == self_user_id,
                 skin: skin_for(&m.author_name),
                 first_in_run,

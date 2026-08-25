@@ -23,6 +23,7 @@ export component VoxLineEdit inherits Rectangle {
     in property <int> max-length: 2000;  // hard cap, enforced on edit
     in property <int> max-lines: 1;      // >1 = auto-grow multi-line mode
     in property <length> line-height: 15px; // measured wrapped-line pitch (13px font)
+    in property <bool> enabled: true;
     callback accepted(string);
     callback changed(string);
     // Last value that passed the max-length check; restored when an edit
@@ -36,6 +37,9 @@ export component VoxLineEdit inherits Rectangle {
     // ti.preferred-height (not root.preferred-height): the scroll TouchArea
     // reports a 0 preferred size, so the root can't see through it.
     property <length> max-scroll: max(ti.preferred-height - root.height, 0px);
+
+    accessible-role: text-input;
+    accessible-label: root.placeholder;
 
     init => {
         root.last-valid = root.text;
@@ -58,10 +62,7 @@ export component VoxLineEdit inherits Rectangle {
     clip: true;
     background: root.flat ? transparent : AppTheme.colors.bg-deep;
     border-width: 1px;
-    border-color: root.error ? AppTheme.colors.crimson-hi
-        : (ti.has-focus && !root.flat ? AppTheme.colors.ice
-        : root.flat ? transparent
-        : AppTheme.colors.border);
+    border-color: !root.enabled ? AppTheme.colors.border-dim : root.error ? AppTheme.colors.crimson-hi : ti.has-focus ? AppTheme.colors.ice : ta.has-hover ? AppTheme.colors.border-hi : root.flat ? transparent : AppTheme.colors.border;
     border-radius: AppTheme.radius-1;
     // forward-focus: the TextInput is the single focus target. Tab lands on
     // it directly — no ghost FocusScope rectangle that shows the focus ring
@@ -78,82 +79,89 @@ export component VoxLineEdit inherits Rectangle {
         visible: root.flat && ti.has-focus;
     }
 
-    // Inner layout provides the text inset. The TextInput is a direct layout
-    // child (mirrors std-widgets LineEditBase): clicks, tab focus and
-    // selection all land on it; no wrapper scope in between. In multi-line
-    // mode the TouchArea catches wheel events the TextInput ignores, so the
-    // overflow can be scrolled by the mouse.
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        scroll-area := TouchArea {
-            horizontal-stretch: 1;
-            scroll-event(event) => {
-                if root.max-lines > 1 && event.delta-y != 0 {
-                    root.scroll-y = root.scroll-y - event.delta-y;
-                    return accept;
-                }
-                return reject;
-            }
-            ti := TextInput {
-                // full content height; translated up by scroll-y inside the
-                // clipped root — the visible window stays max-lines tall.
-                y: -min(root.scroll-y, root.max-scroll);
-                height: max(parent.height, self.preferred-height);
+    // Hover detection wrapper — provides ta.has-hover for border expression.
+    // Wraps the inner layout so has-hover reflects hovering the text area and
+    // still allows TextInput to receive pointer events inside.
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: root.enabled ? MouseCursor.text : MouseCursor.default;
+
+        HorizontalLayout {
+            width: 100%;
+            height: 100%;
+            padding-left: 10px;
+            padding-right: 10px;
+            scroll-area := TouchArea {
                 horizontal-stretch: 1;
-                // A TextInput reports min-width = full text width (no-wrap), so
-                // long values (e.g. a backend URL) would inflate the enclosing
-                // layout's min-width → ScrollView horizontal overflow. The input
-                // clips its own text: min-width 0 lets it shrink to its slot.
-                min-width: 0px;
-                // Two-way: the TextInput's own edits propagate to root.text
-                // (draft) automatically, and programmatic clears (draft = "")
-                // push back into the input. A one-way `text: root.text` gets
-                // detached by the TextInput's first internal edit — the
-                // cleared draft would never reach the visible input.
-                text <=> root.text;
-                input-type: root.password ? InputType.password : InputType.text;
-                color: AppTheme.colors.text;
-                font-family: AppTheme.font-body;
-                font-size: 13px;
-                single-line: root.max-lines <= 1;
-                wrap: root.max-lines > 1 ? word-wrap : no-wrap;
-                vertical-alignment: root.max-lines > 1 ? top : center;
-                cursor-position-changed(pos) => {
-                    if root.max-lines > 1 {
-                        // keep the cursor line inside the visible window
-                        if pos.y < root.scroll-y {
-                            root.scroll-y = pos.y;
-                        } else if pos.y + root.line-height > root.scroll-y + parent.height {
-                            root.scroll-y = pos.y + root.line-height - parent.height;
-                        }
-                    }
-                }
-                key-pressed(event) => {
-                    // Multi-line mode: Enter sends (standard message input),
-                    // Shift+Enter inserts the newline. `accepted` only fires
-                    // natively when single-line is true.
-                    if root.max-lines > 1 && event.text == "\n" {
-                        if event.modifiers.shift {
-                            return reject;
-                        }
-                        root.accepted(root.text);
+                scroll-event(event) => {
+                    if root.max-lines > 1 && event.delta-y != 0 {
+                        root.scroll-y = root.scroll-y - event.delta-y;
                         return accept;
                     }
                     return reject;
                 }
-                accepted => { root.accepted(root.text); }
-                edited => {
-                    if self.text.character-count > root.max-length {
-                        // revert the overflow edit; the <=> pushes it back
-                        root.text = root.last-valid;
-                    } else {
-                        root.last-valid = self.text;
+                ti := TextInput {
+                    enabled: root.enabled;
+                    // full content height; translated up by scroll-y inside the
+                    // clipped root — the visible window stays max-lines tall.
+                    y: -min(root.scroll-y, root.max-scroll);
+                    height: max(parent.height, self.preferred-height);
+                    horizontal-stretch: 1;
+                    // A TextInput reports min-width = full text width (no-wrap), so
+                    // long values (e.g. a backend URL) would inflate the enclosing
+                    // layout's min-width → ScrollView horizontal overflow. The input
+                    // clips its own text: min-width 0 lets it shrink to its slot.
+                    min-width: 0px;
+                    // Two-way: the TextInput's own edits propagate to root.text
+                    // (draft) automatically, and programmatic clears (draft = "")
+                    // push back into the input. A one-way `text: root.text` gets
+                    // detached by the TextInput's first internal edit — the
+                    // cleared draft would never reach the visible input.
+                    text <=> root.text;
+                    input-type: root.password ? InputType.password : InputType.text;
+                    color: root.enabled ? AppTheme.colors.text : AppTheme.colors.text-mute;
+                    font-family: AppTheme.font-body;
+                    font-size: AppTheme.font-sm;
+                    single-line: root.max-lines <= 1;
+                    wrap: root.max-lines > 1 ? word-wrap : no-wrap;
+                    vertical-alignment: root.max-lines > 1 ? top : center;
+                    cursor-position-changed(pos) => {
+                        if root.max-lines > 1 {
+                            // keep the cursor line inside the visible window
+                            if pos.y < root.scroll-y {
+                                root.scroll-y = pos.y;
+                            } else if pos.y + root.line-height > root.scroll-y + parent.height {
+                                root.scroll-y = pos.y + root.line-height - parent.height;
+                            }
+                        }
                     }
-                    if self.text == "" {
-                        root.scroll-y = 0px;
+                    key-pressed(event) => {
+                        // Multi-line mode: Enter sends (standard message input),
+                        // Shift+Enter inserts the newline. `accepted` only fires
+                        // natively when single-line is true.
+                        if root.max-lines > 1 && event.text == "\n" {
+                            if event.modifiers.shift {
+                                return reject;
+                            }
+                            root.accepted(root.text);
+                            return accept;
+                        }
+                        return reject;
                     }
-                    root.changed(self.text);
+                    accepted => { root.accepted(root.text); }
+                    edited => {
+                        if self.text.character-count > root.max-length {
+                            // revert the overflow edit; the <=> pushes it back
+                            root.text = root.last-valid;
+                        } else {
+                            root.last-valid = self.text;
+                        }
+                        if self.text == "" {
+                            root.scroll-y = 0px;
+                        }
+                        root.changed(self.text);
+                    }
                 }
             }
         }
@@ -167,7 +175,7 @@ export component VoxLineEdit inherits Rectangle {
         text: root.placeholder;
         color: AppTheme.colors.text-mute;
         font-family: AppTheme.font-body;
-        font-size: 13px;
+        font-size: AppTheme.font-sm;
         vertical-alignment: root.max-lines > 1 ? top : center;
     }
 }

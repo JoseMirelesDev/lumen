@@ -11,7 +11,7 @@
 //! (reads every service, writes every UI property), the voice wiring that
 //! reflects host state into the UI, and the shared clipboard + event bus.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use lumen_core::{ApiClient, AuthService, ChannelKind, EventBus, ShellState};
@@ -51,6 +51,10 @@ pub struct UiController {
     /// Toast stack (transient feedback) + monotonic id source.
     toasts: parking_lot::RwLock<Vec<crate::model::ToastItem>>,
     toast_seq: AtomicI32,
+    /// Dirty-check proxies for push_shell — skip VecModel rebuild when count unchanged.
+    prev_msg_count: AtomicUsize,
+    prev_server_count: AtomicUsize,
+    prev_friend_count: AtomicUsize,
     // Per-domain controllers.
     pub auth_ctrl: Arc<ctrl::auth::AuthController>,
     pub shell_ctrl: Arc<ctrl::shell::ShellController>,
@@ -98,6 +102,9 @@ impl UiController {
                 is_register: AtomicBool::new(false),
                 toasts: parking_lot::RwLock::new(Vec::new()),
                 toast_seq: AtomicI32::new(1),
+                prev_msg_count: AtomicUsize::new(usize::MAX),
+                prev_server_count: AtomicUsize::new(usize::MAX),
+                prev_friend_count: AtomicUsize::new(usize::MAX),
                 auth_ctrl: ctrl::auth::AuthController::new(
                     api.clone(),
                     auth.clone(),
@@ -194,6 +201,8 @@ impl UiController {
                 ui.set_voice_particles_enabled(enabled);
             });
         });
+        let this = self.clone();
+        ui.on_mic_test_toggle(move || this.voice.toggle_mic_test());
     }
 
     // -- voice actions (orchestrator-owned; depend on shell + auth + voice) --
@@ -507,7 +516,13 @@ impl UiController {
 
         ui.set_logged_in(user.is_some());
         ui.set_current_user(username.clone().into());
-        ui.set_servers(model::servers_model(&servers, &selected_server_id));
+        // --- servers: skip rebuild when count unchanged ---
+        let server_count = servers.len();
+        let prev_server = self.prev_server_count.load(Ordering::Relaxed);
+        if server_count != prev_server {
+            ui.set_servers(model::servers_model(&servers, &selected_server_id));
+            self.prev_server_count.store(server_count, Ordering::Relaxed);
+        }
         ui.set_selected_server_id(selected_server_id.clone().unwrap_or_default().into());
         // Fase 3: voice occupancy per channel (peers badge) + online members.
         let mut peers_by_channel = std::collections::HashMap::<String, usize>::new();
@@ -533,7 +548,16 @@ impl UiController {
         ui.set_can_create_channel(
             self.shell_ctrl.current_server().map(|s| s.owner_id == user_id).unwrap_or(false),
         );
-        ui.set_messages(model::messages_model(&messages, &user_id));
+        // --- messages: skip rebuild when count unchanged; clear link cache on reset ---
+        let msg_count = messages.len();
+        let prev_msg = self.prev_msg_count.load(Ordering::Relaxed);
+        if msg_count != prev_msg {
+            if prev_msg != usize::MAX && msg_count < prev_msg {
+                crate::model::clear_link_cache();
+            }
+            ui.set_messages(model::messages_model(&messages, &user_id));
+            self.prev_msg_count.store(msg_count, Ordering::Relaxed);
+        }
         self.chat_ctrl.resolve_link_previews(ui);
         ui.set_chat_title(self.shell_ctrl.chat_title().into());
         ui.set_is_dm(self.shell_ctrl.selected_channel_kind() == Some(ChannelKind::Dm));
@@ -546,11 +570,16 @@ impl UiController {
             .keys()
             .cloned()
             .collect();
-        ui.set_friends_online(model::friends_online_model(&friends, &online_ids));
-        ui.set_friends_offline(model::friends_offline_model(&friends, &online_ids));
+        // --- friends: skip rebuild when count unchanged ---
+        let friend_count = friends.len();
+        let prev_friend = self.prev_friend_count.load(Ordering::Relaxed);
+        if friend_count != prev_friend {
+            ui.set_friends_online(model::friends_online_model(&friends, &online_ids));
+            ui.set_friends_offline(model::friends_offline_model(&friends, &online_ids));
+            self.prev_friend_count.store(friend_count, Ordering::Relaxed);
+        }
         ui.set_friend_requests(model::requests_model(&pending));
         ui.set_dms(model::dms_model(&dm_list));
-        // Edge-triggered sounds: error (new non-empty shell error) and
         // incoming message (id not seen before, not authored by us).
         {
             let mut last = self.last_error.write();
@@ -581,12 +610,21 @@ impl UiController {
         let animations = self.voice.animations_enabled();
         ui.set_reduced_motion(os_reduced_motion() || !animations);
         ui.set_voice_animations_enabled(animations);
-        ui.set_voice_particles_enabled(self.voice.particles_enabled());
         ui.set_voice_suppressor_model(self.voice.current_suppressor_model().as_str().into());
         // Non-silent fallback: tell the UI whether this CPU can run the
         // FastEnhancer-M engine, so a degraded-to-NS selection is surfaced.
         ui.set_voice_suppressor_model_available(lumen_voice::audio::FastEnhancerDenoiser::available());
         ui.set_voice_aec_enabled(self.voice.current_aec_enabled());
+        ui.set_mic_testing(self.voice.is_mic_testing());
+        ui.set_mic_test_level(self.voice.mic_test_level());
+        let model_name = match self.voice.current_suppressor_model() {
+            lumen_voice::audio::SuppressorModel::FastEnhancerM => "FastEnhancer-M",
+            lumen_voice::audio::SuppressorModel::FastEnhancerS => "FastEnhancer-S",
+            lumen_voice::audio::SuppressorModel::NsOnly => "NS",
+        };
+        let aec_str = if self.voice.current_aec_enabled() { "on" } else { "off" };
+        let pipeline = format!("Pipeline: {} · AEC {} · 48 kHz", model_name, aec_str);
+        ui.set_audio_pipeline_status(pipeline.into());
     }
 }
 

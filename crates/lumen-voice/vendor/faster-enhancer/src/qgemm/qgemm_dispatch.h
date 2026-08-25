@@ -57,17 +57,16 @@ int fe_qgemm_init(void);
  * "avx2","avxvnni","avx512vnni". -1 if unavailable. */
 int  fe_qgemm_force_tier(const char *tier_name);
 
-/* Numeric tier IDs (higher = better). */
 enum {
     FE_QGEMM_TIER_NONE            = 0,
     FE_QGEMM_TIER_ARM_NEON        = 10,
     FE_QGEMM_TIER_ARM_DOTPROD        = 20,
     FE_QGEMM_TIER_ARM_I8MM       = 30,
+    FE_QGEMM_TIER_X86_SSE41       = 5,   /* Pentium/Celeron fallback (SSE4.1 pmovsxbw) */
     FE_QGEMM_TIER_X86_AVX2        = 120,
     FE_QGEMM_TIER_X86_AVX_VNNI    = 130,
     FE_QGEMM_TIER_X86_AVX512_VNNI = 140
 };
-
 #ifdef __cplusplus
 }
 #endif

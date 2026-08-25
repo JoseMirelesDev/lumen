@@ -66,6 +66,14 @@ static void fill_ops_i8mm(FeQgemmOps *ops) {
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 
+static void fill_ops_sse41(FeQgemmOps *ops) {
+    memset(ops, 0, sizeof(*ops));
+    ops->gemm_int32       = qgemm_sse41_int32;
+    ops->gemm_fp32_fused  = qgemm_sse41_fp32_fused;
+    ops->path_name        = "sse41";
+    ops->tier             = FE_QGEMM_TIER_X86_SSE41;
+}
+
 static void fill_ops_avx2(FeQgemmOps *ops) {
     memset(ops, 0, sizeof(*ops));
     ops->gemm_int32       = qgemm_avx2_int32;
@@ -107,9 +115,13 @@ static void select_ops(FeQgemmOps *ops, int forced_tier) {
     if (forced_tier == FE_QGEMM_TIER_ARM_I8MM) return;
 #elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     uint32_t caps = fe_cpu_x86_caps();
-    /* AVX2+FMA3+F16C is the minimum supported tier on x86. Pre-AVX2 tiers
-     * were dropped because their lack of FMA3 breaks cross-tier
-     * byte-identity with AVX2+, and F16C is required for fp16 state. */
+    /* SSE4.1 fallback for Pentium/Celeron (no AVX). Installed first so that
+     * AVX2 overwrites it on capable CPUs — tier 5 is below 120. */
+    if (caps & FE_X86_HAS_SSE41)
+        fill_ops_sse41(ops);
+    if (forced_tier == FE_QGEMM_TIER_X86_SSE41) return;
+    /* AVX2+FMA3+F16C is the original minimum; now superseded by SSE4.1 as
+     * the absolute floor. AVX2 overwrites SSE41 when both are present. */
     if ((caps & FE_X86_HAS_AVX2) && (caps & FE_X86_HAS_OS_AVX))
         fill_ops_avx2(ops);
     if (forced_tier == FE_QGEMM_TIER_X86_AVX2) return;
@@ -128,7 +140,7 @@ int fe_qgemm_init(void) {
     if (fe_qgemm_ops.tier == FE_QGEMM_TIER_NONE) {
         fprintf(stderr,
                 "[fe_qgemm] FATAL: host CPU has no supported SIMD tier.\n"
-                "  required: ARM NEON (arm64) or x86 AVX2+FMA3+F16C (x86_64) at minimum.\n"
+                "  required: ARM NEON (arm64) or x86 SSE4.1 / AVX2+FMA3+F16C (x86_64) at minimum.\n"
                 "  cpu=%s\n", fe_cpu_brand());
         return -1;
     }
@@ -146,6 +158,7 @@ int fe_qgemm_init(void) {
      * called regardless of selected tier — the AVX2 buffers are tier-static
      * and the one-time init cost is outside steady-state timing. */
     qgemm_avx2_prefault_buffers();
+    qgemm_sse41_prefault_buffers();
 #endif
 #if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
     /* pre-fault the I8MM row-pair pre-pack BSS scratch pages. Same
@@ -179,6 +192,7 @@ int fe_qgemm_force_tier(const char *tier_name) {
     if      (!strcmp(tier_name, "neon"))       tier = FE_QGEMM_TIER_ARM_NEON;
     else if (!strcmp(tier_name, "dotprod"))       tier = FE_QGEMM_TIER_ARM_DOTPROD;
     else if (!strcmp(tier_name, "i8mm"))      tier = FE_QGEMM_TIER_ARM_I8MM;
+    else if (!strcmp(tier_name, "sse41"))     tier = FE_QGEMM_TIER_X86_SSE41;
     else if (!strcmp(tier_name, "avx2"))       tier = FE_QGEMM_TIER_X86_AVX2;
     else if (!strcmp(tier_name, "avxvnni"))    tier = FE_QGEMM_TIER_X86_AVX_VNNI;
     else if (!strcmp(tier_name, "avx512vnni")) tier = FE_QGEMM_TIER_X86_AVX512_VNNI;

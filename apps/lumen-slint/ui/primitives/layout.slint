@@ -40,14 +40,13 @@ export component ListRow inherits Rectangle {
     callback clicked();
     /// Botón derecho (menú contextual).
     callback context-menu();
+
+    accessible-role: list-item;
+
     height: AppTheme.row-height;
     background: root.active
         ? AppTheme.colors.card
-        : (ta.has-hover && root.hoverable)
-            ? AppTheme.colors.bg           // mock hover: darker than panel
-            : ta.pressed
-                ? AppTheme.colors.bg-pressed
-                : transparent;
+        : (ta.pressed && root.hoverable ? AppTheme.colors.bg-pressed : (ta.has-hover && root.hoverable ? AppTheme.colors.bg : transparent));
     animate background { duration: AppTheme.step-fast * 1ms; }
 
     // active edge — amber, full height (mock .channel-item--active)
@@ -57,8 +56,8 @@ export component ListRow inherits Rectangle {
         width: 2px;
         height: 100%;
         background: AppTheme.colors.ice;
-        visible: root.active;
-        animate x { duration: AppTheme.step-base * 1ms; }
+        opacity: root.active ? 1.0 : 0.0;
+        animate opacity { duration: AppTheme.step-base * 1ms; }
     }
 
     // focus ring — 2px ice border when focused

@@ -8,6 +8,10 @@ export component VoiceMeter inherits Rectangle {
     in property <float> level;   // 0..1 (RMS at ~10 Hz)
     in property <bool> active: false; // speaking gate
     in property <bool> reduced-motion: false;
+
+    accessible-role: progress-indicator;
+    accessible-value: Math.round(root.level * 100) + "%";
+
     width: 30px;
     height: 22px;
     background: transparent;

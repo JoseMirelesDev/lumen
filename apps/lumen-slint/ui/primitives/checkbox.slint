@@ -9,6 +9,10 @@ export component VoxCheckBox inherits Rectangle {
     in property <bool> enabled: true;
     callback toggled(bool);
 
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-checked: root.checked;
+
     height: 24px;
     background: transparent;
 
@@ -20,7 +24,7 @@ export component VoxCheckBox inherits Rectangle {
         box := Rectangle {
             width: 18px;
             height: 18px;
-            background: root.checked ? AppTheme.colors.card-hi : AppTheme.colors.bg-deep;
+            background: !root.enabled ? AppTheme.colors.surface : (root.checked ? AppTheme.colors.card-hi : AppTheme.colors.bg-deep);
             border-width: 1px;
             border-color: fs.has-focus ? AppTheme.colors.ice : (ta.has-hover ? AppTheme.colors.border-hi : AppTheme.colors.border);
             border-radius: AppTheme.radius-1;
@@ -38,7 +42,7 @@ export component VoxCheckBox inherits Rectangle {
             if root.checked : IconGlyph {
                 glyph: Icons.check;
                 size: 14px;
-                text-color: AppTheme.colors.ice;
+                text-color: !root.enabled ? AppTheme.colors.text-mute : AppTheme.colors.ice;
             }
         }
 
@@ -65,7 +69,7 @@ export component VoxCheckBox inherits Rectangle {
 
     ta := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: pointer;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             root.checked = !root.checked;
             root.toggled(root.checked);

@@ -812,6 +812,16 @@ export component VoiceView inherits Rectangle {
                 reduced-motion: root.reduced-motion;
                 particles-enabled: root.particles-enabled;
             }
+            // Empty peer hint — solo el usuario local en la llamada
+            if root.active && root.peers.length == 0 : Text {
+                text: "Solo tú en la llamada — invita a tu warband.";
+                font-family: AppTheme.font-mono;
+                font-size: AppTheme.font-xs;
+                color: AppTheme.colors.text-mute;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                // no bloquea interacción con la escena
+            }
             if !root.active : Rectangle {
                 // join CTA — ritual gate, width clamped cleanly to parent
                 x: (root.width - root.cta-w) * 0.5;
@@ -865,9 +875,7 @@ export component VoiceView inherits Rectangle {
                 }
             }
         }
-
-        // --- callbar (mock .voice-controls) ---
-        if root.active : Rectangle {
+        Rectangle {
             height: 68px;
             background: AppTheme.colors.bg-deep;
             HorizontalLayout {
@@ -901,18 +909,24 @@ export component VoiceView inherits Rectangle {
                 CallBtn {
                     glyph: root.muted ? Icons.mic-slash : Icons.mic;
                     label: "MIC";
+                    accessible-role: button;
+                    accessible-label: "Silenciar";
                     active: root.muted;
                     clicked => { root.toggle-mute(); }
                 }
                 CallBtn {
                     glyph: root.deafened ? Icons.ear-slash : Icons.headphones;
                     label: "SOUND";
+                    accessible-role: button;
+                    accessible-label: "Ensordecer";
                     active: root.deafened;
                     clicked => { root.toggle-deafen(); }
                 }
                 CallBtn {
                     glyph: Icons.door-open;
                     label: "LEAVE";
+                    accessible-role: button;
+                    accessible-label: "Colgar";
                     danger: true;
                     clicked => { root.leave(); }
                 }

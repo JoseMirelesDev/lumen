@@ -17,6 +17,9 @@ import { IconGlyph } from "primitives/icon.slint";
 component FooterBtn inherits Rectangle {
     in property <string> glyph;
     in property <bool> active: false;
+    in property <string> a11y-label: "";
+    accessible-role: button;
+    accessible-label: root.a11y-label;
     callback clicked();
 
     width: 32px;
@@ -278,6 +281,15 @@ export component ChannelList inherits Rectangle {
 
                     // Acciones (rename/delete) → menú contextual con botón derecho.
                 }
+                if root.channels.length == 0 : Text {
+                    text: "Sin canales — usa + para crear uno.";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-mute;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
             }
         }
 
@@ -321,20 +333,23 @@ export component ChannelList inherits Rectangle {
                 }
                 FooterBtn {
                     glyph: root.user-muted ? Icons.mic-slash : Icons.mic;
+                    a11y-label: "Silenciar";
                     active: root.user-muted;
                     clicked => { root.toggle-mute(); }
                 }
                 FooterBtn {
                     glyph: root.user-deafened ? Icons.ear-slash : Icons.headphones;
+                    a11y-label: "Ensordecer";
                     active: root.user-deafened;
                     clicked => { root.toggle-deafen(); }
                 }
                 FooterBtn {
                     glyph: Icons.gear-six;
+                    a11y-label: "Ajustes";
                     clicked => { root.open-settings(); }
                 }
-            }
         }
+    }
     }
 
     // --- menú contextual de canal (botón derecho, owner only) ---

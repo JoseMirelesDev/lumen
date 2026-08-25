@@ -24,6 +24,10 @@ export component SettingsView inherits VoxOverlay {
     in property <bool> aec-enabled;
     in property <bool> animations-enabled;
     in property <bool> particles-enabled;
+    in property <bool> mic-testing: false;
+    in property <float> mic-test-level: 0.0;
+    in property <string> audio-pipeline-status: "";
+    callback mic-test-toggle();
     card-width: AppTheme.settings-width;
     card-height: AppTheme.settings-height;
     callback logout();
@@ -36,14 +40,18 @@ export component SettingsView inherits VoxOverlay {
     callback password-submit(string, string);
     callback avatar-submit(string);
     callback avatar-pick();
-    in-out property <string> avatar-path: "";
-    in-out property <string> username-draft: "";
-    in-out property <string> password-current: "";
-    in-out property <string> password-new: "";
+    in-out property <string> avatar-path;
     in-out property <string> profile-msg: "";
-    // Pestaña activa: 0 Audio · 1 Visuales · 2 Cuenta · 3 Acerca
-    in-out property <int> tab: 0;
-
+    // U-14: color split para profile-msg — error (rose) vs éxito (online).
+    // Default true (backward compat, mensajes de error). El lado Rust pondrá
+    // false al mostrar éxito (prefijo "✓"). Mientras tanto, heurística visual:
+    // si el mensaje empieza con "✓", se considera éxito aunque el flag sea true
+    // por compatibilidad — el flag manda cuando Rust lo actualice.
+    in property <bool> profile-is-error: true;
+    property <int> tab: 0;
+    property <string> username-draft;
+    property <string> password-current;
+    property <string> password-new;
     VerticalLayout {
         width: 100%;
         height: 100%;
@@ -150,10 +158,17 @@ export component SettingsView inherits VoxOverlay {
                     }
                 }
                 if (root.suppressor-model == "fastenhancer" || root.suppressor-model == "fastenhancer-s") && !root.suppressor-model-available : Text {
-                    text: "FastEnhancer no es compatible con este CPU (requiere AVX2+FMA3). Se usará NS (WebRTC).";
+                    text: "FastEnhancer no es compatible con este CPU (requiere SSE4.1 o superior). Se usará NS (WebRTC).";
                     font-family: AppTheme.font-mono;
                     font-size: AppTheme.font-xs;
                     color: AppTheme.colors.rose;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.suppressor-model == "fastenhancer-s" ? "Red neuronal ligera — mejor calidad con bajo consumo de CPU." : root.suppressor-model == "fastenhancer" ? "Red neuronal completa — la mejor calidad de supresión." : "Supresión estándar — compatible con todos los procesadores.";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-mute;
                     wrap: word-wrap;
                 }
                 VoxCheckBox {
@@ -162,6 +177,47 @@ export component SettingsView inherits VoxOverlay {
                     toggled(val) => {
                         root.aec-enabled-changed(val);
                     }
+                }
+                Text {
+                    text: "Prueba de micrófono";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    font-weight: 700;
+                    letter-spacing: 1.2px;
+                    color: AppTheme.colors.bronze-hi;
+                }
+                Rectangle {
+                    width: 100%;
+                    height: 8px;
+                    background: AppTheme.colors.bg-deep;
+                    border-width: 1px;
+                    border-color: AppTheme.colors.border;
+                    border-radius: AppTheme.radius-1;
+                    Rectangle {
+                        width: parent.width * Math.min(Math.max(root.mic-test-level, 0.0), 1.0);
+                        height: 100%;
+                        background: root.mic-test-level > 0.7 ? AppTheme.colors.idle : AppTheme.colors.online;
+                        border-radius: AppTheme.radius-1;
+                        animate width { duration: 80ms; }
+                    }
+                }
+                Text {
+                    text: "Nivel: " + Math.round(root.mic-test-level * 100) + "%";
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-mute;
+                }
+                VoxButton {
+                    text: root.mic-testing ? "Detener prueba" : "Probar micrófono";
+                    compact: true;
+                    clicked => { root.mic-test-toggle(); }
+                }
+                Text {
+                    text: root.audio-pipeline-status;
+                    font-family: AppTheme.font-mono;
+                    font-size: AppTheme.font-xs;
+                    color: AppTheme.colors.text-mute;
+                    wrap: word-wrap;
                 }
             }
         }
@@ -278,10 +334,9 @@ export component SettingsView inherits VoxOverlay {
                     text: root.profile-msg;
                     font-family: AppTheme.font-mono;
                     font-size: AppTheme.font-xs;
-                    color: AppTheme.colors.rose;
+                    color: root.profile-is-error ? AppTheme.colors.rose : AppTheme.colors.online;
                     wrap: word-wrap;
                 }
-
                 Divider { }
 
                 // avatar — junto a la identidad (proximidad), no al final
