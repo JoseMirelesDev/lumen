@@ -270,51 +270,16 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
-    // Windows-MSVC: the app links with MSVC (webrtc-audio-processing requires
-    // it), so fe is cross-compiled with MinGW gcc + Ninja here. fe produces a
-    // GNU-format .a, which is consumed via lld-link (configured in
-    // .cargo/config.toml as `linker=lld-link` — no env var needed). lld-link
-    // reads both the MSVC .lib files (webrtc) and the GNU .a (fe). If gcc/ninja
-    // are unavailable the build degrades to the WebRTC NS-only tier with a
-    // warning — never a hard failure. No RUSTFLAGS gate: .cargo/config.toml
-    // already ensures lld-link.
+    // Windows-MSVC: FE cross-compile via MinGW produces a GNU .a that needs
+    // libgcc/compiler-rt symbols (___chkstk_ms, sincos, __emutls_get_address)
+    // which lld-link (MSVC) doesn't provide. Degrade to NS-only on Windows
+    // to keep CI green — the AEC fix (Sonora) is the critical path, FE is
+    // optional. Linux/macOS still build FE normally.
     if target_env.contains("msvc") {
-        let build_dir = out.join("fe-build-mingw");
-        let st = cmake(&[
-            "-S",
-            root.to_str().unwrap(),
-            "-B",
-            build_dir.to_str().unwrap(),
-            "-G",
-            "Ninja",
-            "-DCMAKE_C_COMPILER=gcc",
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DFE_BUILD_TESTS=OFF",
-            "-DFE_ENABLE_PROFILE=OFF",
-        ])
-        .and_then(|_| cmake(&["--build", build_dir.to_str().unwrap(), "--target", "fe"]));
-        match st {
-            Ok(()) => {
-                println!("cargo:rustc-link-search=native={}", build_dir.display());
-                println!("cargo:rustc-link-lib=static=fe");
-                println!("cargo:rustc-cfg=feature=\"fe_built\"");
-                // Second runtime: FastEnhancer-Small (fe_s_*) also via MinGW.
-                let manifest_root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-                match try_build_fe_small_mingw(&manifest_root, &out) {
-                    Ok(()) => {
-                        println!("cargo:rustc-cfg=feature=\"fe_s_built\"");
-                    }
-                    Err(e) => println!(
-                        "cargo:warning=lumen-voice: faster-enhancer Small runtime not built on MSVC ({e}); Medium tier only."
-                    ),
-                }
-            }
-            Err(e) => println!(
-                "cargo:warning=lumen-voice: faster-enhancer C runtime not built on \
-                 MSVC ({e}); WebRTC NS-only tier in effect. On CI ensure MinGW gcc \
-                 + ninja are on PATH and linker is lld-link (via .cargo/config.toml)."
-            ),
-        }
+        println!(
+            "cargo:warning=lumen-voice: faster-enhancer skipped on Windows-MSVC \
+             (MinGW .a needs libgcc for lld-link) — NS-only tier. Linux/macOS unaffected."
+        );
         return;
     }
 
