@@ -448,6 +448,20 @@ impl VoiceSession {
                     crate::audio::NoiseSuppressor::with_model_and_aec(current_model, current_aec);
                 let mut frame_idx = 0u64;
                 let mut loop_exit = None;
+                // AEC diagnostics (see audio.rs `apm_config_with_aec` note): track
+                // empty-tap streak and periodic tap/feed/stats logging. The tap
+                // is the 48 kHz render reference that `AudioOutput::drain_into`
+                // resamples into `render_tap`; an empty tap for >1 s in headless
+                // or silence means AEC has no reference (expected) vs a live
+                // call should have voice.
+                let mut aec_empty_frames: u32 = 0;
+                let mut aec_resets: u32 = 0;
+                let mut aec_diag_last = std::time::Instant::now();
+                // Retained for conditional diag extension; prefixed to silence
+                // dead_code warning – the values are already logged via
+                // `tap_len_before`/`fed` in the 5 s eprintln above.
+                let mut _aec_last_feed: usize = 0;
+                let mut _aec_last_tap: usize = 0;
                 // H1 silence path: on NS-confirmed silence, skip the opus
                 // encode and resend the last encoded silence packet (RTP
                 // seq/ts still advance per frame, so the remote just decodes
@@ -486,32 +500,103 @@ impl VoiceSession {
                         break;
                     }
                     if muted.load(Ordering::Relaxed) {
+                        render_tap.lock().clear();
+                        // Reset the empty-streak so the first frame after
+                        // unmute doesn't fire a stale ">1s empty" warning
+                        // (the muted period fed zeros by design, not by fault).
+                        aec_empty_frames = 0;
                         continue;
                     }
-                    // AEC3 render: feed in cadence with capture. Drain at most
-                    // 2 capture frames' worth of render (1920 samples = 40 ms)
-                    // per iteration — enough for jitter, bounded so bulk feeding
-                    // can't break AEC3's delay estimator. Excess stays in the
-                    // tap for the next frame.
+                    // Sonora AEC3 render feed — invariant restaurada (P0 `local/aec-deep-dive.md`).
+                    // Contract: timeline de render CONTINUA — 960 muestras de render
+                    // por cada frame de captura de 960 (20 ms @48k). Referencia:
+                    // ninguna implementacion de referencia gatea el silencio
+                    // (Chromium `DetectActiveRender` solo detecta, nunca salta
+                    // `Insert`; PulseAudio rellena con silencio; PipeWire alimenta
+                    // incondicionalmente; pjproject/Linphone inyectan ceros;
+                    // ver aec-deep-dive.md §2). Alimentar incondicionalmente
+                    // con zeros si falta, nunca agujerear la timeline.
+                    // * RENDER_CAP = 7200 (150 ms @48k mono). El viejo cap 300 ms
+                    //   y el delay medido de 224 ms eran SINTOMA de la timeline
+                    //   agujereada (RC3 del deep dive): el delay real es 10-40 ms;
+                    //   150 ms = headroom. 500 ms era stale; 300 ms admitia
+                    //   referencia stale excesiva. Overflow ahora resetea el AEC
+                    //   en vez de desplazar la timeline en silencio (RC4).
+                    // * Overflow (>CAP): `drain(..excess)` del mas viejo + `ns.reset_aec()`.
+                    //   Estado fresco > estado divergente; AEC reconverge en
+                    //   ~2.5 s (initial_state). Sin reset el filtro queda
+                    //   alineado a timeline desplazada y nunca converge (RC4).
+                    // * Por frame: `to_feed = min(floor(tap.len()/480)*480, 960)`,
+                    //   `render = tap.drain(..to_feed)`, padding con ceros hasta
+                    //   exactamente 960 (bloques [0i16;480]), `for chunk in render.chunks(480)`
+                    //   -> `process_render_frame` INCONDICIONAL (sin gate RMS).
+                    //   Tap vacio -> 960 ceros (patron PulseAudio/pjproject/Linphone).
+                    // * `aec_empty_frames` = streak de `to_feed==0` (alimentando
+                    //   ceros); aviso a 1 s. Diag cada 5 s: tap/fed/padded/resets/
+                    //   capture_rms + `get_stats()` (delay_ms/erl/erle) — en prod
+                    //   delay_ms debe colapsar de ~224 ms a 10-40 ms.
                     if aec_enabled.load(Ordering::Relaxed) {
                         let mut tap = render_tap.lock();
-                        // Cap at 500 ms to bound memory; discard the oldest.
-                        const RENDER_CAP: usize = 48_000 / 2;
-                        let excess = tap.len().saturating_sub(RENDER_CAP);
-                        if excess > 0 {
+                        const RENDER_CAP: usize = 48_000 * 150 / 1000; // 7200
+                        let raw_len = tap.len();
+                        let excess = raw_len.saturating_sub(RENDER_CAP);
+                        let did_overflow = excess > 0;
+                        if did_overflow {
                             tap.drain(..excess);
                         }
-                        // Feed at most 2 frames (40 ms) to stay aligned.
-                        let feed = tap.len().min(960 * 2);
-                        if feed > 0 {
-                            let render: Vec<i16> = tap.drain(..feed).collect();
-                            for chunk in render.chunks(480) {
-                                ns.process_render_frame(chunk);
+                        let tap_len = tap.len();
+                        _aec_last_tap = raw_len;
+                        let available = (tap_len / 480) * 480;
+                        let to_feed = available.min(960);
+                        let mut render: Vec<i16> = if to_feed > 0 {
+                            tap.drain(..to_feed).collect()
+                        } else {
+                            Vec::new()
+                        };
+                        drop(tap);
+                        if did_overflow {
+                            ns.reset_aec();
+                            aec_resets = aec_resets.saturating_add(1);
+                        }
+                        let fed = to_feed;
+                        let padded = 960 - fed;
+                        if padded > 0 {
+                            render.resize(960, 0);
+                        }
+                        _aec_last_feed = fed;
+                        for chunk in render.chunks(480) {
+                            ns.process_render_frame(chunk);
+                        }
+                        if fed == 0 {
+                            aec_empty_frames = aec_empty_frames.saturating_add(1);
+                            if aec_empty_frames == 50 {
+                                eprintln!("lumen-voice: AEC enabled but render_tap empty for >1s ({} frames) – no echo to cancel or playout silent/headless", aec_empty_frames);
                             }
+                        } else {
+                            aec_empty_frames = 0;
+                        }
+                        if aec_diag_last.elapsed() >= std::time::Duration::from_secs(5) {
+                            let st = ns.get_stats();
+                            let cur_rms = local_level.load(Ordering::Relaxed);
+                            let cur_rms_f = f32::from_bits(cur_rms);
+                            eprintln!(
+                                "lumen-voice: AEC diag tap={} fed={} padded={} resets={} frames_empty_streak={} capture_rms={:.5} stats delay_ms={:?} erl={:?} erle={:?}",
+                                raw_len, fed, padded, aec_resets, aec_empty_frames,
+                                cur_rms_f,
+                                st.as_ref().and_then(|s| s.delay_ms),
+                                st.as_ref().and_then(|s| s.echo_return_loss),
+                                st.as_ref().and_then(|s| s.echo_return_loss_enhancement)
+                            );
+                            aec_diag_last = std::time::Instant::now();
                         }
                     } else {
                         // AEC off: still drain the tap so it doesn't grow.
-                        render_tap.lock().clear();
+                        // Freshly flipped from on→off we clear once.
+                        let was_nonempty = { render_tap.lock().len() > 0 };
+                        if was_nonempty {
+                            render_tap.lock().clear();
+                        }
+                        aec_empty_frames = 0;
                     }
                     // Shed only on genuine overload: >4 queued frames (>80 ms
                     // backlog). USB capture delivers 40 ms bursts — two

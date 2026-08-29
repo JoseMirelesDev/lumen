@@ -48,6 +48,7 @@ cpal = "0.18"
 opus = "0.3"
 parking_lot = "0.12"
 webrtc-audio-processing = { version = "2.1.0", features = ["bundled"] }
+sonora = "0.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 directories = "6"
 thiserror = "2"
@@ -65,6 +66,14 @@ webrtc-audio-processing-sys = { path = "vendor/webrtc-audio-processing-sys" }
 # wide-string length manually. Fixes "ucptrie_close not found" on clean
 # Windows where system icu.dll is old/missing. See ADR 0011.
 dirs-sys = { path = "vendor/dirs-sys" }
+# Fork de sonora-aec3: tuning AEC3 para lumen (ver local/aec-deep-dive.md §4 P2
+# y la doc de `SonoraAec` en crates/lumen-voice/src/audio.rs): DTD enr 0.35/snr
+# 20/hold 70, delay_headroom 64, filter 16 blocks (~64ms), initial_state 1.0s,
+# anti-howling 200/0.3, masks 0.30/0.08, subband nearend + conservative_hf.
+# Copiado del registry: la sesión previa parcheó ~/.cargo/registry in-place
+# (borrando .cargo-checksum.json) — no reproducible; vendorizar sigue el patrón
+# de wry/dirs-sys/webrtc-audio-processing-sys. Values = audio.rs:988-997.
+sonora-aec3 = { path = "vendor/sonora-aec3" }
 
 # Fork de Slint: componente de animación aislada (frames sin invalidar el árbol).
 # Ver docs/performance-fork-design.md.

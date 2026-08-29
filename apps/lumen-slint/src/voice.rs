@@ -320,39 +320,77 @@ impl VoiceController {
         self.rt.spawn(async move {
             let mut suppressor =
                 lumen_voice::audio::NoiseSuppressor::with_model_and_aec(model, aec_enabled);
+            let mut current_aec = aec_enabled;
+            let mut current_model = model;
+            let mut diag_last = std::time::Instant::now();
+            let mut frame_idx: u64 = 0;
             while let Some(frame) = rx.recv().await {
                 if !this.mic_test_active.load(Ordering::SeqCst) {
                     break;
                 }
-                // Feed AEC render reference (what we just played). Mirrors
-                // client.rs send loop: cap at 1920 samples (40 ms) per frame
-                // so bulk feeding doesn't break the delay estimator; excess
-                // stays in the tap for the next iteration. Bound the tap at
-                // 500 ms (24k samples) to avoid unbounded growth.
-                if aec_enabled {
+                // Live AEC/model switch (como client.rs) — si toggles AEC en UI
+                // mientras mic test corre, debe recrear suppressor sin reiniciar test.
+                let live_aec = this.current_aec_enabled();
+                let live_model = this.current_suppressor_model();
+                if live_aec != current_aec || live_model != current_model {
+                    suppressor = lumen_voice::audio::NoiseSuppressor::with_model_and_aec(live_model, live_aec);
+                    current_aec = live_aec;
+                    current_model = live_model;
+                    eprintln!("mic_test: switch aec={} model={:?}", live_aec, live_model.as_str());
+                }
+                // Feed Sonora AEC render reference — cap 300ms (14400), lockstep 960/480, gate 0.0008
+                // Migrado webrtc->sonora pure Rust M145. Cap 150→300 cubre delay 224 (>cap) que causaba
+                // Larsen (ERL 4.3 inestable). Ver crates/lumen-voice/src/audio.rs tuning doc
+                // para anti_howling 400→200 gain 1.0→0.3 equivalente en sonora_aec3.
+                if current_aec {
                     let mut tap = render_tap.lock();
-                    const RENDER_CAP: usize = 48_000 / 2; // 500 ms
-                    if tap.len() > RENDER_CAP {
-                        let drop_n = tap.len() - RENDER_CAP;
-                        tap.drain(..drop_n);
+                    const RENDER_CAP: usize = 48_000 * 300 / 1000; // 14400 — cubre delay 224 >150
+                    let excess = tap.len().saturating_sub(RENDER_CAP);
+                    if excess > 0 {
+                        tap.drain(..excess);
                     }
-                    let take = tap.len().min(1920);
-                    if take > 0 {
-                        let render: Vec<i16> = tap.drain(..take).collect();
+                    let available = (tap.len() / 480) * 480;
+                    let to_feed = available.min(960);
+                    let tap_before = tap.len();
+                    if to_feed > 0 {
+                        let render: Vec<i16> = tap.drain(..to_feed).collect();
                         drop(tap);
+                        let mut fed = 0;
                         for chunk in render.chunks(480) {
-                            suppressor.process_render_frame(chunk);
+                            let rms = lumen_voice::audio::rms_level(chunk);
+                            // gate 0.0008 (-62dB) — bloquea silencio real sin matar voz suave;
+                            // 0.002 ya bloqueaba 30% voz, 0.01 bloqueaba voz completa en sonora.
+                            if rms > 0.0008 {
+                                suppressor.process_render_frame(chunk);
+                                fed += 480;
+                            }
+                        }
+                        if diag_last.elapsed().as_secs_f32() >= 2.0 {
+                            let stats = suppressor.get_stats();
+                            // rms real del frame de captura para diagnóstico nearend dominante
+                            // enr_threshold 0.25 puede suprimir voz suave; 0.35 webrtc tuned preserva voz.
+                            let in_rms = lumen_voice::audio::rms_level(&frame);
+                            eprintln!("mic_test AEC diag tap_before={} fed={} in_rms={:.5} stats delay_ms={:?} erl={:?} erle={:?} nearend_enr=0.25->0.35", tap_before, fed, in_rms, stats.as_ref().and_then(|s| s.delay_ms), stats.as_ref().and_then(|s| s.echo_return_loss), stats.as_ref().and_then(|s| s.echo_return_loss_enhancement));
+                            diag_last = std::time::Instant::now();
+                        }
+                    } else if tap_before > 0 {
+                        // tap tiene resto <480, espera próximo frame
+                        drop(tap);
+                    } else {
+                        drop(tap);
+                        if frame_idx % 50 == 0 {
+                            eprintln!("mic_test AEC diag tap empty (no render yet) frame {}", frame_idx);
                         }
                     }
                 }
                 let processed = suppressor.process(&frame);
                 let level = lumen_voice::audio::rms_level(&processed).clamp(0.0, 1.0);
                 *this.mic_test_level.write() = level;
-                // Loopback: play what the denoiser produced.
                 if let Some(out) = this.mic_test_output.lock().as_ref() {
                     out.push(&processed);
                 }
                 this.push();
+                frame_idx += 1;
             }
             *this.mic_test_level.write() = 0.0;
             this.push();

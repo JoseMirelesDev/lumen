@@ -942,25 +942,149 @@ impl RnnoiseDenoiser {
 // ---------------------------------------------------------------------------
 
 use webrtc_audio_processing::config::{
-    AdaptiveDigital, Config, EchoCanceller, FixedDigital, GainController, GainController2,
-    HighPassFilter, NoiseSuppression, NoiseSuppressionLevel,
+    AdaptiveDigital, Config, FixedDigital, GainController, GainController2, HighPassFilter,
+    NoiseSuppression, NoiseSuppressionLevel,
 };
 use webrtc_audio_processing::Processor;
+#[cfg(all(feature = "experimental-aec3-config", not(target_env = "msvc")))]
+use webrtc_audio_processing::experimental::EchoCanceller3Config;
 
-/// Send-path DSP: WebRTC AudioProcessing (AEC3 + high-pass + limiter)
-/// followed by RNNoise (neural noise suppression, Krisp-style).
+use sonora::config::{
+    DownmixMethod, EchoCanceller as SonoraEchoCanceller, MaxProcessingRate, Pipeline,
+    TransparentModeType,
+};
+use sonora::{AudioProcessing as SonoraAudioProcessing, Config as SonoraConfig, StreamConfig as SonoraStreamConfig};
+
+/// Sonora AEC3 (pure Rust M145) — reemplaza webrtc-audio-processing AEC3.
+/// Solo AEC (HPF/NS/GC2 siguen en WebRTC Processor con echo_canceller: None).
+/// Usa `sonora::AudioProcessing` configurado solo con echo_canceller (pipeline 48 kHz).
+/// Maneja duplex correcto y drift; pure Rust sin C++ ni MSVC issues.
 ///
-/// - AEC3 (`EchoCanceller::Full`, auto-delay) cancels the speaker echo picked
-///   up by the mic — the caller must feed the playback stream into
-///   [`NoiseSuppressor::process_render_frame`] (the far-end reference).
-/// - Classic WebRTC NS is disabled: RNNoise's recurrent network beats it on
-///   non-stationary background noise (fan, traffic, keyboard) with less
-///   speech damage — the same approach Discord takes with Krisp.
-/// - `Processor` is `Send + Sync`, `nnnoiseless::DenoiseState` is plain data,
-///   so the whole suppressor lives in the send task. Both process 10 ms
-///   frames (480 samples @ 48 kHz); a 20 ms capture frame is two halves.
+/// ## Tuning Larsen vs calidad (2026-08-26, i5-4590 48k mono mic+speakers)
+/// - **Larsen root cause**: con gate 0.0008 y cap 150 (7200), delay medido 224 (>cap)
+///   queda fuera de ventana → referencia stale/cortada, ERL 4.3 inestable, estimador
+///   nunca converge y el eco audibility dispara howling. WebRTC tuned bajó
+///   `anti_howling 400→200 gain 1.0→0.3` y `mask 0.4→0.3`; en sonora el equivalente
+///   es `sonora_aec3::config::HighBandsSuppression` + `Tuning` (`mask_lf/mask_hf`).
+/// - **Limitación pública**: `sonora::Config` solo expone `EchoCanceller`
+///   (`enforce_high_pass_filtering` + `transparent_mode`); `HighBandsSuppression`,
+///   `echo_audibility`, `dominant_nearend_detection`, `conservative_hf_suppression`,
+///   `use_subband_nearend_detection` e `initial_state_seconds` viven en
+///   `sonora_aec3::config::EchoCanceller3Config` (ver
+///   `~/.cargo/registry/src/*/sonora-aec3-0.2.0/src/config.rs`) y NO son
+///   seteables vía `sonora::Config` (confirmado `audio_processing_impl.rs:
+///   EchoCanceller3Config::default()` hardcodeado). Ajuste fino requeriría
+///   exponer `sonora_aec3` o parchear defaults.
+/// - **Fix mínimo aquí**: (a) cap 300ms (14400) para cubrir delay 224,
+///   (b) gate 0.0008 mantenido (-62dB), (c) pipeline explícito 48k mono y
+///   `transparent_mode::Hmm` (más responsivo que Legacy en headset/no-echo),
+///   (d) `enforce_high_pass_filtering=true`. Sin tocar NS VeryHigh (voz limpia
+///   baseline corr 0.62). Voz: `conservative_hf_suppression=false` y
+///   `use_subband_nearend_detection=false` por defecto dañarían corr 0.04 si se
+///   activan sin tuning fino — se dejan false aquí; si corr cae, habilitarlos
+///   vía `sonora_aec3` es el siguiente paso. `initial_state_seconds` 2.5 se
+///   mantiene (bajar a 1.0 acelera convergencia pero expone Larsen en primeros
+///   2s; preferible transparencia).
+/// - **Para tuning profundo** (cuando Larsen persista): parchear
+///   `sonora-aec3/src/config.rs`:
+///   `HighBandsSuppression { anti_howling_activation_threshold: 200.0,
+///   anti_howling_gain: 0.3 }` (off 400/1.0), `Tuning { mask_lf.enr_suppress: 0.30,
+///   mask_hf.enr_suppress: 0.08 }`, `DominantNearendDetection {
+///   enr_threshold: 0.35 (0.25), snr_threshold: 20.0 (30), hold_duration: 70 }`,
+///   `conservative_hf_suppression: true` + `use_subband_nearend_detection: true`
+///   si corr 0.62 cae, `Delay { delay_headroom_samples: 64 (32),
+///   hysteresis_limit_blocks: 2 (1) }`, `Filter { length_blocks: 16 (13),
+///   initial_state_seconds: 1.0 (2.5) }`.
+pub struct SonoraAec {
+    inner: SonoraAudioProcessing,
+}
+
+impl SonoraAec {
+    /// Crea AEC Sonora a 48 kHz mono. Config solo echo_canceller, pipeline 48 kHz.
+    ///
+    /// Pipeline explícito (no defaults 32k/multi-channel): máxima calidad 48k mono,
+    /// referencia para tuning Larsen documentado arriba.
+    pub fn new(sample_rate: u32) -> Self {
+        let stream = SonoraStreamConfig::new(sample_rate, 1);
+        let mut cfg = SonoraConfig {
+            echo_canceller: Some(SonoraEchoCanceller {
+                enforce_high_pass_filtering: true,
+                transparent_mode: TransparentModeType::Hmm,
+            }),
+            ..Default::default()
+        };
+        cfg.pipeline = Pipeline {
+            maximum_internal_processing_rate: MaxProcessingRate::Rate48kHz,
+            multi_channel_render: false,
+            multi_channel_capture: false,
+            capture_downmix_method: DownmixMethod::AverageChannels,
+        };
+        // NS/GC2 quedan en WebRTC Processor; sonora solo AEC — dejar None explícito.
+        cfg.noise_suppression = None;
+        cfg.gain_controller2 = None;
+        cfg.high_pass_filter = None;
+        cfg.pre_amplifier = None;
+        cfg.capture_level_adjustment = None;
+        let inner = SonoraAudioProcessing::builder()
+            .config(cfg)
+            .capture_config(stream)
+            .render_config(stream)
+            .build();
+        Self { inner }
+    }
+
+    /// Alimenta referencia far-end (render) de 10 ms (480 muestras). Debe llamarse
+    /// antes del capture correspondiente (orden render -> capture, como webrtc).
+    pub fn process_render_frame(&mut self, frame: &[i16]) {
+        // frame ya viene alineado a 480 (caller garantiza chunks_exact 480)
+        for chunk in frame.chunks_exact(480) {
+            let mut out = [0i16; 480];
+            if let Err(e) = self.inner.process_render_i16(chunk, &mut out) {
+                eprintln!("lumen-voice: SonoraAec process_render error: {e:?}");
+            }
+        }
+    }
+
+    /// Procesa captura con cancelación de eco in-place (480 por chunk).
+    pub fn process_capture_frame(&mut self, chunk: &mut [i16]) {
+        debug_assert_eq!(chunk.len(), 480);
+        let src = chunk.to_vec();
+        let mut out = [0i16; 480];
+        let _ = self.inner.process_capture_i16(&src, &mut out);
+        chunk.copy_from_slice(&out);
+    }
+
+    /// Procesa frame completo (múltiplo de 480, p.ej. 960) in-place.
+    pub fn process_capture(&mut self, frame: &mut [i16]) {
+        for chunk in frame.chunks_mut(480) {
+            // Solo chunks exactos; el caller garantiza múltiplo de 480
+            if chunk.len() == 480 {
+                self.process_capture_frame(chunk);
+            }
+        }
+    }
+
+    pub fn stats(&self) -> sonora::stats::AudioProcessingStats {
+        self.inner.statistics().clone()
+    }
+}
+
+/// Send-path DSP: Sonora AEC3 (pure Rust) + WebRTC HPF/NS/GC2 + limiter,
+/// seguido por RNNoise/DeepFilterNet/FastEnhancer según tier.
+///
+/// - Sonora AEC3 (`sonora::AudioProcessing` solo echo_canceller, pipeline 48 kHz)
+///   cancela eco de altavoz — el caller debe alimentar playback en
+///   [`NoiseSuppressor::process_render_frame`] (far-end reference), orden render -> capture.
+///   Reemplaza webrtc-audio-processing AEC3 (C++ Larsen) por Rust puro M145 con duplex correcto.
+/// - WebRTC HPF + NS VeryHigh + GC2 (echo_canceller: None) siguen en `Processor`
+///   — mantienen FE/DF/RNNoise y limiter, solo se reemplaza AEC path. Pure Rust sin MSVC.
+/// - `Processor` es `Send + Sync`, `SonoraAec` es `Send + Sync`, `nnnoiseless::DenoiseState`
+///   es plain data, todo vive en send task. Ambos procesan 10 ms (480 @48kHz); capture 20 ms = 2 halves.
 pub struct NoiseSuppressor {
+    /// WebRTC Processor para HPF + NS VeryHigh + GC2 (echo_canceller siempre None).
     processor: Option<Processor>,
+    /// Sonora AEC3 (pure Rust) — `Some` cuando `aec_enabled=true`, `None` en headphones/off.
+    aec: Option<SonoraAec>,
     /// RNNoise denoiser — the LIGHT fallback (used only if DeepFilterNet can't
     /// load). Full-band 48 kHz.
     rnnoise: Option<Box<nnnoiseless::DenoiseState<'static>>>,
@@ -1028,7 +1152,7 @@ impl NoiseSuppressor {
         Self::chain(None, true, None)
     }
 
-    /// Shared construction: WebRTC APM plus the optional external denoiser.
+    /// Shared construction: WebRTC APM (HPF/NS/GC2) + optional Sonora AEC + optional external denoiser.
     fn chain(
         neural: Option<DeepFilterDenoiser>,
         rnnoise: bool,
@@ -1037,25 +1161,32 @@ impl NoiseSuppressor {
         Self::chain_with_aec(neural, rnnoise, fe, true)
     }
 
-    /// Like [`Self::chain`] but with the AEC3 module included only when
-    /// `aec` is true. With AEC off (the default; settings `aec_enabled`:
-    /// false) the APM config drops the echo canceller entirely, so the AEC3
-    /// matched filter / adaptive filter (FilterCore, xcorr) never run — the
-    /// send path does HPF + NS + GC2 only. Saves a few µs/frame and, more
-    /// importantly, makes the aec_enabled=false state structurally immune to
-    /// the stale-settings case (session started before the flag flipped).
+    /// Like [`Self::chain`] pero AEC ahora es Sonora (pure Rust). Con `aec=true`
+    /// se crea `SonoraAec` (echo_canceller solo), y WebRTC `Processor` siempre
+    /// lleva `echo_canceller: None` (solo HPF + NS VeryHigh + GC2). Con `aec=false`
+    /// no hay AEC (headphones/off) — Processor sigue HPF/NS/GC2 solo, Sonora `None`.
+    /// Ahorra µs y hace el estado `aec_enabled=false` inmune a stale settings.
     fn chain_with_aec(
         neural: Option<DeepFilterDenoiser>,
         rnnoise: bool,
         fe: Option<FastEnhancerDenoiser>,
         aec: bool,
     ) -> Self {
-        let processor = Processor::new(CLOCK_RATE).ok().map(|processor| {
-            processor.set_config(apm_config_with_aec(aec));
-            processor
-        });
+        // WebRTC Processor siempre sin AEC — solo HPF/NS/GC2. Mantiene FE/DF/RNNoise y limiter.
+        let processor = Processor::new(CLOCK_RATE)
+            .ok()
+            .map(|p| {
+                p.set_config(apm_config_with_aec(false));
+                p
+            });
+        let aec = if aec {
+            Some(SonoraAec::new(CLOCK_RATE))
+        } else {
+            None
+        };
         Self {
             processor,
+            aec,
             rnnoise: if rnnoise { Some(nnnoiseless::DenoiseState::new()) } else { None },
             neural,
             fe,
@@ -1064,21 +1195,34 @@ impl NoiseSuppressor {
             buf_apm: Vec::with_capacity(960),
         }
     }
-    /// Feed the far-end (playback) audio into AEC3. Call this with the exact
-    /// PCM that goes to the speakers, in 10 ms multiples (480 samples @
-    /// 48 kHz), before/around the capture frames it must cancel.
+    /// Feed far-end (playback) audio into Sonora AEC3. Call with exact PCM that
+    /// goes to speakers, in 10 ms multiples (480 @48 kHz), before capture frames it must cancel.
+    /// Orden render -> capture como webrtc. No-op cuando `aec_enabled=false`.
     pub fn process_render_frame(&mut self, frame: &[i16]) {
-        let Some(processor) = self.processor.as_mut() else { return };
-        let mut buf = [0f32; 480];
-        for chunk in frame.chunks_exact(480) {
-            for (i, s) in chunk.iter().enumerate() {
-                buf[i] = *s as f32 / 32768.0;
-            }
-            if processor.process_render_frame([&mut buf]).is_err() {
-                return;
-            }
-        }
+        let Some(aec) = self.aec.as_mut() else { return };
+        aec.process_render_frame(frame);
     }
+    /// Resetea solo el estado del AEC (SonoraAec) preservando WebRTC NS/GC2 y FE.
+    /// Overflow de `render_tap` deja el filtro adaptativo divergente (timeline
+    /// desplazada); estado fresco converge en ~1 s (initial_state_seconds 1.0
+    /// en el fork vendorizado, era 2.5 upstream) y es preferible a seguir
+    /// suprimiendo voz con filtro divergente.
+    pub fn reset_aec(&mut self) {
+        self.aec = self.aec.is_some().then(|| SonoraAec::new(CLOCK_RATE));
+    }
+    /// Optional stats desde Sonora AEC (delay/Echo Return Loss). `None` cuando `aec_enabled=false` o sin AEC.
+    pub fn get_stats(&self) -> Option<sonora::stats::AudioProcessingStats> {
+        self.aec.as_ref().map(|a| a.stats())
+    }
+    /// Compat: stats de WebRTC NS (fallback cuando sonora no está). Útil si se necesita NS stats.
+    pub fn get_webrtc_stats(&self) -> Option<webrtc_audio_processing::Stats> {
+        self.processor.as_ref().map(|p| p.get_stats())
+    }
+    /// Expose whether Sonora AEC is present (mirrors `aec_enabled` flag). Useful for diagnostics.
+    pub fn has_aec(&self) -> bool {
+        self.aec.is_some()
+    }
+
 
     /// Suppress noise in a 48 kHz mono frame (length must be a multiple of
     /// 480, e.g. 960). The production chain: AEC3 + high-pass + WebRTC NS +
@@ -1086,16 +1230,36 @@ impl NoiseSuppressor {
     /// opt-in tiers then replace the APM output with the denoiser's — the
     /// neural tier (DeepFilterNet, `new_neural`) or the light tier
     /// (RNNoise, `new_light`); with `new()` the APM output is final.
+    /// Suppress noise in a 48 kHz mono frame (length must be a multiple of
+    /// 480, e.g. 960). Pipeline: Sonora AEC3 -> WebRTC HPF/NS/GC2 -> neural denoiser -> limiter.
+    /// Sonora cancela eco antes de NS; WebRTC `Processor` ahora lleva `echo_canceller: None`.
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
+        // Stage 0: Sonora AEC (pure Rust) — echo cancellation before NS.
+        // Si `aec_enabled=true`, el frame pasa por Sonora (render -> capture orden ya alimentado
+        // via `process_render_frame`). Si `false`, es no-op. Se hace antes del `Processor`
+        // para que NS/GC2 no vean eco. Requiere copia temporal (960 muestras ~2KB) — insignificante.
+        let aec_buf: Option<Vec<i16>> = if self.aec.is_some() {
+            let mut tmp = frame.to_vec();
+            if let Some(aec) = self.aec.as_mut() {
+                aec.process_capture(&mut tmp);
+            }
+            Some(tmp)
+        } else {
+            None
+        };
+        let input_for_ns: &[i16] = match &aec_buf {
+            Some(buf) => buf,
+            None => frame,
+        };
         // P0-4: reuse buf_apm to avoid vec![0; N] per frame on hot path.
-        // Destructure to allow simultaneous borrows of disjoint fields.
-        let Self { processor, rnnoise, neural, fe, speech_detected, last_lsnr, buf_apm } = &mut *self;
+        // Destructure to allow simultaneous borrows of disjoint fields (aec/buf_aec ya liberados).
+        let Self { processor, rnnoise, neural, fe, speech_detected, last_lsnr, buf_apm, .. } = &mut *self;
         buf_apm.clear();
         buf_apm.resize(frame.len(), 0);
         match processor.as_mut() {
             Some(p) => {
                 let mut tmp = [0f32; 480];
-                for (in_chunk, out_chunk) in frame.chunks_exact(480).zip(buf_apm.chunks_exact_mut(480)) {
+                for (in_chunk, out_chunk) in input_for_ns.chunks_exact(480).zip(buf_apm.chunks_exact_mut(480)) {
                     for (i, s) in in_chunk.iter().enumerate() {
                         tmp[i] = *s as f32 / 32768.0;
                     }
@@ -1109,25 +1273,20 @@ impl NoiseSuppressor {
                 }
             }
             None => {
-                buf_apm.copy_from_slice(frame);
+                buf_apm.copy_from_slice(input_for_ns);
             }
         }
-        // Denoise with the active tier and derive the speech signal.
-        // buf_apm now holds APM output; borrow it as &[i16] for denoisers.
+        // Denoise con el tier activo y deriva speech signal.
+        // buf_apm ya tiene HPF+NS+GC2 (post-AEC); borrow como &[i16] para denoisers.
         let mut result: Vec<i16>;
         if let Some(f) = fe.as_mut() {
             // FastEnhancer tier (default): full-band 48 kHz int8 runtime.
-            // Its output on noise-only frames is near-silence, so the VAD is
-            // post-denoise energy — the model itself suppresses before we
-            // decide to transmit (the mic never opens on noise).
+            // Su salida en solo-ruido es casi silencio, VAD es post-denoise energy.
             *last_lsnr = None;
-            // Reborrow buf_apm as &[i16] (shared) while fe is mutably borrowed — disjoint fields.
             let apm_slice: &[i16] = &*buf_apm;
             result = f.process(apm_slice);
             *speech_detected = rms_level(&result) > 0.01;
         } else if let Some(n) = neural.as_mut() {
-            // DeepFilterNet tier (opt-in): the VAD comes from the model's own
-            // LSNR (local SNR, dB) — mapped onto a [0..1] probability.
             let apm_slice: &[i16] = &*buf_apm;
             let (denoised, lsnr) = n.process(apm_slice);
             result = denoised;
@@ -1135,7 +1294,6 @@ impl NoiseSuppressor {
             let vad = ((lsnr - (-10.0)) / 40.0).clamp(0.0, 1.0);
             *speech_detected = vad > 0.5;
         } else if let Some(rn) = rnnoise.as_mut() {
-            // RNNoise tier (opt-in): its own VAD drives the speaking meter.
             *last_lsnr = None;
             result = vec![0i16; buf_apm.len()];
             let mut max_vad = 0.0f32;
@@ -1153,17 +1311,11 @@ impl NoiseSuppressor {
             }
             *speech_detected = max_vad > 0.5;
         } else {
-            // The default chain: the APM already did AEC3 + NS + GC2 — no
-            // external denoiser, no custom leveler (the GC2's adaptive gain
-            // is the AGC; a per-phrase leveler caused the volume surges).
+            // Cadena default: Sonora AEC + WebRTC NS/GC2 ya procesados — sin denoiser externo.
             *last_lsnr = None;
-            // Reuse buf_apm via clone to preserve its capacity for next call.
             result = buf_apm.clone();
             *speech_detected = rms_level(&result) > 0.01;
         }
-        // Final safety net: cap the encoded i16 range at -1 dBFS so a hot mic
-        // can never hard-clip after the leveler (clipping = harsh distortion
-        // that Opus then encodes).
         limit_peaks(&mut result, 1.0);
         result
     }
@@ -1199,38 +1351,21 @@ impl NoiseSuppressor {
     }
 }
 
-/// Build the WebRTC APM config for a given denoiser tier. AEC3 + high-pass are
-/// always on; WebRTC NS (VeryHigh, ~9x stationary-noise attenuation) is ON in
-/// the light tier (RNNoise needs it) and OFF in the neural tier (DeepFilterNet is the
-/// denoiser; NS before it would double-color the speech). The gain controller
-/// runs in limiter-only mode (fixed digital, zero compression gain): it never
-/// boosts (the fixed-digital AGC amplified background noise before NS removed
-/// it) but hard-limits peaks to -1 dBFS so the denoiser never sees full-scale
-/// clips from a hot mic.
-/// Build the WebRTC APM config. The winning chain (harness A/B, measured):
-/// AEC3 (transparent-initial-state patch) + HPF + NS VeryHigh + GainController2
-/// (adaptive digital: starts at unity, adapts at 3 dB/s — no per-phrase gain
-/// ramps / volume surges; noise floor capped at -50 dBFS). No external
-/// denoiser (DeepFilterNet/RNNoise damaged the voice more than they helped:
-/// their aggressive masks attenuated clean speech by 10-50 dB on the worst
-/// frames, and the AGC normalizes the noise floor anyway).
-/// The production APM config (AEC3 on). Kept for the aec_enabled=true path
-/// and the tests/probes that feed a render reference.
+#[allow(dead_code)]
+/// Build the WebRTC APM config (HPF + NS VeryHigh + GC2) — sin AEC3.
+/// AEC ahora es Sonora (pure Rust), así `echo_canceller` siempre `None` en WebRTC.
+/// Cadena ganadora: Sonora AEC + HPF + NS VeryHigh + GC2 (adaptive 15 dB init, 6 dB/s, -50 dBFS floor).
+/// Sin denoiser externo agresivo (DeepFilterNet dañaba voz 10-50 dB peores frames).
 fn apm_config() -> Config {
     apm_config_with_aec(true)
 }
 
-/// APM config for a given AEC state. `echo_canceller: None` means the C++
-/// `InitializeEchoController` leaves `submodules_.echo_controller` unset, so
-/// `AnalyzeCapture`/`ProcessCapture` never run and the AEC3 matched filter
-/// (FilterCore/xcorr) is absent from the profile entirely.
-fn apm_config_with_aec(aec: bool) -> Config {
+/// APM config sin AEC (Sonora lo maneja). `echo_canceller: None` deja
+/// `submodules_.echo_controller` sin init — FilterCore/xcorr ausente del perfil.
+/// Parámetro `aec` se ignora (queda por compatibilidad `with_model_and_aec`), siempre `None`.
+fn apm_config_with_aec(_aec: bool) -> Config {
     Config {
-        echo_canceller: if aec {
-            Some(EchoCanceller::Full { stream_delay_ms: None })
-        } else {
-            None
-        },
+        echo_canceller: None,
         high_pass_filter: Some(HighPassFilter { apply_in_full_band: true }),
         noise_suppression: Some(NoiseSuppression {
             level: NoiseSuppressionLevel::VeryHigh,
@@ -1241,14 +1376,65 @@ fn apm_config_with_aec(aec: bool) -> Config {
             adaptive_digital: Some(AdaptiveDigital {
                 headroom_db: 5.0,
                 max_gain_db: 50.0,
-                initial_gain_db: 15.0, // reference default (Chrome/Meet) — user's favorite
-                max_gain_change_db_per_second: 6.0, // reference default — no per-phrase surges
+                initial_gain_db: 15.0,
+                max_gain_change_db_per_second: 6.0,
                 max_output_noise_level_dbfs: -50.0,
             }),
             fixed_digital: FixedDigital { gain_db: 0.0 },
         })),
         ..Config::default()
     }
+}
+
+/// Tuned AEC3 config per `local/webrtc-tuning.md` §7.2 (experimental, non-MSVC only).
+/// Values target less destructive near-end suppression and more tolerant delay
+/// headroom for PipeWire jitter (~1 block). Must be validated before use.
+#[cfg(all(feature = "experimental-aec3-config", not(target_env = "msvc")))]
+pub fn tuned_aec3_config() -> EchoCanceller3Config {
+    let mut c = EchoCanceller3Config::default();
+    // DTD less aggressive: keep near-end speech in double-talk.
+    c.suppressor.dominant_nearend_detection.enr_threshold = 0.35;
+    c.suppressor.dominant_nearend_detection.snr_threshold = 20.0;
+    c.suppressor.dominant_nearend_detection.hold_duration = 70;
+    // Delay robustness for PipeWire/cpal jitter (~1 block).
+    c.delay.delay_headroom_samples = 64;
+    c.delay.hysteresis_limit_blocks = 2;
+    // Longer tail for small-room reverb (52 ms → 64 ms); cost ~10 % CPU.
+    c.filter.refined.length_blocks = 16;
+    c.filter.coarse.length_blocks = 16;
+    // Less destructive suppressor masks.
+    c.suppressor.normal_tuning.mask_lf.enr_suppress = 0.30;
+    c.suppressor.normal_tuning.mask_hf.enr_suppress = 0.08;
+    // Anti-howling (default off: thresh 400 gain 1.0).
+    c.suppressor.high_bands_suppression.anti_howling_activation_threshold = 200.0;
+    c.suppressor.high_bands_suppression.anti_howling_gain = 0.3;
+    // Export linear AEC output for `analyze_linear_aec_output` path (requires
+    // NoiseSuppression::analyze_linear_aec_output = true to take effect, but
+    // we keep production Config unchanged per spec — the flag is still useful
+    // for measurement harnesses that set it).
+    c.filter.export_linear_aec_output = true;
+    assert!(c.validate(), "EchoCanceller3Config fuera de rango — ver Validate() clamps");
+    c
+}
+
+/// Internal helper: create a `Processor` at `sample_rate`.
+///
+/// Legacy: cuando AEC era WebRTC, intentaba `Processor::with_aec3_config` con tuning.
+/// Ahora con Sonora, `Processor` siempre es `echo_canceller: None`; esta función queda
+/// para compatibilidad pero no se usa en `chain_with_aec` (usa `Processor::new` directo).
+#[allow(dead_code)]
+#[cfg(all(feature = "experimental-aec3-config", not(target_env = "msvc")))]
+fn new_processor(sample_rate: u32) -> Result<Processor, webrtc_audio_processing::Error> {
+    match Processor::with_aec3_config(sample_rate, tuned_aec3_config()) {
+        Ok(p) => Ok(p),
+        Err(_) => Processor::new(sample_rate),
+    }
+}
+
+#[allow(dead_code)]
+#[cfg(not(all(feature = "experimental-aec3-config", not(target_env = "msvc"))))]
+fn new_processor(sample_rate: u32) -> Result<Processor, webrtc_audio_processing::Error> {
+    Processor::new(sample_rate)
 }
 
 /// UI-selectable suppression model for the voice send path.
@@ -1309,9 +1495,9 @@ impl Default for NoiseSuppressor {
 // ---------------------------------------------------------------------------
 
 /// Raw FFI to the vendored faster-enhancer.c runtime (single global engine,
-/// one audio thread). Only linked on non-MSVC targets — fe requires
+/// one audio thread). Only linked when `fe_built` cfg is set — fe requires
 /// GCC/Clang-style per-file ISA flags and rejects MSVC/clang-cl at configure.
-#[cfg(not(target_env = "msvc"))]
+#[cfg(feature = "fe_built")]
 mod ffe {
     use std::os::raw::{c_int, c_void};
 
@@ -1359,7 +1545,7 @@ pub struct FastEnhancerDenoiser {
     denoise_buf: Vec<f32>,
 }
 
-#[cfg(not(target_env = "msvc"))]
+#[cfg(feature = "fe_built")]
 impl FastEnhancerDenoiser {
     /// Embedded W8A8 weight blobs. `fe_init` references them zero-copy,
     /// so they must outlive the engine — `'static` slices work.
@@ -1399,9 +1585,14 @@ impl FastEnhancerDenoiser {
 
     /// FastEnhancer-Small ("Ligera", hop 512, 10.67 ms frames) — the
     /// low-CPU tier (~1.6 % of total CPU vs Medium's ~6.4 %, measured on the
-    /// i5-4590). Same AVX2+FMA3+F16C floor as Medium.
+    /// i5-4590). Same SSE4.1 floor as Medium; requires `fe_s_built` cfg.
+    #[cfg(feature = "fe_s_built")]
     pub fn new_small() -> Option<Self> {
         Self::build(ffe::fe_s_init, ffe::fe_s_run, ffe::fe_s_free, Self::WEIGHTS_S, 512)
+    }
+    #[cfg(not(feature = "fe_s_built"))]
+    pub fn new_small() -> Option<Self> {
+        None
     }
 
     fn build(
@@ -1459,16 +1650,18 @@ impl FastEnhancerDenoiser {
     }
 }
 
-#[cfg(not(target_env = "msvc"))]
+#[cfg(feature = "fe_built")]
 impl Drop for FastEnhancerDenoiser {
     fn drop(&mut self) {
         unsafe { (self.free)(); }
     }
 }
 
-// On MSVC the C runtime is not built; the type exists so the tier wiring
-// compiles, but `new()` always returns None → NS-only chain.
-#[cfg(target_env = "msvc")]
+// When the C runtime is not built; the type exists so the tier wiring
+// compiles, but `new()` always returns None → NS-only chain. `available()`
+// still mirrors the real CPU dispatch floor ((avx2&&fma&&f16c)||sse4.1) so
+// the UI can report compatibility based on hardware, not build artifact.
+#[cfg(not(feature = "fe_built"))]
 impl FastEnhancerDenoiser {
     pub fn new() -> Option<Self> {
         None
@@ -1477,7 +1670,21 @@ impl FastEnhancerDenoiser {
         None
     }
     pub fn available() -> bool {
-        false
+        #[cfg(target_arch = "x86_64")]
+        {
+            (std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma")
+                && std::arch::is_x86_feature_detected!("f16c"))
+            || std::arch::is_x86_feature_detected!("sse4.1")
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            true
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            false
+        }
     }
     pub fn process(&mut self, frame: &[i16]) -> Vec<i16> {
         frame.to_vec()

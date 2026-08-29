@@ -30,6 +30,7 @@ webrtc.workspace = true
 # experimental-aec3-config: tune the AEC3 (e.g. initial_state_seconds — the
 # transparent window's duration, set by the transparent-initial-state patch).
 webrtc-audio-processing = { workspace = true, features = ["experimental-aec3-config"] }
+sonora.workspace = true
 # NetEQ-inspired adaptive jitter buffer for the receive path (replaces the
 # hand-rolled JitterBuffer). Core-only: no cpal/axum/tokio/ropus features.
 neteq = { version = "0.9", default-features = false }
@@ -53,6 +54,10 @@ tract-onnx = "=0.21.4"
 tract-pulse = "=0.21.4"
 tract-hir = "=0.21.4"
 kstring = "=2.0.0"
+
+[features]
+default = ["experimental-aec3-config"]
+experimental-aec3-config = ["webrtc-audio-processing/experimental-aec3-config"]
 
 [dev-dependencies]
 # DPDFNet 48k probe: tract already comes via deep_filter (same 0.21.4 in the
